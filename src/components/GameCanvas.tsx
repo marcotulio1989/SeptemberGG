@@ -2774,6 +2774,11 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     try {
         NoiseZoning.attach(canvasEl);
         NoiseZoning.setEnabled?.(!!((config as any).render?.showNoiseDelimitations));
+        try {
+            if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+                window.dispatchEvent(new CustomEvent('noise-overlay-toggle', { detail: { enabled: !!((config as any).render?.showNoiseDelimitations) } }));
+            }
+        } catch (e) {}
         syncNoiseOverlayView(state.camera.x, state.camera.y, state.zoom);
     } catch (e) {
         try { console.warn('[GameCanvas] Failed to attach NoiseZoning overlay', e); } catch (err) {}
@@ -2932,7 +2937,17 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             }
             if (k === 'n') {
                 // Toggle overlay via teclado
-                NoiseZoning.setEnabled?.(!NoiseZoning.enabled);
+                const next = !NoiseZoning.enabled;
+                NoiseZoning.setEnabled?.(next);
+                try { (config as any).render.showNoiseDelimitations = next; } catch (err) {}
+                if (next && typeof NoiseZoning.redraw === 'function') {
+                    try { NoiseZoning.redraw(); } catch (err) {}
+                }
+                try {
+                    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+                        window.dispatchEvent(new CustomEvent('noise-overlay-toggle', { detail: { enabled: next } }));
+                    }
+                } catch (err) {}
             }
             keys[e.key] = true;
             keys[k] = true;

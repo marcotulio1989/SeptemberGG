@@ -7,6 +7,7 @@ import TextureLoader from './TextureLoader';
 import TextureGallery from './TextureGallery';
 import ToggleButton from './ToggleButton';
 import MapStore from '../stores/MapStore';
+import NoiseZoning from '../overlays/NoiseZoning';
 // Controles avançados removidos: sem overlay/zonas aleatórias aqui
 
 const App: React.FC = () => {
@@ -163,6 +164,7 @@ const App: React.FC = () => {
     const [crossfadeMs, setCrossfadeMs] = useState<number>(500);
     const [edgeScale, setEdgeScale] = useState<number>(() => safeLoadNumber('edgeScale', (config as any).render.edgeTextureScale || 1.0));
     const [edgeAlpha, setEdgeAlpha] = useState<number>(() => safeLoadNumber('edgeAlpha', (config as any).render.edgeTextureAlpha ?? 1.0));
+    const [noiseOverlayVisible, setNoiseOverlayVisible] = useState<boolean>(() => !!((config as any).render?.showNoiseDelimitations));
     // controls for road lane overlay
     const [laneTexture, setLaneTexture] = useState<PIXI.Texture | null>(null);
     const [laneScale, setLaneScale] = useState<number>(() => safeLoadNumber('roadLaneScale', (config as any).render.roadLaneTextureScale || 1.0));
@@ -183,6 +185,44 @@ const App: React.FC = () => {
         // force a re-render of canvas/UI
         setUiTick(t => t + 1);
     };
+
+    const toggleNoiseOverlay = () => {
+        const next = !noiseOverlayVisible;
+        try { (config as any).render.showNoiseDelimitations = next; } catch (e) {}
+        try {
+            if (typeof NoiseZoning.setEnabled === 'function') {
+                NoiseZoning.setEnabled(next);
+            } else if (typeof NoiseZoning.toggle === 'function' && NoiseZoning.enabled !== next) {
+                NoiseZoning.toggle();
+            }
+            if (next && typeof NoiseZoning.redraw === 'function') {
+                NoiseZoning.redraw();
+            }
+        } catch (e) {
+            try { console.warn('[App] Failed to toggle Noise overlay', e); } catch (err) {}
+        }
+        setNoiseOverlayVisible(next);
+        try {
+            if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+                window.dispatchEvent(new CustomEvent('noise-overlay-toggle', { detail: { enabled: next } }));
+            }
+        } catch (e) {}
+    };
+
+    React.useEffect(() => {
+        if (typeof window === 'undefined') return;
+        const handler = (event: Event) => {
+            const detail = (event as CustomEvent<{ enabled: boolean }>).detail;
+            if (detail && typeof detail.enabled === 'boolean') {
+                setNoiseOverlayVisible(detail.enabled);
+            }
+        };
+        const listener: EventListener = handler as EventListener;
+        window.addEventListener('noise-overlay-toggle', listener);
+        return () => {
+            window.removeEventListener('noise-overlay-toggle', listener);
+        };
+    }, []);
 
     const handleEdgeLoad = (tex: PIXI.Texture, url: string) => {
         setEdgeTexture(prev => {
@@ -311,15 +351,18 @@ const App: React.FC = () => {
                 </button>
                 {/* Botões de preset removidos a pedido do usuário */}
                 {/* Toggle de debug removido */}
-                <ToggleButton 
-                    onText="Hide Population Heatmap" 
-                    offText="Show Population Heatmap" 
-                    action={() => { 
-                        config.mapGeneration.DRAW_HEATMAP = !config.mapGeneration.DRAW_HEATMAP; 
+                <ToggleButton
+                    onText="Hide Population Heatmap"
+                    offText="Show Population Heatmap"
+                    action={() => {
+                        config.mapGeneration.DRAW_HEATMAP = !config.mapGeneration.DRAW_HEATMAP;
                         setHeatmapVisible((v: boolean) => !v);
                         setUiTick(t => t + 1);
                     }}
                 />
+                <button onClick={toggleNoiseOverlay}>
+                    {noiseOverlayVisible ? 'Ocultar Ruído Perlin' : 'Mostrar Ruído Perlin'}
+                </button>
                 <button onClick={() => factorTargetZoom(3 / 2)}>Zoom in</button>
                 <button onClick={() => factorTargetZoom(2 / 3)}>Zoom out</button>
                 {/* Toggle Iso removido */}
