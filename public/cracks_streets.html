@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Ruas — Bordas (Cinza Escuro)</title>
+  <style>
+    body {
+      background: #202020;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      gap: 10px;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      color: #ddd;
+    }
+    canvas { border: 2px solid #111; image-rendering: pixelated; }
+    .legend { color:#ddd; font-size:13px; }
+    .sw { width:12px; height:12px; display:inline-block; border-radius:3px; margin-right:6px; box-shadow:0 0 0 1px rgba(0,0,0,.25) inset; }
+    .controls { display:flex; gap:12px; align-items:center; }
+    input[type=range] { width:240px; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas" width="512" height="512"></canvas>
+  <div class="controls">
+    <div class="legend"><i class="sw" style="background:#3a3a3a"></i>Ruas (cinza escuro)</div>
+    <label style="font-size:13px">Largura: <span id="thVal">1.6</span></label>
+    <input id="th" type="range" min="0.2" max="6" step="0.1" value="1.6">
+    <button id="regenerate">Regenerar</button>
+  </div>
+
+  <script>
+    const N = 512;
+    const numPoints = 80;
+    const EDGE_COLOR = [58,58,58]; // cinza escuro
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    let pts = generatePoints();
+
+    function generatePoints(){
+      return Array.from({length: numPoints}, () => [Math.random()*N, Math.random()*N]);
+    }
+
+    function setPixel(data, idx, r, g, b, a=255){
+      data[idx] = r; data[idx+1] = g; data[idx+2] = b; data[idx+3] = a;
+    }
+
+    function drawEdgesOnly(threshold) {
+      const imageData = ctx.createImageData(N, N);
+      const data = imageData.data;
+
+      for (let y=0; y<N; y++) {
+        for (let x=0; x<N; x++) {
+          const p = (y*N + x) * 4;
+
+          // compute squared distances to all points to find nearest and second nearest
+          let nearest = -1, d1 = Infinity, second = -1, d2 = Infinity;
+          for (let i=0;i<pts.length;i++){
+            const dx = x-pts[i][0]; const dy = y-pts[i][1];
+            const d = dx*dx + dy*dy;
+            if (d < d1) { d2 = d1; second = nearest; d1 = d; nearest = i; }
+            else if (d < d2) { d2 = d; second = i; }
+          }
+
+          // distance difference between nearest and second nearest (using sqrt to get real distances)
+          const distDiff = Math.sqrt(d2) - Math.sqrt(d1);
+
+          // If the difference is small, we are near an edge (Voronoi boundary). Use threshold to control width.
+          if (distDiff < threshold) {
+            setPixel(data, p, EDGE_COLOR[0], EDGE_COLOR[1], EDGE_COLOR[2], 255);
+          } else {
+            // transparent background so you can overlay on other maps if desired
+            setPixel(data, p, 0, 0, 0, 0);
+          }
+        }
+      }
+
+      ctx.putImageData(imageData, 0, 0);
+    }
+
+    // UI wiring
+    const thSlider = document.getElementById('th');
+    const thVal = document.getElementById('thVal');
+    const regen = document.getElementById('regenerate');
+
+    function render(){
+      const t = parseFloat(thSlider.value);
+      thVal.textContent = t.toFixed(1);
+      drawEdgesOnly(t);
+    }
+
+    thSlider.addEventListener('input', render);
+    regen.addEventListener('click', () => { pts = generatePoints(); render(); });
+
+    // initial render
+    render();
+  </script>
+</body>
+</html>

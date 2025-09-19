@@ -1,0 +1,52 @@
+#main-viewport-container {
+    width: 100%;
+    height: 100%;
+    position: relative;
+}
+
+#canvas-container {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    top: 0;
+    left: 0;
+}
+
+#control-bar {
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    right: 10px; /* limita largura dentro da viewport */
+    padding: 10px;
+    background-color: rgba(0, 0, 0, 0.5);
+    border-radius: 5px;
+    color: white;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap; /* quebra em múltiplas linhas se necessário */
+    overflow-x: auto; /* permite rolagem horizontal se ainda exceder */
+    max-width: calc(100% - 20px);
+    z-index: 10;
+    align-items: center;
+}
+
+/* Collapsed state: show only a small header row with the collapse button */
+#control-bar.collapsed {
+    max-height: 44px; /* enough for one row */
+    overflow: hidden;  /* hide remaining controls */
+    padding-right: 8px;
+}
+
+#control-bar #control-bar-toggle {
+    font-weight: 700;
+}
+
+#control-bar button, #control-bar input, #control-bar label {
+    padding: 5px;
+    border-radius: 3px;
+    border: 1px solid #555;
+}
+
+#control-bar button {
+    cursor: pointer;
+}
