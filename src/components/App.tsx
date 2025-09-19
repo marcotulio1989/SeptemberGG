@@ -7,6 +7,7 @@ import TextureLoader from './TextureLoader';
 import TextureGallery from './TextureGallery';
 import ToggleButton from './ToggleButton';
 import MapStore from '../stores/MapStore';
+import NoiseZoning from '../overlays/NoiseZoning';
 // Controles avançados removidos: sem overlay/zonas aleatórias aqui
 
 const App: React.FC = () => {
@@ -14,6 +15,13 @@ const App: React.FC = () => {
     const [charSpeed, setCharSpeed] = useState((config as any).controls.characterSpeedMps);
     const [segLen, setSegLen] = useState((config as any).mapGeneration.DEFAULT_SEGMENT_LENGTH);
     const [heatmapVisible, setHeatmapVisible] = useState((config as any).mapGeneration.DRAW_HEATMAP);
+    const [noiseOverlayVisible, setNoiseOverlayVisible] = useState<boolean>(() => {
+        try {
+            return !!((config as any).render?.showNoiseDelimitations);
+        } catch (e) {
+            return !!NoiseZoning.enabled;
+        }
+    });
     const [uiTick, setUiTick] = useState(0); // força re-render para atualizar HUD
     const [outlineMode, setOutlineMode] = useState((config as any).render.roadOutlineMode);
     // Fonte de cor das bordas dos quarteirões: 'base'|'gap'|'outline'|'custom'
@@ -150,6 +158,36 @@ const App: React.FC = () => {
         } catch (e) {}
         return fallback;
     };
+
+    useEffect(() => {
+        try { (config as any).render.showNoiseDelimitations = noiseOverlayVisible; } catch (e) {}
+        try {
+            if (typeof NoiseZoning.setEnabled === 'function') {
+                NoiseZoning.setEnabled(noiseOverlayVisible);
+            } else if (noiseOverlayVisible !== NoiseZoning.enabled && typeof NoiseZoning.toggle === 'function') {
+                NoiseZoning.toggle();
+            }
+            if (noiseOverlayVisible && typeof NoiseZoning.redraw === 'function') {
+                NoiseZoning.redraw();
+            }
+        } catch (e) {
+            try { console.warn('[App] Failed to sync noise overlay', e); } catch (err) {}
+        }
+    }, [noiseOverlayVisible]);
+
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        const handler = (event: Event) => {
+            const detail = (event as CustomEvent<{ enabled?: boolean }>).detail;
+            if (!detail || typeof detail.enabled !== 'boolean') return;
+            const enabled = detail.enabled as boolean;
+            setNoiseOverlayVisible(prev => (prev === enabled ? prev : enabled));
+        };
+        window.addEventListener('noise-overlay-change', handler as EventListener);
+        return () => {
+            window.removeEventListener('noise-overlay-change', handler as EventListener);
+        };
+    }, []);
 
     const [interiorTexture, setInteriorTexture] = useState<PIXI.Texture | null>(null);
     const [controlsCollapsed, setControlsCollapsed] = useState<boolean>(false);
@@ -311,15 +349,18 @@ const App: React.FC = () => {
                 </button>
                 {/* Botões de preset removidos a pedido do usuário */}
                 {/* Toggle de debug removido */}
-                <ToggleButton 
-                    onText="Hide Population Heatmap" 
-                    offText="Show Population Heatmap" 
-                    action={() => { 
-                        config.mapGeneration.DRAW_HEATMAP = !config.mapGeneration.DRAW_HEATMAP; 
+                <ToggleButton
+                    onText="Hide Population Heatmap"
+                    offText="Show Population Heatmap"
+                    action={() => {
+                        config.mapGeneration.DRAW_HEATMAP = !config.mapGeneration.DRAW_HEATMAP;
                         setHeatmapVisible((v: boolean) => !v);
                         setUiTick(t => t + 1);
                     }}
                 />
+                <button onClick={() => setNoiseOverlayVisible(v => !v)}>
+                    {noiseOverlayVisible ? 'Ruído Perlin: ON' : 'Ruído Perlin: OFF'}
+                </button>
                 <button onClick={() => factorTargetZoom(3 / 2)}>Zoom in</button>
                 <button onClick={() => factorTargetZoom(2 / 3)}>Zoom out</button>
                 {/* Toggle Iso removido */}
