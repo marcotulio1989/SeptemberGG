@@ -71,8 +71,8 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     const roadLaneTextureRef = useRef<PIXI.Texture | null>(roadLaneTexture || null);
     const roadCrackTextureRef = useRef<PIXI.Texture | null>(roadCrackTexture || null);
     const edgeTextureRef = useRef<PIXI.Texture | null>(edgeTexture || null);
-    const proceduralCrackGraphicsRef = useRef<PIXI.Graphics | null>(null);
-    const crackNoiseDebugRef = useRef<PIXI.Graphics | null>(null);
+    const proceduralCrackGraphicsRef = useRef<PIXI.Graphics[]>([]);
+    const crackNoiseDebugRef = useRef<PIXI.Graphics[]>([]);
     const noiseOverlayViewRef = useRef<{ cameraX: number; cameraY: number; zoom: number } | null>(null);
     // Cache para evitar reconstruções pesadas dos marcadores/mascara quando nada mudou
     const laneMarkerCacheRef = useRef<{ key: string; container: PIXI.Container | null } | null>(null);
@@ -1220,7 +1220,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         else try { tile.destroy({ texture: false, baseTexture: false }); } catch (e) {}
     };
 
-    const roadCrackDisplayRef = React.useRef<PIXI.DisplayObject | null>(null);
+    const roadCrackDisplayRef = React.useRef<PIXI.DisplayObject[] | null>(null);
 
     // Try to update the existing crack tiling sprite in-place when props change.
     // If there's no existing sprite, trigger a lightweight rebuild of overlays.
@@ -1228,13 +1228,28 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         try {
             const scaleVal = (typeof roadCrackScale === 'number' && isFinite(roadCrackScale)) ? Math.max(1e-6, roadCrackScale) : 1.0;
             const alphaVal = (typeof roadCrackAlpha === 'number') ? roadCrackAlpha : undefined;
-            const spr = roadCrackDisplayRef.current;
-            if (spr && spr instanceof PIXI.TilingSprite && spr.tileScale) {
-                spr.tileScale.set(scaleVal, scaleVal);
-                if (typeof alphaVal === 'number') spr.alpha = alphaVal;
-                try { console.debug('[GameCanvas] updated roadCrack sprite in-place scale=', scaleVal, 'alpha=', alphaVal); } catch (e) {}
+            const sprites = roadCrackDisplayRef.current;
+            if (sprites && sprites.length > 0) {
+                let updatedAny = false;
+                for (const spr of sprites) {
+                    try {
+                        if (spr instanceof PIXI.TilingSprite && spr.tileScale) {
+                            spr.tileScale.set(scaleVal, scaleVal);
+                            updatedAny = true;
+                        }
+                        if (typeof alphaVal === 'number') {
+                            spr.alpha = alphaVal;
+                            updatedAny = true;
+                        }
+                    } catch (err) {}
+                }
+                if (updatedAny) {
+                    try { console.debug('[GameCanvas] updated roadCrack sprites in-place scale=', scaleVal, 'alpha=', alphaVal); } catch (e) {}
+                } else {
+                    try { onMapChange(false); } catch (e) {}
+                }
             } else {
-                // no tiling sprite currently present -> rebuild overlays so the sprite will be (re)created
+                // no sprite currently present -> rebuild overlays so the sprites will be (re)created
                 try { onMapChange(false); } catch (e) {}
             }
         } catch (e) {}
@@ -2063,15 +2078,19 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         // Aplicar overlay de rachaduras nas vias se houver textura definida
         try {
             roadCrackOverlay.current?.removeChildren();
-            if (proceduralCrackGraphicsRef.current) {
-                try { proceduralCrackGraphicsRef.current.destroy(true); } catch (e) {}
-                proceduralCrackGraphicsRef.current = null;
+            if (proceduralCrackGraphicsRef.current && proceduralCrackGraphicsRef.current.length) {
+                for (const g of proceduralCrackGraphicsRef.current) {
+                    try { g.destroy(true); } catch (e) {}
+                }
+                proceduralCrackGraphicsRef.current = [];
             }
-            if (crackNoiseDebugRef.current) {
-                try { crackNoiseDebugRef.current.destroy(true); } catch (e) {}
-                crackNoiseDebugRef.current = null;
+            if (crackNoiseDebugRef.current && crackNoiseDebugRef.current.length) {
+                for (const dbg of crackNoiseDebugRef.current) {
+                    try { dbg.destroy(true); } catch (e) {}
+                }
+                crackNoiseDebugRef.current = [];
             }
-            roadCrackDisplayRef.current = null;
+            roadCrackDisplayRef.current = [];
             const renderCfg = (config as any).render || {};
             try {
                 NoiseZoning.setEnabled?.(!!renderCfg.showNoiseDelimitations);
@@ -2088,66 +2107,92 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             const shouldRenderCracks = useProceduralCracks || (allowTexture && !!textureFromProps);
             try { console.debug('[GameCanvas] crack overlay -> procedural=', useProceduralCracks, 'hasTexture=', !!textureFromProps, 'allowTexture=', allowTexture); } catch (e) {}
             if (shouldRenderCracks) {
-                const polys: { x: number; y: number }[][] = [];
-                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-                segments.forEach(segment => {
-                    const w = segment.width;
+                const defaultPadding = ((config as any).render?.crackMaskPaddingDefault ?? 4) as number;
+                const extraPadding = ((config as any).render?.crackMaskPaddingExtra ?? 8) as number;
+                const touchEps = ((config as any).render?.crackMaskTouchEps ?? 1.0) as number;
+                const basePadding = Math.max(0, Math.floor(defaultPadding));
+                const extraPaddingRounded = Math.max(basePadding, Math.floor(extraPadding));
+                let extraPaddingLogged = false;
+
+                for (const segment of segments) {
                     const sW0 = segment.r.start;
                     const eW0 = segment.r.end;
-                    const vx0 = eW0.x - sW0.x; const vy0 = eW0.y - sW0.y; const len0 = Math.hypot(vx0, vy0) || 1;
-                    const ux = vx0 / len0, uy = vy0 / len0;
-                    const nx = -uy, ny = ux;
-                    const p1 = { x: sW0.x + nx * (w / 2), y: sW0.y + ny * (w / 2) };
-                    const p2 = { x: sW0.x - nx * (w / 2), y: sW0.y - ny * (w / 2) };
-                    const p3 = { x: eW0.x - nx * (w / 2), y: eW0.y - ny * (w / 2) };
-                    const p4 = { x: eW0.x + nx * (w / 2), y: eW0.y + ny * (w / 2) };
-                    const poly = [p1, p2, p3, p4].map(pt => worldToIso(pt));
-                    if (poly.length > 2) {
-                        polys.push(poly);
-                        poly.forEach(p => {
-                            minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
-                            maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
-                        });
-                    }
-                });
-                if (isFinite(minX) && isFinite(minY) && maxX > minX && maxY > minY) {
-                    const defaultPadding = ((config as any).render?.crackMaskPaddingDefault ?? 4) as number;
-                    const extraPadding = ((config as any).render?.crackMaskPaddingExtra ?? 8) as number;
-                    const touchEps = ((config as any).render?.crackMaskTouchEps ?? 1.0) as number;
-                    let padding = Math.max(0, Math.floor(defaultPadding));
-                    let needExtra = false;
-                    for (const p of polys) {
-                        for (const v of p) {
-                            if (Math.abs(v.x - minX) <= touchEps || Math.abs(v.y - minY) <= touchEps || Math.abs(v.x - maxX) <= touchEps || Math.abs(v.y - maxY) <= touchEps) {
-                                needExtra = true; break;
-                            }
+                    const w = segment.width;
+                    const vx0 = eW0.x - sW0.x;
+                    const vy0 = eW0.y - sW0.y;
+                    const len0 = Math.hypot(vx0, vy0);
+                    if (!isFinite(len0) || len0 <= 0) continue;
+                    const ux = vx0 / len0;
+                    const uy = vy0 / len0;
+                    const nx = -uy;
+                    const ny = ux;
+                    const halfW = w / 2;
+                    const polyWorld = [
+                        { x: sW0.x + nx * halfW, y: sW0.y + ny * halfW },
+                        { x: sW0.x - nx * halfW, y: sW0.y - ny * halfW },
+                        { x: eW0.x - nx * halfW, y: eW0.y - ny * halfW },
+                        { x: eW0.x + nx * halfW, y: eW0.y + ny * halfW },
+                    ];
+                    const poly = polyWorld.map(pt => worldToIso(pt));
+                    if (poly.length <= 2) continue;
+
+                    let rawMinX = Infinity;
+                    let rawMinY = Infinity;
+                    let rawMaxX = -Infinity;
+                    let rawMaxY = -Infinity;
+                    let validPoly = true;
+                    for (const p of poly) {
+                        if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) {
+                            validPoly = false;
+                            break;
                         }
-                        if (needExtra) break;
+                        rawMinX = Math.min(rawMinX, p.x);
+                        rawMinY = Math.min(rawMinY, p.y);
+                        rawMaxX = Math.max(rawMaxX, p.x);
+                        rawMaxY = Math.max(rawMaxY, p.y);
+                    }
+                    if (!validPoly || !(rawMaxX > rawMinX) || !(rawMaxY > rawMinY)) continue;
+
+                    let padding = basePadding;
+                    let needExtra = false;
+                    for (const v of poly) {
+                        if (
+                            Math.abs(v.x - rawMinX) <= touchEps
+                            || Math.abs(v.y - rawMinY) <= touchEps
+                            || Math.abs(v.x - rawMaxX) <= touchEps
+                            || Math.abs(v.y - rawMaxY) <= touchEps
+                        ) {
+                            needExtra = true;
+                            break;
+                        }
                     }
                     if (needExtra) {
-                        padding = Math.max(padding, Math.floor(extraPadding));
-                        try { console.info('[GameCanvas] increased crack mask padding to', padding, 'touchEps=', touchEps); } catch (e) {}
+                        padding = Math.max(padding, extraPaddingRounded);
+                        if (!extraPaddingLogged) {
+                            try { console.info('[GameCanvas] increased crack mask padding to', padding, 'touchEps=', touchEps); } catch (e) {}
+                            extraPaddingLogged = true;
+                        }
                     }
-                    minX = Math.floor(minX) - padding;
-                    minY = Math.floor(minY) - padding;
-                    maxX = Math.ceil(maxX) + padding;
-                    maxY = Math.ceil(maxY) + padding;
+
+                    const minX = Math.floor(rawMinX) - padding;
+                    const minY = Math.floor(rawMinY) - padding;
+                    const maxX = Math.ceil(rawMaxX) + padding;
+                    const maxY = Math.ceil(rawMaxY) + padding;
+                    const spriteW = Math.max(4, Math.ceil(maxX - minX));
+                    const spriteH = Math.max(4, Math.ceil(maxY - minY));
+                    if (!(spriteW > 0) || !(spriteH > 0)) continue;
 
                     const maskG = new PIXI.Graphics();
                     maskG.beginFill(0xFFFFFF);
-                    for (const poly of polys) {
-                        const local0 = { x: poly[0].x - minX, y: poly[0].y - minY };
-                        maskG.moveTo(local0.x, local0.y);
-                        for (let i = 1; i < poly.length; i++) {
-                            const lp = { x: poly[i].x - minX, y: poly[i].y - minY };
-                            maskG.lineTo(lp.x, lp.y);
-                        }
-                        maskG.closePath();
+                    const first = poly[0];
+                    maskG.moveTo(first.x - minX, first.y - minY);
+                    for (let i = 1; i < poly.length; i++) {
+                        const pt = poly[i];
+                        maskG.lineTo(pt.x - minX, pt.y - minY);
                     }
+                    maskG.closePath();
                     maskG.endFill();
 
-                    const spriteW = Math.max(4, Math.ceil(maxX - minX));
-                    const spriteH = Math.max(4, Math.ceil(maxY - minY));
                     let cracksDisplay: PIXI.DisplayObject | null = null;
                     let noiseDebugGraphics: PIXI.Graphics | null = null;
                     let noiseMaskGraphics: PIXI.Graphics | null = null;
@@ -2162,74 +2207,80 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                             isoToWorld,
                         });
                         if (raster) {
-                        let hasActiveHighlight = false;
-                        if (renderCfg.showNoiseDelimitations && raster.debugRegion) {
-                            try {
-                                const region = raster.debugRegion;
-                                const highlight = new Set<number>();
-                                if (Array.isArray(region.activeBucketIds)) {
-                                    for (const v of region.activeBucketIds) {
-                                        const n = Number(v);
-                                        if (Number.isFinite(n)) highlight.add(Math.floor(n));
-                                    }
-                                }
-                                const hasHighlight = highlight.size > 0;
-                                hasActiveHighlight = hasHighlight;
-                                const safeCellW = Math.max(0.0001, Number.isFinite(region.cellW) ? region.cellW : 0);
-                                const safeCellH = Math.max(0.0001, Number.isFinite(region.cellH) ? region.cellH : 0);
-                                const strokeWidth = Math.max(
-                                    0.35,
-                                    Math.min(2.25, Math.min(safeCellW, safeCellH) * 0.08),
-                                );
-                                const fillColor = 0xffffff;
-                                const activeFillAlpha = hasHighlight ? 0.32 : 0.22;
-                                const inactiveFillAlpha = hasHighlight ? 0.04 : 0.12;
-                                const activeStrokeAlpha = hasHighlight ? 0.85 : 0.55;
-                                const inactiveStrokeAlpha = hasHighlight ? 0.35 : 0.3;
-                                const g = new PIXI.Graphics();
-                                for (let ry = 0; ry < region.h; ry++) {
-                                    for (let rx = 0; rx < region.w; rx++) {
-                                        const idx = ry * region.w + rx;
-                                        const bucket = region.map[idx] ?? 0;
-                                        const isActive = !hasHighlight || highlight.has(bucket);
-                                        const strokeAlpha = isActive ? activeStrokeAlpha : inactiveStrokeAlpha;
-                                        const fillAlpha = isActive ? activeFillAlpha : inactiveFillAlpha;
-                                        g.lineStyle(strokeWidth, fillColor, strokeAlpha);
-                                        if (fillAlpha > 0) {
-                                            g.beginFill(fillColor, fillAlpha);
-                                        }
-                                        g.drawRect(rx * safeCellW, ry * safeCellH, safeCellW, safeCellH);
-                                        if (fillAlpha > 0) {
-                                            g.endFill();
+                            let hasActiveHighlight = false;
+                            if (renderCfg.showNoiseDelimitations && raster.debugRegion) {
+                                try {
+                                    const region = raster.debugRegion;
+                                    const highlight = new Set<number>();
+                                    if (Array.isArray(region.activeBucketIds)) {
+                                        for (const v of region.activeBucketIds) {
+                                            const n = Number(v);
+                                            if (Number.isFinite(n)) highlight.add(Math.floor(n));
                                         }
                                     }
+                                    const hasHighlight = highlight.size > 0;
+                                    hasActiveHighlight = hasHighlight;
+                                    const safeCellW = Math.max(
+                                        0.0001,
+                                        Number.isFinite(region.cellW) ? region.cellW : 0,
+                                    );
+                                    const safeCellH = Math.max(
+                                        0.0001,
+                                        Number.isFinite(region.cellH) ? region.cellH : 0,
+                                    );
+                                    const strokeWidth = Math.max(
+                                        0.35,
+                                        Math.min(2.25, Math.min(safeCellW, safeCellH) * 0.08),
+                                    );
+                                    const fillColor = 0xffffff;
+                                    const activeFillAlpha = hasHighlight ? 0.32 : 0.22;
+                                    const inactiveFillAlpha = hasHighlight ? 0.04 : 0.12;
+                                    const activeStrokeAlpha = hasHighlight ? 0.85 : 0.55;
+                                    const inactiveStrokeAlpha = hasHighlight ? 0.35 : 0.3;
+                                    const g = new PIXI.Graphics();
+                                    for (let ry = 0; ry < region.h; ry++) {
+                                        for (let rx = 0; rx < region.w; rx++) {
+                                            const idx = ry * region.w + rx;
+                                            const bucket = region.map[idx] ?? 0;
+                                            const isActive = !hasHighlight || highlight.has(bucket);
+                                            const strokeAlpha = isActive ? activeStrokeAlpha : inactiveStrokeAlpha;
+                                            const fillAlpha = isActive ? activeFillAlpha : inactiveFillAlpha;
+                                            g.lineStyle(strokeWidth, fillColor, strokeAlpha);
+                                            if (fillAlpha > 0) {
+                                                g.beginFill(fillColor, fillAlpha);
+                                            }
+                                            g.drawRect(rx * safeCellW, ry * safeCellH, safeCellW, safeCellH);
+                                            if (fillAlpha > 0) {
+                                                g.endFill();
+                                            }
+                                        }
+                                    }
+                                    noiseDebugGraphics = g;
+                                } catch (err) {
+                                    try { console.warn('[GameCanvas] Failed to build noise delimitations overlay', err); } catch (e) {}
                                 }
-                                noiseDebugGraphics = g;
-                            } catch (err) {
-                                try { console.warn('[GameCanvas] Failed to build noise delimitations overlay', err); } catch (e) {}
                             }
-                        }
-                        if (renderCfg.showNoiseDelimitations && raster.noiseMask) {
-                            try {
-                                const overlayAlpha = hasActiveHighlight ? 0.34 : 0.28;
-                                noiseMaskGraphics = maskToGraphics(
-                                    raster.noiseMask.data,
-                                    raster.noiseMask.width,
-                                    raster.noiseMask.height,
-                                    spriteW,
-                                    spriteH,
-                                    0x38bdf8,
-                                    overlayAlpha,
-                                );
-                            } catch (err) {
-                                try { console.warn('[GameCanvas] Failed to build noise mask overlay', err); } catch (e) {}
+                            if (renderCfg.showNoiseDelimitations && raster.noiseMask) {
+                                try {
+                                    const overlayAlpha = hasActiveHighlight ? 0.34 : 0.28;
+                                    noiseMaskGraphics = maskToGraphics(
+                                        raster.noiseMask.data,
+                                        raster.noiseMask.width,
+                                        raster.noiseMask.height,
+                                        spriteW,
+                                        spriteH,
+                                        0x38bdf8,
+                                        overlayAlpha,
+                                    );
+                                } catch (err) {
+                                    try { console.warn('[GameCanvas] Failed to build noise mask overlay', err); } catch (e) {}
+                                }
                             }
-                        }
                             const alphaMultiplier = (typeof roadCrackAlpha === 'number' && isFinite(roadCrackAlpha)) ? roadCrackAlpha : 1;
                             const graphics = rasterToGraphics(raster, spriteW, spriteH, alphaMultiplier);
                             if (graphics) {
                                 cracksDisplay = graphics;
-                                proceduralCrackGraphicsRef.current = graphics;
+                                proceduralCrackGraphicsRef.current.push(graphics);
                             }
                         }
                     }
@@ -2293,27 +2344,27 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                             noiseDebugGraphics.x = 0;
                             noiseDebugGraphics.y = 0;
                             container.addChild(noiseDebugGraphics);
-                            crackNoiseDebugRef.current = noiseDebugGraphics;
+                            crackNoiseDebugRef.current.push(noiseDebugGraphics);
                         }
                         if (cracksDisplay) {
                             cracksDisplay.x = 0;
                             cracksDisplay.y = 0;
                             container.addChild(cracksDisplay);
+                            if (cracksDisplay instanceof PIXI.TilingSprite || cracksDisplay instanceof PIXI.Sprite) {
+                                if (!roadCrackDisplayRef.current) roadCrackDisplayRef.current = [];
+                                roadCrackDisplayRef.current.push(cracksDisplay);
+                            }
                         }
                         container.addChild(maskG);
                         container.mask = maskG;
                         roadCrackOverlay.current?.addChild(container);
-
-                        if (cracksDisplay instanceof PIXI.TilingSprite || cracksDisplay instanceof PIXI.Sprite) {
-                            roadCrackDisplayRef.current = cracksDisplay;
-                        } else {
-                            roadCrackDisplayRef.current = null;
-                        }
-
-                        try { console.debug('[GameCanvas] roadCrackOverlay added container, childrenNow=', roadCrackOverlay.current?.children.length); } catch (e) {}
+                        try { console.debug('[GameCanvas] roadCrackOverlay added segment container, childrenNow=', roadCrackOverlay.current?.children.length); } catch (e) {}
+                    } else {
+                        try { maskG.destroy(true); } catch (e) {}
                     }
                 }
             }
+
         } catch (e) {
             // falha do overlay de rachadura não deve quebrar render
         }
@@ -3531,9 +3582,11 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             pixiRenderer.current?.destroy();
             canvasContainerRef.current?.removeChild(canvasEl);
             if (NoiseZoning.detach) NoiseZoning.detach();
-            if (proceduralCrackGraphicsRef.current) {
-                try { proceduralCrackGraphicsRef.current.destroy(true); } catch (e) {}
-                proceduralCrackGraphicsRef.current = null;
+            if (proceduralCrackGraphicsRef.current && proceduralCrackGraphicsRef.current.length) {
+                for (const g of proceduralCrackGraphicsRef.current) {
+                    try { g.destroy(true); } catch (e) {}
+                }
+                proceduralCrackGraphicsRef.current = [];
             }
         };
     }, []);
