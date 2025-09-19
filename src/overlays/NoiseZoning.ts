@@ -54,6 +54,7 @@ type InternalNoiseZoning = NoiseZoningAPI & {
   _pixelCache?: {
     w: number; h: number; cameraX: number; cameraY: number; zoom: number; data: Uint8ClampedArray;
   } | null;
+  _notifyChange: () => void;
 };
 
 export type NoiseZoningParams = {
@@ -75,6 +76,15 @@ const NoiseZoning: InternalNoiseZoning = {
   _view: { cameraX: 0, cameraY: 0, zoom: 1 },
   _params: Zoning.getParams(),
   _pixelCache: null,
+  _notifyChange() {
+    if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+    try {
+      const evt = new CustomEvent('noise-overlay-change', { detail: { enabled: !!this.enabled } });
+      window.dispatchEvent(evt);
+    } catch (err) {
+      try { console.warn('[NoiseZoning] Failed to dispatch change event', err); } catch (e) {}
+    }
+  },
   _ensureSize() {
     if (!this._overlayCanvas || !this._baseCanvas) return;
     const parent = this._baseCanvas.parentElement as HTMLElement | null;
@@ -130,31 +140,32 @@ const NoiseZoning: InternalNoiseZoning = {
     if (this._overlayCanvas) {
       this._overlayCanvas.style.display = this.enabled ? 'block' : 'none';
     }
-  // Só redesenha quando estiver habilitado
-  if (this.enabled) this.redraw();
+    // Só redesenha quando estiver habilitado
+    if (this.enabled) this.redraw();
+    this._notifyChange();
   },
 
   reseed() {
-  this._seed = Math.floor(Math.random() * 10000);
-  this._noise = new Noise(this._seed);
+    this._seed = Math.floor(Math.random() * 10000);
+    this._noise = new Noise(this._seed);
     // Propagar para Zoning para manter consistência com as casas
     Zoning.init(this._seed, this._params);
-  this._pixelCache = null;
+    this._pixelCache = null;
     if (this.enabled) this.redraw();
   },
 
   redraw() {
-  // Não faz trabalho algum se desabilitado
-  if (!this.enabled) return;
-  if (!this._overlayCanvas || !this._ctx || !this._noise) return;
-  // Garantir cobertura total antes de desenhar
-  this._ensureSize();
-  const w = this._overlayCanvas.width;
-  const h = this._overlayCanvas.height;
+    // Não faz trabalho algum se desabilitado
+    if (!this.enabled) return;
+    if (!this._overlayCanvas || !this._ctx || !this._noise) return;
+    // Garantir cobertura total antes de desenhar
+    this._ensureSize();
+    const w = this._overlayCanvas.width;
+    const h = this._overlayCanvas.height;
     const imageData = this._ctx.createImageData(w, h);
     const zoneColors = config.render.zoneColors;
-  // Escala do ruído em coordenadas de cena (ajuste conforme necessário)
-  const { baseScale, octaves, lacunarity, gain, thresholds } = this._params;
+    // Escala do ruído em coordenadas de cena (ajuste conforme necessário)
+    const { baseScale, octaves, lacunarity, gain, thresholds } = this._params;
     const cx = w / 2, cy = h / 2;
     const cameraX = this._view.cameraX, cameraY = this._view.cameraY, zoom = this._view.zoom || 1;
     // Cache de pixels: se view for igual, reutiliza
@@ -248,7 +259,7 @@ const NoiseZoning: InternalNoiseZoning = {
       this._overlayCanvas.height = pxH;
     }
     if (this._overlayCanvas) this._overlayCanvas.style.display = this.enabled ? 'block' : 'none';
-  if (this.enabled) this.redraw();
+    if (this.enabled) this.redraw();
   },
   detach() {
     try { this._observer?.disconnect(); } catch {}
@@ -260,7 +271,8 @@ const NoiseZoning: InternalNoiseZoning = {
     this._ctx = null;
     this._noise = null;
     this.enabled = false;
-  this._pixelCache = null;
+    this._pixelCache = null;
+    this._notifyChange();
   },
   setView(view: { cameraX: number; cameraY: number; zoom: number }) {
     this._view = view;
@@ -268,7 +280,8 @@ const NoiseZoning: InternalNoiseZoning = {
   setEnabled(on: boolean) {
     this.enabled = !!on;
     if (this._overlayCanvas) this._overlayCanvas.style.display = this.enabled ? 'block' : 'none';
-  if (this.enabled) this.redraw();
+    if (this.enabled) this.redraw();
+    this._notifyChange();
   },
   setParams(p?: Partial<NoiseZoningParams>) {
     if (!p) return;
