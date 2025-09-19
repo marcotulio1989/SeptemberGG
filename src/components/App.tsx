@@ -14,6 +14,7 @@ const App: React.FC = () => {
     const [charSpeed, setCharSpeed] = useState((config as any).controls.characterSpeedMps);
     const [segLen, setSegLen] = useState((config as any).mapGeneration.DEFAULT_SEGMENT_LENGTH);
     const [heatmapVisible, setHeatmapVisible] = useState((config as any).mapGeneration.DRAW_HEATMAP);
+    const [perlinNoiseVisible, setPerlinNoiseVisible] = useState<boolean>(false);
     const [uiTick, setUiTick] = useState(0); // força re-render para atualizar HUD
     const [outlineMode, setOutlineMode] = useState((config as any).render.roadOutlineMode);
     // Fonte de cor das bordas dos quarteirões: 'base'|'gap'|'outline'|'custom'
@@ -304,6 +305,7 @@ const App: React.FC = () => {
             <GameCanvas interiorTexture={interiorTexture} interiorTextureScale={texScale} interiorTextureAlpha={texAlpha} interiorTextureTint={parseInt(texTint.slice(1),16)} crossfadeEnabled={crossfadeEnabled} crossfadeMs={crossfadeMs}
                 edgeTexture={edgeTexture} edgeScale={edgeScale} edgeAlpha={edgeAlpha}
                 roadLaneTexture={laneTexture} roadLaneScale={laneScale} roadLaneAlpha={laneAlpha}
+                showPerlinNoiseOverlay={perlinNoiseVisible}
             />
             <div id="control-bar" className={controlsCollapsed ? 'collapsed' : ''}>
                 <button id="control-bar-toggle" onClick={() => setControlsCollapsed(c => !c)} style={{ marginRight: 8 }}>
@@ -311,15 +313,21 @@ const App: React.FC = () => {
                 </button>
                 {/* Botões de preset removidos a pedido do usuário */}
                 {/* Toggle de debug removido */}
-                <ToggleButton 
-                    onText="Hide Population Heatmap" 
-                    offText="Show Population Heatmap" 
-                    action={() => { 
-                        config.mapGeneration.DRAW_HEATMAP = !config.mapGeneration.DRAW_HEATMAP; 
+                <ToggleButton
+                    onText="Hide Population Heatmap"
+                    offText="Show Population Heatmap"
+                    action={() => {
+                        config.mapGeneration.DRAW_HEATMAP = !config.mapGeneration.DRAW_HEATMAP;
                         setHeatmapVisible((v: boolean) => !v);
                         setUiTick(t => t + 1);
                     }}
                 />
+                <button
+                    onClick={() => setPerlinNoiseVisible(v => !v)}
+                    style={{ marginLeft: 8 }}
+                >
+                    {perlinNoiseVisible ? 'Hide Perlin Noise' : 'Show Perlin Noise'}
+                </button>
                 <button onClick={() => factorTargetZoom(3 / 2)}>Zoom in</button>
                 <button onClick={() => factorTargetZoom(2 / 3)}>Zoom out</button>
                 {/* Toggle Iso removido */}

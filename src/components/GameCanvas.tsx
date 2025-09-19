@@ -13,6 +13,7 @@ import { MapActions } from '../actions/MapActions';
 import MapStore from '../stores/MapStore';
 import type { Point } from '../generic_modules/math';
 import NoiseZoning from '../overlays/NoiseZoning';
+import PerlinNoiseOverlay from '../overlays/PerlinNoiseOverlay';
 import { createGrassTexture } from '../overlays/grassTexture';
 import Quadtree from '../lib/quadtree';
 // ClipperLib (sem typings completos) - usar require para acessar classes
@@ -36,9 +37,10 @@ interface GameCanvasPropsInternal extends GameCanvasProps {
     roadLaneTexture?: PIXI.Texture | null;
     roadLaneScale?: number;
     roadLaneAlpha?: number;
+    showPerlinNoiseOverlay?: boolean;
 }
 
-const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interiorTextureScale, interiorTextureAlpha, interiorTextureTint, crossfadeEnabled, crossfadeMs, edgeTexture, edgeScale, edgeAlpha, roadLaneTexture, roadLaneScale, roadLaneAlpha }) => {
+const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interiorTextureScale, interiorTextureAlpha, interiorTextureTint, crossfadeEnabled, crossfadeMs, edgeTexture, edgeScale, edgeAlpha, roadLaneTexture, roadLaneScale, roadLaneAlpha, showPerlinNoiseOverlay }) => {
     const canvasContainerRef = useRef<HTMLDivElement>(null);
     const pixiRenderer = useRef<PIXI.IRenderer<PIXI.ICanvas> | null>(null);
     const stage = useRef<PIXI.Container | null>(null);
@@ -66,6 +68,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     const roadLaneTextureRef = useRef<PIXI.Texture | null>(roadLaneTexture || null);
     const edgeTextureRef = useRef<PIXI.Texture | null>(edgeTexture || null);
     const noiseOverlayViewRef = useRef<{ cameraX: number; cameraY: number; zoom: number } | null>(null);
+    const perlinOverlayViewRef = useRef<{ cameraX: number; cameraY: number; zoom: number } | null>(null);
     // Cache para evitar reconstruções pesadas dos marcadores/mascara quando nada mudou
     const laneMarkerCacheRef = useRef<{ key: string; container: PIXI.Container | null } | null>(null);
     const roadLaneScaleRef = useRef<number | undefined>(roadLaneScale);
@@ -88,6 +91,20 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     useEffect(() => {
         try { roadLaneAlphaRef.current = roadLaneAlpha; } catch (e) {}
     }, [roadLaneAlpha]);
+
+    useEffect(() => {
+        try {
+            PerlinNoiseOverlay.setEnabled?.(!!showPerlinNoiseOverlay);
+            if (showPerlinNoiseOverlay) {
+                syncNoiseOverlayView(state.camera.x, state.camera.y, state.zoom);
+                if (typeof PerlinNoiseOverlay.redraw === 'function') {
+                    PerlinNoiseOverlay.redraw();
+                }
+            }
+        } catch (err) {
+            try { console.warn('[GameCanvas] Failed to toggle Perlin overlay', err); } catch (e) {}
+        }
+    }, [showPerlinNoiseOverlay]);
     // Two tiling sprites used for crossfade transitions between interior textures
     const blockInteriorSpriteA = useRef<PIXI.TilingSprite | null>(null);
     const blockInteriorSpriteB = useRef<PIXI.TilingSprite | null>(null);
@@ -116,21 +133,38 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
 
     const syncNoiseOverlayView = (cameraX: number, cameraY: number, zoom: number) => {
         const hasApi = !!NoiseZoning && typeof NoiseZoning.setView === 'function';
-        if (!hasApi) return;
-        const prev = noiseOverlayViewRef.current;
-        const changed = !prev
-            || Math.abs(prev.cameraX - cameraX) > 0.5
-            || Math.abs(prev.cameraY - cameraY) > 0.5
-            || Math.abs(prev.zoom - zoom) > 0.005;
-        if (!changed) return;
+        if (hasApi) {
+            const prev = noiseOverlayViewRef.current;
+            const changed = !prev
+                || Math.abs(prev.cameraX - cameraX) > 0.5
+                || Math.abs(prev.cameraY - cameraY) > 0.5
+                || Math.abs(prev.zoom - zoom) > 0.005;
+            if (changed) {
+                try {
+                    NoiseZoning.setView?.({ cameraX, cameraY, zoom });
+                    noiseOverlayViewRef.current = { cameraX, cameraY, zoom };
+                    if (NoiseZoning.enabled && typeof NoiseZoning.redraw === 'function') {
+                        NoiseZoning.redraw();
+                    }
+                } catch (err) {
+                    try { console.warn('[GameCanvas] Failed to sync NoiseZoning view', err); } catch (e) {}
+                }
+            }
+        }
+        const perlinPrev = perlinOverlayViewRef.current;
+        const perlinChanged = !perlinPrev
+            || Math.abs(perlinPrev.cameraX - cameraX) > 0.5
+            || Math.abs(perlinPrev.cameraY - cameraY) > 0.5
+            || Math.abs(perlinPrev.zoom - zoom) > 0.005;
+        if (!perlinChanged) return;
         try {
-            NoiseZoning.setView?.({ cameraX, cameraY, zoom });
-            noiseOverlayViewRef.current = { cameraX, cameraY, zoom };
-            if (NoiseZoning.enabled && typeof NoiseZoning.redraw === 'function') {
-                NoiseZoning.redraw();
+            PerlinNoiseOverlay.setView?.({ cameraX, cameraY, zoom });
+            perlinOverlayViewRef.current = { cameraX, cameraY, zoom };
+            if (PerlinNoiseOverlay.enabled && typeof PerlinNoiseOverlay.redraw === 'function') {
+                PerlinNoiseOverlay.redraw();
             }
         } catch (err) {
-            try { console.warn('[GameCanvas] Failed to sync NoiseZoning view', err); } catch (e) {}
+            try { console.warn('[GameCanvas] Failed to sync Perlin overlay view', err); } catch (e) {}
         }
     };
 
@@ -2779,6 +2813,18 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         try { console.warn('[GameCanvas] Failed to attach NoiseZoning overlay', e); } catch (err) {}
     }
 
+    try {
+        PerlinNoiseOverlay.attach(canvasEl);
+        if (showPerlinNoiseOverlay) {
+            PerlinNoiseOverlay.setEnabled?.(true);
+            syncNoiseOverlayView(state.camera.x, state.camera.y, state.zoom);
+        } else {
+            PerlinNoiseOverlay.setEnabled?.(false);
+        }
+    } catch (e) {
+        try { console.warn('[GameCanvas] Failed to attach Perlin overlay', e); } catch (err) {}
+    }
+
         const handleResize = () => {
             if (!canvasContainerRef.current) return;
             const { offsetWidth, offsetHeight } = canvasContainerRef.current;
@@ -3126,6 +3172,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             pixiRenderer.current?.destroy();
             canvasContainerRef.current?.removeChild(canvasEl);
             if (NoiseZoning.detach) NoiseZoning.detach();
+            if (PerlinNoiseOverlay.detach) PerlinNoiseOverlay.detach();
         };
     }, []);
 
