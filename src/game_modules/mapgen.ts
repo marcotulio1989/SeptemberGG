@@ -251,10 +251,17 @@ export const heatmap = {
         const val = Math.max(0, Math.min(1, base + jitter));
         return val;
     },
-    calibrateTo(_target: Point) {
-        // No perfil radial, manter o centro fixo em zoningModel.cityCenter
-        this.shiftX = 0;
-        this.shiftY = 0;
+    calibrateTo(target: Point) {
+        // Para perfis radiais (heatmap/concentric), o "deslocamento" é inerentemente
+        // zero porque eles são definidos em relação a um centro fixo. Para outros
+        // modos, o deslocamento pode ser usado para mover a origem do ruído.
+        if (config.zoningModel.mode === 'concentric' || config.zoningModel.mode === 'heatmap') {
+            this.shiftX = 0;
+            this.shiftY = 0;
+        } else {
+            this.shiftX = target.x;
+            this.shiftY = target.y;
+        }
     }
 };
 
