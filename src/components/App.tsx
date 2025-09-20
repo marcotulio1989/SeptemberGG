@@ -23,6 +23,13 @@ const App: React.FC = () => {
             return !!NoiseZoning.enabled;
         }
     });
+    const [fracturedRoadOutlineVisible, setFracturedRoadOutlineVisible] = useState<boolean>(() => {
+        try {
+            return NoiseZoning.getIntersectionOutlineEnabled ? !!NoiseZoning.getIntersectionOutlineEnabled() : false;
+        } catch (e) {
+            return false;
+        }
+    });
     const [uiTick, setUiTick] = useState(0); // força re-render para atualizar HUD
     const [outlineMode, setOutlineMode] = useState((config as any).render.roadOutlineMode);
     // Fonte de cor das bordas dos quarteirões: 'base'|'gap'|'outline'|'custom'
@@ -189,6 +196,31 @@ const App: React.FC = () => {
             window.removeEventListener('noise-overlay-change', handler as EventListener);
         };
     }, []);
+
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        const handler = (event: Event) => {
+            const detail = (event as CustomEvent<{ outline?: boolean }>).detail;
+            if (!detail || typeof detail.outline !== 'boolean') return;
+            const outline = detail.outline as boolean;
+            setFracturedRoadOutlineVisible(prev => (prev === outline ? prev : outline));
+        };
+        window.addEventListener('noise-overlay-outline-change', handler as EventListener);
+        return () => {
+            window.removeEventListener('noise-overlay-outline-change', handler as EventListener);
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!noiseOverlayVisible) return;
+        try {
+            if (typeof NoiseZoning.setIntersectionOutlineEnabled === 'function') {
+                NoiseZoning.setIntersectionOutlineEnabled(fracturedRoadOutlineVisible);
+            }
+        } catch (e) {
+            try { console.warn('[App] Failed to sync fractured road outline state', e); } catch (err) {}
+        }
+    }, [noiseOverlayVisible, fracturedRoadOutlineVisible]);
 
     const [interiorTexture, setInteriorTexture] = useState<PIXI.Texture | null>(null);
     const [controlsCollapsed, setControlsCollapsed] = useState<boolean>(false);
@@ -362,6 +394,23 @@ const App: React.FC = () => {
                 />
                 <button onClick={() => setNoiseOverlayVisible(v => !v)}>
                     {noiseOverlayVisible ? 'Ruído Perlin: ON' : 'Ruído Perlin: OFF'}
+                </button>
+                <button
+                    onClick={() => {
+                        setFracturedRoadOutlineVisible(prev => {
+                            const next = !prev;
+                            try {
+                                if (typeof NoiseZoning.setIntersectionOutlineEnabled === 'function') {
+                                    NoiseZoning.setIntersectionOutlineEnabled(next);
+                                }
+                            } catch (e) {
+                                try { console.warn('[App] Failed to toggle fractured road outline', e); } catch (err) {}
+                            }
+                            return next;
+                        });
+                    }}
+                >
+                    {fracturedRoadOutlineVisible ? 'Esconder Ruas Rachadas' : 'Mostrar Ruas Rachadas'}
                 </button>
                 <button onClick={() => factorTargetZoom(3 / 2)}>Zoom in</button>
                 <button onClick={() => factorTargetZoom(2 / 3)}>Zoom out</button>
