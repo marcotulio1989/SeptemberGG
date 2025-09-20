@@ -50,6 +50,8 @@ export type NoiseZoningAPI = {
   getNoiseThreshold?: () => number;
   setIntersectionOutlineEnabled?: (on: boolean) => void;
   getIntersectionOutlineEnabled?: () => boolean;
+  setCrackedRoadOutlineEnabled?: (on: boolean) => void;
+  getCrackedRoadOutlineEnabled?: () => boolean;
   setPixelSize?: (px: number) => void;
   getPixelSize?: () => number;
 };
@@ -701,6 +703,18 @@ const NoiseZoning: InternalNoiseZoning = {
   },
   getIntersectionOutlineEnabled() {
     return !!(this as any)._showIntersectionOutline;
+  },
+  setCrackedRoadOutlineEnabled(on: boolean) {
+    if (typeof this.setIntersectionOutlineEnabled === 'function') {
+      this.setIntersectionOutlineEnabled(on);
+    } else {
+      (this as any)._showIntersectionOutline = !!on;
+    }
+  },
+  getCrackedRoadOutlineEnabled() {
+    return typeof this.getIntersectionOutlineEnabled === 'function'
+      ? this.getIntersectionOutlineEnabled()
+      : !!(this as any)._showIntersectionOutline;
   },
 };
 
