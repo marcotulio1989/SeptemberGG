@@ -9,6 +9,25 @@ import ToggleButton from './ToggleButton';
 import MapStore from '../stores/MapStore';
 import NoiseZoning from '../overlays/NoiseZoning';
 import OverlayToggle from './OverlayToggle';
+import { CRACK_PATTERNS, CrackPatternAssignments } from '../lib/crackPatterns';
+
+const CRACK_RANDOMIZE_DEFAULTS = {
+    patterns: true,
+    color: true,
+    alpha: true,
+    stroke: true,
+    seedDensity: true,
+    sampleAlong: true,
+    sampleAcross: true,
+    threshold: true,
+    minLength: true,
+    maxSeeds: true,
+    maxSamplesAlong: true,
+    maxSamplesAcross: true,
+    probeStep: true,
+} as const;
+
+type CrackRandomizeFlags = typeof CRACK_RANDOMIZE_DEFAULTS;
 // Controles avançados removidos: sem overlay/zonas aleatórias aqui
 
 const App: React.FC = () => {
@@ -249,6 +268,22 @@ const App: React.FC = () => {
     const [crackMaxSamplesAlong, setCrackMaxSamplesAlong] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAlong ?? 240);
     const [crackMaxSamplesAcross, setCrackMaxSamplesAcross] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAcross ?? 96);
     const [crackProbeStep, setCrackProbeStep] = useState<number>(() => (config as any).render.crackedRoadProbeStepM ?? 1.1);
+    const [crackRandomizeFlags, setCrackRandomizeFlags] = useState<CrackRandomizeFlags>(() => {
+        if (typeof window === 'undefined') return { ...CRACK_RANDOMIZE_DEFAULTS };
+        try {
+            const stored = localStorage.getItem('crackRandomizeFlags');
+            if (stored) {
+                const parsed = JSON.parse(stored);
+                if (parsed && typeof parsed === 'object') {
+                    return { ...CRACK_RANDOMIZE_DEFAULTS, ...parsed } as CrackRandomizeFlags;
+                }
+            }
+        } catch (e) {}
+        return { ...CRACK_RANDOMIZE_DEFAULTS };
+    });
+    useEffect(() => {
+        try { localStorage.setItem('crackRandomizeFlags', JSON.stringify(crackRandomizeFlags)); } catch (e) {}
+    }, [crackRandomizeFlags]);
     const broadcastCrackedRoadConfigChange = useCallback(() => {
         try { window.dispatchEvent(new CustomEvent('cracked-roads-config-change')); } catch (e) {}
     }, []);
@@ -306,6 +341,13 @@ const App: React.FC = () => {
         setUiTick(t => t + 1);
     };
 
+    const updateCrackRandomFlag = useCallback((key: keyof CrackRandomizeFlags, value: boolean) => {
+        setCrackRandomizeFlags(prev => {
+            if (prev[key] === value) return prev;
+            return { ...prev, [key]: value };
+        });
+    }, []);
+
     const resetCrackConfig = () => {
         setCrackColor('#00e5ff');
         setCrackAlpha(0.88);
@@ -319,20 +361,132 @@ const App: React.FC = () => {
         setCrackMaxSamplesAlong(240);
         setCrackMaxSamplesAcross(96);
         setCrackProbeStep(1.1);
+        try { (config as any).render.crackedRoadPatternAssignments = null; } catch (e) {}
+        broadcastCrackedRoadConfigChange();
+        setUiTick(t => t + 1);
     };
+
+    const randomizeCracks = useCallback(() => {
+        const pick = <T,>(arr: T[]): T => arr[Math.max(0, Math.min(arr.length - 1, Math.floor(Math.random() * arr.length)))];
+        const rand = (min: number, max: number) => min + Math.random() * (max - min);
+        const round = (value: number, precision = 2) => {
+            const pow = Math.pow(10, precision);
+            return Math.round(value * pow) / pow;
+        };
+        const flags = crackRandomizeFlags;
+
+        if (flags.color) {
+            const palette = ['#00e5ff', '#7df1ff', '#22d3ee', '#5eead4', '#f97316', '#facc15', '#fb7185', '#a855f7', '#38bdf8', '#f59e0b'];
+            setCrackColor(pick(palette));
+        }
+        if (flags.alpha) {
+            setCrackAlpha(round(rand(0.35, 0.92), 2));
+        }
+        if (flags.stroke) {
+            setCrackStrokePx(round(rand(0.8, 2.2), 2));
+        }
+        if (flags.seedDensity) {
+            setCrackSeedDensity(round(rand(0.02, 0.09), 3));
+        }
+        if (flags.sampleAlong) {
+            setCrackSampleAlong(round(rand(1.0, 2.5), 2));
+        }
+        if (flags.sampleAcross) {
+            setCrackSampleAcross(round(rand(0.8, 1.7), 2));
+        }
+        if (flags.threshold) {
+            setCrackThreshold(round(rand(0.45, 0.82), 2));
+        }
+        if (flags.minLength) {
+            setCrackMinLength(round(rand(3.0, 8.5), 2));
+        }
+        if (flags.maxSeeds) {
+            setCrackMaxSeeds(Math.round(rand(220, 720)));
+        }
+        if (flags.maxSamplesAlong) {
+            setCrackMaxSamplesAlong(Math.round(rand(140, 320)));
+        }
+        if (flags.maxSamplesAcross) {
+            setCrackMaxSamplesAcross(Math.round(rand(70, 160)));
+        }
+        if (flags.probeStep) {
+            setCrackProbeStep(round(rand(0.6, 1.6), 2));
+        }
+
+        let patternAssignmentsResult: CrackPatternAssignments | null | undefined = undefined;
+        if (flags.patterns) {
+            const patternCount = CRACK_PATTERNS.length;
+            if (patternCount) {
+                const createTester = (NoiseZoning as any)?.createIntersectionTester;
+                if (typeof createTester !== 'function') {
+                    try { console.warn('[App] Random cracks: tester unavailable'); } catch (e) {}
+                } else {
+                    const tester = createTester.call(NoiseZoning) as ((x: number, y: number) => boolean) | null;
+                    if (!tester) {
+                        try { console.warn('[App] Random cracks: tester returned null'); } catch (e) {}
+                    } else {
+                        const segments = MapStore.getSegments();
+                        if (segments && segments.length) {
+                            const assignments: CrackPatternAssignments = {
+                                version: Date.now(),
+                                segments: {},
+                            };
+                            let applied = 0;
+                            const probeStep = Math.max(0.25, (config as any).render?.crackedRoadProbeStepM ?? 1.1);
+                            segments.forEach((segment, index) => {
+                                if (!segment || !segment.r) return;
+                                const start = segment.r.start;
+                                const end = segment.r.end;
+                                const dx = end.x - start.x;
+                                const dy = end.y - start.y;
+                                const length = Math.hypot(dx, dy);
+                                if (!(length > 1e-3)) return;
+                                const ux = dx / length;
+                                const uy = dy / length;
+                                const nx = -uy;
+                                const ny = ux;
+                                const roadWidth = Math.max(1.5, segment.width || 0);
+                                const stepCount = Math.max(6, Math.ceil(length / probeStep));
+                                let intersects = false;
+                                for (let s = 0; s <= stepCount && !intersects; s++) {
+                                    const t = stepCount === 0 ? 0 : s / stepCount;
+                                    const px = start.x + dx * t;
+                                    const py = start.y + dy * t;
+                                    if (tester(px, py)) { intersects = true; break; }
+                                    const lateralSamples = 2;
+                                    for (let l = -lateralSamples; l <= lateralSamples && !intersects; l++) {
+                                        if (l === 0) continue;
+                                        const offset = (l / lateralSamples) * (roadWidth * 0.5);
+                                        const lx = px + nx * offset;
+                                        const ly = py + ny * offset;
+                                        if (tester(lx, ly)) { intersects = true; }
+                                    }
+                                }
+                                if (!intersects) return;
+                                const pattern = CRACK_PATTERNS[Math.floor(Math.random() * patternCount)];
+                                const key = segment?.id != null ? String(segment.id) : `idx:${index}`;
+                                assignments.segments[key] = pattern.id;
+                                applied++;
+                            });
+                            patternAssignmentsResult = applied ? assignments : null;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (patternAssignmentsResult !== undefined) {
+            try { (config as any).render.crackedRoadPatternAssignments = patternAssignmentsResult; } catch (e) {}
+        }
+        broadcastCrackedRoadConfigChange();
+        setUiTick(t => t + 1);
+    }, [broadcastCrackedRoadConfigChange, crackRandomizeFlags]);
 
     useEffect(() => {
         try { (config as any).render.showCrackedRoadsOutline = crackedRoadsVisible; } catch (e) {}
         broadcastCrackedRoadConfigChange();
         try {
-            const current = NoiseZoning.getIntersectionOutlineEnabled?.();
-            if (typeof current === 'boolean') {
-                if (current !== crackedRoadsVisible) {
-                    NoiseZoning.setIntersectionOutlineEnabled?.(crackedRoadsVisible);
-                }
-            } else {
-                NoiseZoning.setIntersectionOutlineEnabled?.(crackedRoadsVisible);
-            }
+            NoiseZoning.setIntersectionOutlineEnabled?.(false);
         } catch (e) {}
     }, [crackedRoadsVisible, broadcastCrackedRoadConfigChange]);
 
@@ -852,7 +1006,15 @@ const App: React.FC = () => {
                         }}
                     >
                         <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Cor</label>
+                            <label style={{ fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <input
+                                    type="checkbox"
+                                    checked={crackRandomizeFlags.color}
+                                    onChange={(e) => updateCrackRandomFlag('color', e.target.checked)}
+                                    style={{ margin: 0 }}
+                                />
+                                Cor
+                            </label>
                             <input
                                 type="color"
                                 value={crackColor}
@@ -868,7 +1030,15 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Opacidade</label>
+                            <label style={{ fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <input
+                                    type="checkbox"
+                                    checked={crackRandomizeFlags.alpha}
+                                    onChange={(e) => updateCrackRandomFlag('alpha', e.target.checked)}
+                                    style={{ margin: 0 }}
+                                />
+                                Opacidade
+                            </label>
                             <input
                                 type="number"
                                 min={0}
@@ -890,7 +1060,15 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Espessura (px)</label>
+                            <label style={{ fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <input
+                                    type="checkbox"
+                                    checked={crackRandomizeFlags.stroke}
+                                    onChange={(e) => updateCrackRandomFlag('stroke', e.target.checked)}
+                                    style={{ margin: 0 }}
+                                />
+                                Espessura (px)
+                            </label>
                             <input
                                 type="number"
                                 min={0.05}
@@ -911,7 +1089,15 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Densidade Seeds</label>
+                            <label style={{ fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <input
+                                    type="checkbox"
+                                    checked={crackRandomizeFlags.seedDensity}
+                                    onChange={(e) => updateCrackRandomFlag('seedDensity', e.target.checked)}
+                                    style={{ margin: 0 }}
+                                />
+                                Densidade Seeds
+                            </label>
                             <input
                                 type="number"
                                 min={0.001}
@@ -932,7 +1118,15 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Amostras (comprimento)</label>
+                            <label style={{ fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <input
+                                    type="checkbox"
+                                    checked={crackRandomizeFlags.sampleAlong}
+                                    onChange={(e) => updateCrackRandomFlag('sampleAlong', e.target.checked)}
+                                    style={{ margin: 0 }}
+                                />
+                                Amostras (comprimento)
+                            </label>
                             <input
                                 type="number"
                                 min={0.1}
@@ -953,7 +1147,15 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Amostras (largura)</label>
+                            <label style={{ fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <input
+                                    type="checkbox"
+                                    checked={crackRandomizeFlags.sampleAcross}
+                                    onChange={(e) => updateCrackRandomFlag('sampleAcross', e.target.checked)}
+                                    style={{ margin: 0 }}
+                                />
+                                Amostras (largura)
+                            </label>
                             <input
                                 type="number"
                                 min={0.1}
@@ -974,7 +1176,15 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Threshold Voronoi</label>
+                            <label style={{ fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <input
+                                    type="checkbox"
+                                    checked={crackRandomizeFlags.threshold}
+                                    onChange={(e) => updateCrackRandomFlag('threshold', e.target.checked)}
+                                    style={{ margin: 0 }}
+                                />
+                                Threshold Voronoi
+                            </label>
                             <input
                                 type="number"
                                 min={0}
@@ -996,7 +1206,15 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Comprimento mín. (m)</label>
+                            <label style={{ fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <input
+                                    type="checkbox"
+                                    checked={crackRandomizeFlags.minLength}
+                                    onChange={(e) => updateCrackRandomFlag('minLength', e.target.checked)}
+                                    style={{ margin: 0 }}
+                                />
+                                Comprimento mín. (m)
+                            </label>
                             <input
                                 type="number"
                                 min={0.5}
@@ -1017,7 +1235,15 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Máx. Seeds</label>
+                            <label style={{ fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <input
+                                    type="checkbox"
+                                    checked={crackRandomizeFlags.maxSeeds}
+                                    onChange={(e) => updateCrackRandomFlag('maxSeeds', e.target.checked)}
+                                    style={{ margin: 0 }}
+                                />
+                                Máx. Seeds
+                            </label>
                             <input
                                 type="number"
                                 min={8}
@@ -1038,7 +1264,15 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Máx. Samples (comprimento)</label>
+                            <label style={{ fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <input
+                                    type="checkbox"
+                                    checked={crackRandomizeFlags.maxSamplesAlong}
+                                    onChange={(e) => updateCrackRandomFlag('maxSamplesAlong', e.target.checked)}
+                                    style={{ margin: 0 }}
+                                />
+                                Máx. Samples (comprimento)
+                            </label>
                             <input
                                 type="number"
                                 min={4}
@@ -1059,7 +1293,15 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Máx. Samples (largura)</label>
+                            <label style={{ fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <input
+                                    type="checkbox"
+                                    checked={crackRandomizeFlags.maxSamplesAcross}
+                                    onChange={(e) => updateCrackRandomFlag('maxSamplesAcross', e.target.checked)}
+                                    style={{ margin: 0 }}
+                                />
+                                Máx. Samples (largura)
+                            </label>
                             <input
                                 type="number"
                                 min={4}
@@ -1080,7 +1322,15 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Passo da sonda (m)</label>
+                            <label style={{ fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <input
+                                    type="checkbox"
+                                    checked={crackRandomizeFlags.probeStep}
+                                    onChange={(e) => updateCrackRandomFlag('probeStep', e.target.checked)}
+                                    style={{ margin: 0 }}
+                                />
+                                Passo da sonda (m)
+                            </label>
                             <input
                                 type="number"
                                 min={0.25}
@@ -1101,23 +1351,56 @@ const App: React.FC = () => {
                             />
                         </div>
                     </div>
-                    <button
-                        type="button"
-                        onClick={resetCrackConfig}
+                    <div
                         style={{
                             marginTop: 16,
-                            width: '100%',
-                            padding: '6px 0',
-                            borderRadius: 4,
-                            border: 'none',
-                            background: '#263238',
-                            color: '#ECEFF1',
-                            cursor: 'pointer',
-                            fontWeight: 600,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 8,
                         }}
                     >
-                        Restaurar padrões
-                    </button>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 600 }}>
+                            <input
+                                type="checkbox"
+                                checked={crackRandomizeFlags.patterns}
+                                onChange={(e) => updateCrackRandomFlag('patterns', e.target.checked)}
+                                style={{ margin: 0 }}
+                            />
+                            Randomizar padrões por rua
+                        </label>
+                        <button
+                            type="button"
+                            onClick={randomizeCracks}
+                            style={{
+                                width: '100%',
+                                padding: '6px 0',
+                                borderRadius: 4,
+                                border: 'none',
+                                background: '#1565c0',
+                                color: '#ECEFF1',
+                                cursor: 'pointer',
+                                fontWeight: 600,
+                            }}
+                        >
+                            Randomizar
+                        </button>
+                        <button
+                            type="button"
+                            onClick={resetCrackConfig}
+                            style={{
+                                width: '100%',
+                                padding: '6px 0',
+                                borderRadius: 4,
+                                border: 'none',
+                                background: '#263238',
+                                color: '#ECEFF1',
+                                cursor: 'pointer',
+                                fontWeight: 600,
+                            }}
+                        >
+                            Restaurar padrões
+                        </button>
+                    </div>
                 </div>
             )}
             {heatmapVisible && (
