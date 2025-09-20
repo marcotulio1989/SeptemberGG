@@ -21,6 +21,7 @@ import { CrackPatternAssignments, getCrackPatternById } from '../lib/crackPatter
 const ClipperLib: any = require('clipper-lib');
 
 type LocalPoint = [number, number];
+type IsoPoint = { x: number; y: number };
 
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 
@@ -57,6 +58,59 @@ const polylineLength = (poly: LocalPoint[]) => {
         total += Math.hypot(dx, dy);
     }
     return total;
+};
+
+const clampToByte = (value: number) => Math.max(0, Math.min(255, Math.round(value)));
+
+const lightenColor = (color: number, amount: number) => {
+    const t = clamp(amount, 0, 1);
+    const r = (color >> 16) & 0xff;
+    const g = (color >> 8) & 0xff;
+    const b = color & 0xff;
+    const mix = (channel: number) => clampToByte(channel + (255 - channel) * t);
+    return (mix(r) << 16) | (mix(g) << 8) | mix(b);
+};
+
+const darkenColor = (color: number, amount: number) => {
+    const t = clamp(amount, 0, 1);
+    const r = (color >> 16) & 0xff;
+    const g = (color >> 8) & 0xff;
+    const b = color & 0xff;
+    const mix = (channel: number) => clampToByte(channel - channel * t);
+    return (mix(r) << 16) | (mix(g) << 8) | mix(b);
+};
+
+const jitterIsoPolyline = (points: IsoPoint[], amplitude: number, seed: number): IsoPoint[] => {
+    if (!(amplitude > 0)) return points;
+    const rng = createPRNG(seed);
+    return points.map((pt) => ({
+        x: pt.x + (rng() - 0.5) * 2 * amplitude,
+        y: pt.y + (rng() - 0.5) * 2 * amplitude,
+    }));
+};
+
+const drawIsoStroke = (
+    graphics: PIXI.Graphics,
+    basePoints: IsoPoint[],
+    options: { width: number; color: number; alpha: number; jitter: number; seed: number },
+) => {
+    const { width, color, alpha, jitter, seed } = options;
+    if (!graphics || basePoints.length < 2) return;
+    if (!(width > 0) || !(alpha > 0)) return;
+    const pts = jitter > 0 ? jitterIsoPolyline(basePoints, jitter, seed) : basePoints;
+    graphics.lineStyle({
+        width,
+        color,
+        alpha,
+        alignment: 0.5,
+        cap: PIXI.LINE_CAP.ROUND,
+        join: PIXI.LINE_JOIN.ROUND,
+        miterLimit: 2,
+    });
+    graphics.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) {
+        graphics.lineTo(pts[i].x, pts[i].y);
+    }
 };
 
 const marchingSquaresContoursLocal = (
@@ -1333,22 +1387,68 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 const baseX = start.x + ux * startOffset;
                 const baseY = start.y + uy * startOffset;
                 const minContourLen = Math.max(roadWidth * 0.35, 2.5);
-                for (const contour of contours) {
-                    if (!contour || contour.length < 2) continue;
-                    if (polylineLength(contour) < minContourLen) continue;
-                    graphics.lineStyle(segStrokePx, segColor, segAlpha, 0.5, true);
-                    contour.forEach((pt, idx) => {
-                        const along = pt[0];
-                        const lateral = pt[1];
+                contours.forEach((contour, contourIndex) => {
+                    if (!contour || contour.length < 2) return;
+                    if (polylineLength(contour) < minContourLen) return;
+                    const isoPoints: IsoPoint[] = [];
+                    for (let i = 0; i < contour.length; i++) {
+                        const [along, lateral] = contour[i];
                         const worldPt = {
                             x: baseX + ux * along + nx * lateral,
                             y: baseY + uy * along + ny * lateral,
                         };
                         const iso = worldToIso(worldPt);
-                        if (idx === 0) graphics.moveTo(iso.x, iso.y); else graphics.lineTo(iso.x, iso.y);
+                        if (!Number.isFinite(iso.x) || !Number.isFinite(iso.y)) continue;
+                        isoPoints.push({ x: iso.x, y: iso.y });
+                    }
+                    if (isoPoints.length < 2) return;
+                    const styleSeed = hashNumbers(hash, contourIndex, 0x9e3779b9);
+                    const styleRng = createPRNG(styleSeed);
+                    const styleValues: number[] = [];
+                    for (let v = 0; v < 8; v++) styleValues.push(styleRng());
+                    const widthFactor = 0.82 + styleValues[0] * 0.36;
+                    const alphaFactor = 0.72 + styleValues[1] * 0.4;
+                    const jitterFactor = 0.5 + styleValues[2] * 0.7;
+                    const highlightFactor = 0.32 + styleValues[3] * 0.28;
+                    const highlightAlphaFactor = 1.05 + styleValues[4] * 0.45;
+                    const glowWidthFactor = 1.7 + styleValues[5] * 0.6;
+                    const glowAlphaFactor = 0.1 + styleValues[6] * 0.18;
+                    const highlightJitterFactor = 0.35 + styleValues[7] * 0.45;
+                    const baseWidthPx = Math.max(0.05, segStrokePx * widthFactor);
+                    const baseAlpha = clamp(segAlpha * alphaFactor, 0.04, 1);
+                    const baseJitter = baseWidthPx * jitterFactor;
+                    const highlightWidth = Math.max(0.2, baseWidthPx * highlightFactor);
+                    const highlightAlpha = clamp(baseAlpha * highlightAlphaFactor, 0.08, 1);
+                    const glowWidth = Math.max(baseWidthPx * glowWidthFactor, baseWidthPx + 0.25);
+                    const glowAlpha = clamp(baseAlpha * glowAlphaFactor, 0.02, 0.65);
+                    const glowColor = darkenColor(segColor, 0.35);
+                    const highlightColor = lightenColor(segColor, 0.4 + styleValues[3] * 0.2);
+                    const baseSeed = hashNumbers(styleSeed, 0x51eb, contourIndex);
+                    const glowSeed = hashNumbers(styleSeed, 0x77ad, contourIndex);
+                    const highlightSeed = hashNumbers(styleSeed, 0xa991, contourIndex);
+                    drawIsoStroke(graphics, isoPoints, {
+                        width: glowWidth,
+                        color: glowColor,
+                        alpha: glowAlpha,
+                        jitter: baseJitter * 1.15,
+                        seed: glowSeed,
+                    });
+                    drawIsoStroke(graphics, isoPoints, {
+                        width: baseWidthPx,
+                        color: segColor,
+                        alpha: baseAlpha,
+                        jitter: baseJitter,
+                        seed: baseSeed,
+                    });
+                    drawIsoStroke(graphics, isoPoints, {
+                        width: highlightWidth,
+                        color: highlightColor,
+                        alpha: highlightAlpha,
+                        jitter: baseJitter * highlightJitterFactor,
+                        seed: highlightSeed,
                     });
                     drewAny = true;
-                }
+                });
             });
         });
 
