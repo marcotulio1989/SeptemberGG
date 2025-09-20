@@ -419,27 +419,10 @@ const NoiseZoning: InternalNoiseZoning = {
       for (let gx = 0; gx < coarseW; gx++) {
         const idx = gy * coarseW + gx;
         const sampleScreenX = minPx + (gx + 0.5) * cellPxW;
-        const { x: worldX, y: worldY } = screenToWorld(sampleScreenX, sampleScreenY);
-        // Interpolate noise from a world-aligned grid. This prevents the visual "swimming"
-        // artifact by creating smooth transitions instead of nearest-neighbor snapping.
-        const wx_s = worldX * baseScale;
-        const wy_s = worldY * baseScale;
-        const worldStep_s = worldStep * baseScale;
-
-        const x0 = Math.floor(wx_s / worldStep_s) * worldStep_s;
-        const x1 = x0 + worldStep_s;
-        const y0 = Math.floor(wy_s / worldStep_s) * worldStep_s;
-        const y1 = y0 + worldStep_s;
-
-        const n00 = sampleWarpedNoise(this._noise, x0, y0, octaves, lacunarity, gain);
-        const n10 = sampleWarpedNoise(this._noise, x1, y0, octaves, lacunarity, gain);
-        const n01 = sampleWarpedNoise(this._noise, x0, y1, octaves, lacunarity, gain);
-        const n11 = sampleWarpedNoise(this._noise, x1, y1, octaves, lacunarity, gain);
-
-        const tx = (wx_s - x0) / worldStep_s;
-        const ty = (wy_s - y0) / worldStep_s;
-
-        coarse[idx] = bilerp(n00, n10, n01, n11, tx, ty);
+        // Sample noise in screen-space to make the pattern static relative to the screen.
+        // The scale is adjusted by zoom to maintain a consistent level of detail.
+        const screenScale = baseScale / (zoom * 100);
+        coarse[idx] = sampleWarpedNoise(this._noise, sampleScreenX * screenScale, sampleScreenY * screenScale, octaves, lacunarity, gain);
       }
     }
     // Build a rasterized low-resolution mask of roads once for this view (coarse grid). This is much faster
