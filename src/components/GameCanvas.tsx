@@ -118,11 +118,33 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         const hasApi = !!NoiseZoning && typeof NoiseZoning.setView === 'function';
         if (!hasApi) return;
         const prev = noiseOverlayViewRef.current;
-        const changed = !prev
-            || Math.abs(prev.cameraX - cameraX) > 0.5
-            || Math.abs(prev.cameraY - cameraY) > 0.5
-            || Math.abs(prev.zoom - zoom) > 0.005;
-        if (!changed) return;
+        let needsUpdate = !prev;
+        if (prev) {
+            const rCfg = (config as any).render || {};
+            const pixelThreshold = 0.35; // roughly one-third of a screen pixel
+            const zoomThreshold = 0.0015; // ~0.15% zoom delta
+            let dxPx: number;
+            let dyPx: number;
+            if (rCfg.mode === 'isometric') {
+                const isoA = rCfg.isoA ?? 1;
+                const isoB = rCfg.isoB ?? 0.5;
+                const isoC = rCfg.isoC ?? -1;
+                const isoD = rCfg.isoD ?? 0.5;
+                const prevIsoX = isoA * prev.cameraX + isoC * prev.cameraY;
+                const prevIsoY = isoB * prev.cameraX + isoD * prev.cameraY;
+                const curIsoX = isoA * cameraX + isoC * cameraY;
+                const curIsoY = isoB * cameraX + isoD * cameraY;
+                dxPx = Math.abs(curIsoX - prevIsoX) * zoom;
+                dyPx = Math.abs(curIsoY - prevIsoY) * zoom;
+            } else {
+                dxPx = Math.abs(prev.cameraX - cameraX) * zoom;
+                dyPx = Math.abs(prev.cameraY - cameraY) * zoom;
+            }
+            const pixelDelta = Math.max(dxPx, dyPx);
+            const zoomDelta = Math.abs((prev.zoom ?? zoom) - zoom);
+            needsUpdate = pixelDelta > pixelThreshold || zoomDelta > zoomThreshold;
+        }
+        if (!needsUpdate) return;
         try {
             NoiseZoning.setView?.({ cameraX, cameraY, zoom });
             noiseOverlayViewRef.current = { cameraX, cameraY, zoom };
