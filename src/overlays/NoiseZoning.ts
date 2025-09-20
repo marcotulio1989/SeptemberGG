@@ -420,10 +420,14 @@ const NoiseZoning: InternalNoiseZoning = {
         const idx = gy * coarseW + gx;
         const sampleScreenX = minPx + (gx + 0.5) * cellPxW;
         const { x: worldX, y: worldY } = screenToWorld(sampleScreenX, sampleScreenY);
-        // Snap world coordinates to a grid. This anchors the noise pattern to the world,
-        // preventing the visual "swimming" artifact when the camera moves.
-        const snappedWorldX = Math.round(worldX / worldStep) * worldStep;
-        const snappedWorldY = Math.round(worldY / worldStep) * worldStep;
+        // Snap world coordinates to a grid aligned with the world origin. Using floor keeps
+        // the sampled value stable for every point inside the same world cell, ensuring the
+        // pixel blocks remain fixed while panning the camera. We sample at the cell center so
+        // the effective quantized grid spans [i*worldStep, (i+1)*worldStep).
+        const cellX = Math.floor(worldX / worldStep);
+        const cellY = Math.floor(worldY / worldStep);
+        const snappedWorldX = (cellX + 0.5) * worldStep;
+        const snappedWorldY = (cellY + 0.5) * worldStep;
 
         coarse[idx] = sampleWarpedNoise(this._noise, snappedWorldX * baseScale, snappedWorldY * baseScale, octaves, lacunarity, gain);
       }
