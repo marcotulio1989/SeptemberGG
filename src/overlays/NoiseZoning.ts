@@ -550,26 +550,90 @@ const NoiseZoning: InternalNoiseZoning = {
       if (this._contourCache && this._contourCache.key === contourKey) {
         roadPolys = this._contourCache.contours || [];
       } else {
-        roadPolys = marchingSquaresContoursScreen(intersectionMask, coarseW, coarseH, minPx, minPy, cellPxW, cellPxH) || [];
+        roadPolys = marchingSquaresContoursScreen(coarseRoadMask, coarseW, coarseH, minPx, minPy, cellPxW, cellPxH) || [];
         this._contourCache = { key: contourKey, contours: roadPolys };
       }
+      const sampleMaskAt = (mask: Uint8Array, sx: number, sy: number) => {
+        if (!isFinite(sx) || !isFinite(sy)) return 0;
+        const gx = Math.floor((sx - minPx) / Math.max(1e-6, cellPxW));
+        const gy = Math.floor((sy - minPy) / Math.max(1e-6, cellPxH));
+        if (gx < 0 || gy < 0 || gx >= coarseW || gy >= coarseH) return 0;
+        return mask[gy * coarseW + gx] ? 1 : 0;
+      };
+      const sampleIntersectionAt = (sx: number, sy: number) => sampleMaskAt(intersectionMask, sx, sy);
+      const sampleRoadAt = (sx: number, sy: number) => sampleMaskAt(coarseRoadMask, sx, sy);
       try {
         this._ctx.save();
         this._ctx.strokeStyle = '#ffffff';
         this._ctx.lineWidth = Math.max(1, 2 * (window.devicePixelRatio || 1));
+        this._ctx.lineJoin = 'round';
+        this._ctx.lineCap = 'round';
+        const eps = 0.45 * Math.min(cellPxW, cellPxH);
         for (const poly of roadPolys) {
           if (!poly || poly.length < 2) continue;
-          this._ctx.beginPath();
-          this._ctx.moveTo(poly[0][0], poly[0][1]);
-          for (let i = 1; i < poly.length; i++) {
-            this._ctx.lineTo(poly[i][0], poly[i][1]);
+          const n = poly.length;
+          let isClosed = false;
+          if (n > 2) {
+            const first = poly[0];
+            const last = poly[n - 1];
+            if (Math.hypot(first[0] - last[0], first[1] - last[1]) < 1e-3) {
+              isClosed = true;
+            }
           }
-          const first = poly[0];
-          const last = poly[poly.length - 1];
-          if (poly.length > 2 && Math.hypot(first[0] - last[0], first[1] - last[1]) < 1e-3) {
-            this._ctx.closePath();
+          let orientation = 0;
+          if (isClosed) {
+            let area = 0;
+            for (let i = 0; i < n; i++) {
+              const [x1, y1] = poly[i];
+              const [x2, y2] = poly[(i + 1) % n];
+              area += (x1 * y2) - (x2 * y1);
+            }
+            orientation = area >= 0 ? 1 : -1;
           }
-          this._ctx.stroke();
+          const limit = isClosed ? n : n - 1;
+          for (let i = 0; i < limit; i++) {
+            const a = poly[i];
+            const b = poly[(i + 1) % n];
+            const dx = b[0] - a[0];
+            const dy = b[1] - a[1];
+            const len = Math.hypot(dx, dy);
+            if (!isFinite(len) || len < 1e-6) continue;
+            const midX = (a[0] + b[0]) * 0.5;
+            const midY = (a[1] + b[1]) * 0.5;
+            let nx = -dy / len;
+            let ny = dx / len;
+            if (orientation > 0) {
+              nx = dy / len;
+              ny = -dx / len;
+            } else if (orientation < 0) {
+              nx = -dy / len;
+              ny = dx / len;
+            }
+            let insideX = midX + nx * eps;
+            let insideY = midY + ny * eps;
+            let outsideX = midX - nx * eps;
+            let outsideY = midY - ny * eps;
+            let roadInside = sampleRoadAt(insideX, insideY);
+            let roadOutside = sampleRoadAt(outsideX, outsideY);
+            if (!roadInside && roadOutside) {
+              nx = -nx;
+              ny = -ny;
+              insideX = midX + nx * eps;
+              insideY = midY + ny * eps;
+              outsideX = midX - nx * eps;
+              outsideY = midY - ny * eps;
+              roadInside = sampleRoadAt(insideX, insideY);
+              roadOutside = sampleRoadAt(outsideX, outsideY);
+            }
+            // Only draw edges that separate road interior from exterior
+            if (!roadInside || roadOutside) continue;
+            if (!sampleIntersectionAt(insideX, insideY)) continue;
+            if (sampleIntersectionAt(outsideX, outsideY)) continue;
+            this._ctx.beginPath();
+            this._ctx.moveTo(a[0], a[1]);
+            this._ctx.lineTo(b[0], b[1]);
+            this._ctx.stroke();
+          }
         }
       } catch (e) {
         // ignore drawing errors
