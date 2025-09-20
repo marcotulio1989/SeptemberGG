@@ -503,8 +503,16 @@ const NoiseZoning: InternalNoiseZoning = {
     // build intersection mask at coarse resolution: 1 where road mask AND noise > threshold
     const noiseThreshold = (this as any)._noiseThreshold ?? 0.5;
     const intersectionMask = new Uint8Array(coarseW * coarseH);
+    let roadMaskChecksum = 2166136261 >>> 0;
+    let intersectionChecksum = 2166136261 >>> 0;
     for (let i = 0; i < coarse.length; i++) {
-      intersectionMask[i] = (coarse[i] > noiseThreshold && coarseRoadMask[i]) ? 1 : 0;
+      const road = coarseRoadMask[i] ? 1 : 0;
+      const val = (coarse[i] > noiseThreshold && road) ? 1 : 0;
+      intersectionMask[i] = val;
+      roadMaskChecksum ^= road;
+      roadMaskChecksum = Math.imul(roadMaskChecksum, 16777619) >>> 0;
+      intersectionChecksum ^= val;
+      intersectionChecksum = Math.imul(intersectionChecksum, 16777619) >>> 0;
     }
     // Pixelated rendering: draw one rect per coarse cell using nearest-neighbor.
     // This avoids allocating a full ImageData buffer and reduces memory churn.
@@ -545,12 +553,15 @@ const NoiseZoning: InternalNoiseZoning = {
       // Instead of contouring the filled intersection area, we compute contours
       // of the road mask and stroke only those segments whose midpoints fall
       // inside the intersectionMask (i.e. road portions that are within noisy areas).
-      const contourKey = `${this._seed}|intersection|${this._params.baseScale}|${this._params.octaves}|${this._params.lacunarity}|${this._params.gain}|${coarseW}x${coarseH}|${cameraX.toFixed(3)}|${cameraY.toFixed(3)}|${zoom.toFixed(3)}|${noiseThreshold.toFixed(3)}|${minPx}|${minPy}|${maxPx}|${maxPx}`;
+      const outlineCellPxW = (maxPx - minPx + 1) / Math.max(1, coarseW);
+      const outlineCellPxH = (maxPy - minPy + 1) / Math.max(1, coarseH);
+      const contourKey = `${this._seed}|roads-outline|${this._params.baseScale}|${this._params.octaves}|${this._params.lacunarity}|${this._params.gain}|${coarseW}x${coarseH}|${cameraX.toFixed(3)}|${cameraY.toFixed(3)}|${zoom.toFixed(3)}|${noiseThreshold.toFixed(3)}|${minPx}|${minPy}|${maxPx}|${maxPx}|${roadMaskChecksum.toString(16)}|${intersectionChecksum.toString(16)}`;
       let roadPolys: number[][][] = [];
       if (this._contourCache && this._contourCache.key === contourKey) {
         roadPolys = this._contourCache.contours || [];
       } else {
-        roadPolys = marchingSquaresContoursScreen(intersectionMask, coarseW, coarseH, minPx, minPy, cellPxW, cellPxH) || [];
+        const rawContours = marchingSquaresContoursScreen(coarseRoadMask, coarseW, coarseH, minPx, minPy, outlineCellPxW, outlineCellPxH) || [];
+        roadPolys = filterContoursByIntersection(rawContours, intersectionMask, coarseW, coarseH, minPx, minPy, outlineCellPxW, outlineCellPxH);
         this._contourCache = { key: contourKey, contours: roadPolys };
       }
       try {
@@ -783,6 +794,71 @@ function marchingSquaresContoursScreen(grid: Uint8Array, w: number, h: number, m
     }
   }
   return contours;
+}
+
+function filterContoursByIntersection(contours: number[][][], intersectionMask: Uint8Array, coarseW: number, coarseH: number, minPx: number, minPy: number, cellPxW: number, cellPxH: number) {
+  const filtered: number[][][] = [];
+  if (!contours || !intersectionMask.length) return filtered;
+  const sampleMask = (screenX: number, screenY: number) => {
+    const gx = Math.floor((screenX - minPx) / cellPxW);
+    const gy = Math.floor((screenY - minPy) / cellPxH);
+    if (gx < 0 || gy < 0 || gx >= coarseW || gy >= coarseH) return 0;
+    return intersectionMask[gy * coarseW + gx] ? 1 : 0;
+  };
+  const eps = Math.max(0.1, Math.min(cellPxW, cellPxH) * 0.25);
+
+  for (const poly of contours) {
+    if (!poly || poly.length < 2) continue;
+    const first = poly[0];
+    const last = poly[poly.length - 1];
+    const isClosed = poly.length > 2 && Math.hypot(first[0] - last[0], first[1] - last[1]) < 1e-3;
+    const segCount = isClosed ? poly.length : poly.length - 1;
+    let current: number[][] = [];
+
+    for (let i = 0; i < segCount; i++) {
+      const a = poly[i];
+      const b = poly[(i + 1) % poly.length];
+      const midX = (a[0] + b[0]) * 0.5;
+      const midY = (a[1] + b[1]) * 0.5;
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const len = Math.hypot(dx, dy) || 1;
+      const nx = -dy / len;
+      const ny = dx / len;
+      const samples: Array<[number, number]> = [
+        [midX + nx * eps, midY + ny * eps],
+        [midX - nx * eps, midY - ny * eps],
+      ];
+      let keep = false;
+      for (const [sx, sy] of samples) {
+        if (sampleMask(sx, sy)) { keep = true; break; }
+      }
+      if (!keep && sampleMask(midX, midY)) {
+        keep = true;
+      }
+
+      if (keep) {
+        if (current.length === 0) current.push([a[0], a[1]]);
+        current.push([b[0], b[1]]);
+      } else if (current.length >= 2) {
+        filtered.push(current);
+        current = [];
+      }
+    }
+
+    if (current.length >= 2) {
+      if (isClosed && current.length > 2) {
+        const start = current[0];
+        const end = current[current.length - 1];
+        if (Math.hypot(start[0] - end[0], start[1] - end[1]) >= 1e-3) {
+          current.push([start[0], start[1]]);
+        }
+      }
+      filtered.push(current);
+    }
+  }
+
+  return filtered;
 }
 
 function marchingSquaresContours(grid: Uint8Array, w: number, h: number, sampleStep: number, minPx: number, minPy: number, stepOffset: number) {
