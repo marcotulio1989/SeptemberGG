@@ -69,7 +69,6 @@ type InternalNoiseZoning = NoiseZoningAPI & {
   _ensureSize: () => void;
   _precomputed?: any;
   _mapGeneratedHandler?: (ev: Event) => void;
-  _contourCache?: { key: string; contours: number[][][] } | null;
   _DEBUG?: boolean;
   _pixelSize?: number;
   // _pixelCache.data may either be a full Uint8ClampedArray image buffer (legacy)
@@ -99,7 +98,6 @@ const NoiseZoning: InternalNoiseZoning = {
   _view: { cameraX: 0, cameraY: 0, zoom: 1 },
   _params: Zoning.getParams(),
   _pixelCache: null,
-  _contourCache: null as null | { key: string; contours: number[][][] },
   _showIntersectionOutline: false,
   _DEBUG: false,
   _pixelSize: 4,
@@ -367,11 +365,6 @@ const NoiseZoning: InternalNoiseZoning = {
       totalCells = coarseW * coarseH;
       try { if ((this as any)._DEBUG) console.log('[NoiseZoning] capped coarse cells', totalCells, 'using stepPx', sampleStepPx); } catch (e) {}
     }
-    const coarse = new Float32Array(coarseW * coarseH);
-    const coarseRoadMask = new Uint8Array(coarseW * coarseH); // 0/1 mask indicating presence of road
-    // pixel size of each coarse cell (in screen px)
-    const cellPxW = regionPxW / Math.max(1, coarseW);
-    const cellPxH = regionPxH / Math.max(1, coarseH);
     // helper: convert screen px -> world coords (handles isometric)
     const screenToWorld = (screenX: number, screenY: number) => {
       if (renderModeIsometric) {
@@ -385,14 +378,61 @@ const NoiseZoning: InternalNoiseZoning = {
       }
       return { x: cameraX + (screenX - cx) / zoom, y: cameraY + (screenY - cy) / zoom };
     };
-    // Precompute sample positions: sample at center of each coarse cell in screen-space, map back to world and sample noise
+    const worldToScreen = (wx: number, wy: number) => {
+      if (renderModeIsometric) {
+        const isoX = isoA * wx + isoC * wy;
+        const isoY = isoB * wx + isoD * wy;
+        return { x: cx + (isoX - cameraIsoX) * zoom, y: cy + (isoY - cameraIsoY) * zoom };
+      }
+      return { x: cx + (wx - cameraX) * zoom, y: cy + (wy - cameraY) * zoom };
+    };
+
+    const viewWorldCorners = [
+      screenToWorld(minPx, minPy),
+      screenToWorld(maxPx, minPy),
+      screenToWorld(minPx, maxPy),
+      screenToWorld(maxPx, maxPy),
+    ];
+    let worldMinX = Infinity;
+    let worldMinY = Infinity;
+    let worldMaxX = -Infinity;
+    let worldMaxY = -Infinity;
+    for (const c of viewWorldCorners) {
+      if (!c) continue;
+      worldMinX = Math.min(worldMinX, c.x);
+      worldMaxX = Math.max(worldMaxX, c.x);
+      worldMinY = Math.min(worldMinY, c.y);
+      worldMaxY = Math.max(worldMaxY, c.y);
+    }
+    if (!isFinite(worldMinX) || !isFinite(worldMaxX)) {
+      worldMinX = cameraX - 50;
+      worldMaxX = cameraX + 50;
+    }
+    if (!isFinite(worldMinY) || !isFinite(worldMaxY)) {
+      worldMinY = cameraY - 50;
+      worldMaxY = cameraY + 50;
+    }
+    let stepWorldX = (worldMaxX - worldMinX) / Math.max(1, coarseW - 1);
+    let stepWorldY = (worldMaxY - worldMinY) / Math.max(1, coarseH - 1);
+    const fallbackWorldStep = sampleStepPx / Math.max(zoom, 1e-6);
+    if (!isFinite(stepWorldX) || Math.abs(stepWorldX) < 1e-6) stepWorldX = fallbackWorldStep;
+    if (!isFinite(stepWorldY) || Math.abs(stepWorldY) < 1e-6) stepWorldY = fallbackWorldStep;
+    const originWorldX = Math.floor(worldMinX / stepWorldX) * stepWorldX;
+    const originWorldY = Math.floor(worldMinY / stepWorldY) * stepWorldY;
+    while (originWorldX + stepWorldX * (coarseW - 1) < worldMaxX) coarseW++;
+    while (originWorldY + stepWorldY * (coarseH - 1) < worldMaxY) coarseH++;
+
+    const coarse = new Float32Array(coarseW * coarseH);
+    const coarseRoadMask = new Uint8Array(coarseW * coarseH); // 0/1 mask indicating presence of road
+
+    // Precompute sample positions anchored to world coordinates: each coarse cell corresponds to a
+    // world-aligned tile so noise no longer shifts when the camera moves.
     for (let gy = 0; gy < coarseH; gy++) {
-      const screenY = minPy + gy * cellPxH + cellPxH * 0.5;
+      const worldY = originWorldY + (gy + 0.5) * stepWorldY;
       for (let gx = 0; gx < coarseW; gx++) {
         const idx = gy * coarseW + gx;
-        const screenX = minPx + gx * cellPxW + cellPxW * 0.5;
-        const wpt = screenToWorld(screenX, screenY);
-        coarse[idx] = sampleWarpedNoise(this._noise, wpt.x * baseScale, wpt.y * baseScale, octaves, lacunarity, gain);
+        const worldX = originWorldX + (gx + 0.5) * stepWorldX;
+        coarse[idx] = sampleWarpedNoise(this._noise, worldX * baseScale, worldY * baseScale, octaves, lacunarity, gain);
       }
     }
     // Build a rasterized low-resolution mask of roads once for this view (coarse grid). This is much faster
@@ -402,7 +442,7 @@ const NoiseZoning: InternalNoiseZoning = {
     try {
       // cache key based on view
       const maskCache = (this as any)._maskCache as any | undefined;
-      if (maskCache && maskCache.w === coarseW && maskCache.h === coarseH && maskCache.cameraX === cameraX && maskCache.cameraY === cameraY && maskCache.zoom === zoom) {
+      if (maskCache && maskCache.w === coarseW && maskCache.h === coarseH && maskCache.cameraX === cameraX && maskCache.cameraY === cameraY && maskCache.zoom === zoom && maskCache.originWorldX === originWorldX && maskCache.originWorldY === originWorldY && maskCache.stepWorldX === stepWorldX && maskCache.stepWorldY === stepWorldY) {
         // reuse
         const src = maskCache.data;
         for (let i = 0; i < coarseRoadMask.length; i++) coarseRoadMask[i] = src[i];
@@ -420,32 +460,21 @@ const NoiseZoning: InternalNoiseZoning = {
         mctx.strokeStyle = 'white';
         mctx.lineCap = 'butt';
 
-        // Helpers: project world point -> screen pixel then to coarse canvas coordinates
+        // Helpers: project world point directly into coarse world grid coordinates
         const segs2 = MapStore.getSegments();
         for (const seg of segs2) {
           if (!seg || !seg.r) continue;
-          // project endpoints to screen px using same projection as above
-          const projScreen = (p: { x: number; y: number }) => {
-            if (renderModeIsometric) {
-              const isoX = isoA * p.x + isoC * p.y;
-              const isoY = isoB * p.x + isoD * p.y;
-              const screenX = cx + (isoX - cameraIsoX) * zoom;
-              const screenY = cy + (isoY - cameraIsoY) * zoom;
-              return { x: screenX, y: screenY };
-            }
-            return { x: cx + (p.x - cameraX) * zoom, y: cy + (p.y - cameraY) * zoom };
-          };
-          const A = projScreen(seg.r.start);
-          const B = projScreen(seg.r.end);
-          // Map screen px -> coarse canvas coords
-          const toCoarse = (screenPt: { x: number; y: number }) => ({ x: (screenPt.x - minPx) / cellPxW, y: (screenPt.y - minPy) / cellPxH });
-          const a = toCoarse(A);
-          const b = toCoarse(B);
-          const strokePx = Math.max(1, (seg.width || 1) / Math.max(1e-6, Math.min(cellPxW, cellPxH)));
+          const toCoarseWorld = (p: { x: number; y: number }) => ({
+            x: (p.x - originWorldX) / stepWorldX,
+            y: (p.y - originWorldY) / stepWorldY,
+          });
+          const aWorld = toCoarseWorld(seg.r.start);
+          const bWorld = toCoarseWorld(seg.r.end);
+          const strokePx = Math.max(1, (seg.width || 1) / Math.max(1e-6, Math.min(stepWorldX, stepWorldY)));
           mctx.lineWidth = strokePx;
           mctx.beginPath();
-          mctx.moveTo(a.x, a.y);
-          mctx.lineTo(b.x, b.y);
+          mctx.moveTo(aWorld.x, aWorld.y);
+          mctx.lineTo(bWorld.x, bWorld.y);
           mctx.stroke();
         }
         // Read mask and populate coarseRoadMask
@@ -458,7 +487,7 @@ const NoiseZoning: InternalNoiseZoning = {
           }
         }
         // cache
-        (this as any)._maskCache = { w: coarseW, h: coarseH, cameraX, cameraY, zoom, data: new Uint8Array(coarseRoadMask) };
+        (this as any)._maskCache = { w: coarseW, h: coarseH, cameraX, cameraY, zoom, originWorldX, originWorldY, stepWorldX, stepWorldY, data: new Uint8Array(coarseRoadMask) };
         maskOk = true;
       }
     } catch (e) {
@@ -486,114 +515,109 @@ const NoiseZoning: InternalNoiseZoning = {
     for (let i = 0; i < coarse.length; i++) {
       intersectionMask[i] = (coarse[i] > noiseThreshold && coarseRoadMask[i]) ? 1 : 0;
     }
-    // Pixelated rendering: draw one rect per coarse cell using nearest-neighbor.
-    // This avoids allocating a full ImageData buffer and reduces memory churn.
+    // Pixelated rendering: draw one rect per coarse cell using nearest-neighbor in world-aligned tiles.
+    // This avoids allocating a full ImageData buffer and keeps the pattern static relative to the map.
     try {
-      // Clear overlay
       this._ctx.clearRect(0, 0, w, h);
       this._ctx.save();
-      // black fill style with desired alpha
       const aNorm = (alpha / 255) || 0;
       this._ctx.fillStyle = `rgba(0,0,0,${aNorm})`;
 
-      // compute pixel size of each coarse cell
-      const cellPxW = (maxPx - minPx + 1) / Math.max(1, coarseW);
-      const cellPxH = (maxPy - minPy + 1) / Math.max(1, coarseH);
-
       for (let gy = 0; gy < coarseH; gy++) {
-        const y0 = Math.round(minPy + gy * cellPxH);
-        const hPx = Math.max(1, Math.round((gy === coarseH - 1) ? (maxPy - minPy + 1) - Math.round(gy * cellPxH) : cellPxH));
+        const cellWorldMinY = originWorldY + gy * stepWorldY;
+        const cellWorldMaxY = cellWorldMinY + stepWorldY;
         for (let gx = 0; gx < coarseW; gx++) {
-          const i = gy * coarseW + gx;
-          if (!coarseRoadMask[i]) continue; // skip non-road blocks
-          const n = coarse[i];
+          const idx = gy * coarseW + gx;
+          if (!coarseRoadMask[idx]) continue;
+          const n = coarse[idx];
           if (n <= noiseThreshold) continue;
-          const x0 = Math.round(minPx + gx * cellPxW);
-          const wPx = Math.max(1, Math.round((gx === coarseW - 1) ? (maxPx - minPx + 1) - Math.round(gx * cellPxW) : cellPxW));
-          // draw block
+          const cellWorldMinX = originWorldX + gx * stepWorldX;
+          const cellWorldMaxX = cellWorldMinX + stepWorldX;
+          const corners = [
+            worldToScreen(cellWorldMinX, cellWorldMinY),
+            worldToScreen(cellWorldMaxX, cellWorldMinY),
+            worldToScreen(cellWorldMinX, cellWorldMaxY),
+            worldToScreen(cellWorldMaxX, cellWorldMaxY),
+          ];
+          let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+          for (const c of corners) {
+            xMin = Math.min(xMin, c.x);
+            xMax = Math.max(xMax, c.x);
+            yMin = Math.min(yMin, c.y);
+            yMax = Math.max(yMax, c.y);
+          }
+          const x0 = Math.round(xMin);
+          const y0 = Math.round(yMin);
+          const wPx = Math.max(1, Math.round(xMax - xMin));
+          const hPx = Math.max(1, Math.round(yMax - yMin));
+          if (wPx <= 0 || hPx <= 0) continue;
           this._ctx.fillRect(x0, y0, wPx, hPx);
         }
       }
 
       this._ctx.restore();
     } catch (e) {
-      // If rect drawing fails, clear canvas as a safe fallback
       try { this._ctx.clearRect(0, 0, w, h); } catch (e2) {}
     }
-    // If requested, compute contours of intersectionMask using marching squares and draw outlines
+
     if ((this as any)._showIntersectionOutline) {
-      // Instead of contouring the filled intersection area, we compute contours
-      // of the road mask and stroke only those segments whose midpoints fall
-      // inside the intersectionMask (i.e. road portions that are within noisy areas).
-      const contourKey = `${this._seed}|roads|${this._params.baseScale}|${this._params.octaves}|${this._params.lacunarity}|${this._params.gain}|${coarseW}x${coarseH}`;
-      let roadPolys: number[][][] = [];
-      if (this._contourCache && this._contourCache.key === contourKey) {
-        roadPolys = this._contourCache.contours || [];
-      } else {
-        // compute world-space equivalents for marching squares utility
-        const worldStep = (sampleStepPx) / Math.max(1e-6, zoom);
-        const stepOffsetWorld = worldStep * 0.5;
-        // map top-left coarse cell center to world
-        const topLeftCenterScreenX = minPx + 0 * cellPxW + cellPxW * 0.5;
-        const topLeftCenterScreenY = minPy + 0 * cellPxH + cellPxH * 0.5;
-        const topLeftWorld = screenToWorld(topLeftCenterScreenX, topLeftCenterScreenY);
-        const minWorldX = topLeftWorld.x - stepOffsetWorld;
-        const minWorldY = topLeftWorld.y - stepOffsetWorld;
-        roadPolys = marchingSquaresContoursWorld(coarseRoadMask, coarseW, coarseH, worldStep, minWorldX, minWorldY, stepOffsetWorld) || [];
-        this._contourCache = { key: contourKey, contours: roadPolys };
-      }
       try {
         this._ctx.save();
         this._ctx.strokeStyle = '#ff0000';
         this._ctx.lineWidth = Math.max(1, 2 * (window.devicePixelRatio || 1));
-        const worldToScreen = (wx: number, wy: number) => {
-          if (renderModeIsometric) {
-            const isoX = isoA * wx + isoC * wy;
-            const isoY = isoB * wx + isoD * wy;
-            return { x: cx + (isoX - cameraIsoX) * zoom, y: cy + (isoY - cameraIsoY) * zoom };
-          }
-          return { x: cx + (wx - cameraX) * zoom, y: cy + (wy - cameraY) * zoom };
-        };
-        // For each polyline of the road contours, draw only edges whose midpoint
-        // is inside the intersectionMask grid.
-        for (const poly of roadPolys) {
-          if (!poly || poly.length < 2) continue;
-          for (let i = 0; i < poly.length; i++) {
-            const a = poly[i];
-            const b = poly[(i + 1) % poly.length];
-            // handle open polylines: if last point equals first, the modulus is fine,
-            // otherwise avoid connecting last->first by breaking when at final index
-            if (i === poly.length - 1 && (Math.abs(a[0] - b[0]) > 1e-9 || Math.abs(a[1] - b[1]) > 1e-9) && poly.length > 2) {
-              // this is the edge from last to first in an open polyline; skip if not equal
-              // (marching squares may produce closed loops, in which case we want the edge)
+        this._ctx.lineJoin = 'round';
+        this._ctx.lineCap = 'round';
+
+        for (let gy = 0; gy < coarseH; gy++) {
+          const cellWorldMinY = originWorldY + gy * stepWorldY;
+          const cellWorldMaxY = cellWorldMinY + stepWorldY;
+          for (let gx = 0; gx < coarseW; gx++) {
+            const idx = gy * coarseW + gx;
+            if (!intersectionMask[idx]) continue;
+            const cellWorldMinX = originWorldX + gx * stepWorldX;
+            const cellWorldMaxX = cellWorldMinX + stepWorldX;
+            const topLeft = worldToScreen(cellWorldMinX, cellWorldMinY);
+            const topRight = worldToScreen(cellWorldMaxX, cellWorldMinY);
+            const bottomLeft = worldToScreen(cellWorldMinX, cellWorldMaxY);
+            const bottomRight = worldToScreen(cellWorldMaxX, cellWorldMaxY);
+
+            const hasTop = gy > 0 && intersectionMask[(gy - 1) * coarseW + gx];
+            const hasBottom = gy < coarseH - 1 && intersectionMask[(gy + 1) * coarseW + gx];
+            const hasLeft = gx > 0 && intersectionMask[gy * coarseW + (gx - 1)];
+            const hasRight = gx < coarseW - 1 && intersectionMask[gy * coarseW + (gx + 1)];
+
+            if (!hasTop) {
+              this._ctx.beginPath();
+              this._ctx.moveTo(topLeft.x, topLeft.y);
+              this._ctx.lineTo(topRight.x, topRight.y);
+              this._ctx.stroke();
             }
-            // midpoint in world coords
-            const mx = (a[0] + b[0]) * 0.5;
-            const my = (a[1] + b[1]) * 0.5;
-            // map midpoint to screen and then to coarse grid indices
-            const midScreen = worldToScreen(mx, my);
-            const gx = Math.floor((midScreen.x - minPx) / cellPxW);
-            const gy = Math.floor((midScreen.y - minPy) / cellPxH);
-            if (gx < 0 || gy < 0 || gx >= coarseW || gy >= coarseH) continue;
-            const inside = !!intersectionMask[gy * coarseW + gx];
-            if (!inside) continue;
-            // draw this segment
-            const pa = worldToScreen(a[0], a[1]);
-            const pb = worldToScreen(b[0], b[1]);
-            this._ctx.beginPath();
-            this._ctx.moveTo(pa.x, pa.y);
-            this._ctx.lineTo(pb.x, pb.y);
-            this._ctx.stroke();
+            if (!hasBottom) {
+              this._ctx.beginPath();
+              this._ctx.moveTo(bottomLeft.x, bottomLeft.y);
+              this._ctx.lineTo(bottomRight.x, bottomRight.y);
+              this._ctx.stroke();
+            }
+            if (!hasLeft) {
+              this._ctx.beginPath();
+              this._ctx.moveTo(topLeft.x, topLeft.y);
+              this._ctx.lineTo(bottomLeft.x, bottomLeft.y);
+              this._ctx.stroke();
+            }
+            if (!hasRight) {
+              this._ctx.beginPath();
+              this._ctx.moveTo(topRight.x, topRight.y);
+              this._ctx.lineTo(bottomRight.x, bottomRight.y);
+              this._ctx.stroke();
+            }
           }
         }
-      } catch (e) {
-        // ignore drawing errors
       } finally {
         this._ctx.restore();
       }
     }
   // Store a small coarse cache so subsequent redraws can reuse the intersection mask
-  this._pixelCache = { w, h, cameraX, cameraY, zoom, bbox: [minPx, minPy, maxPx, maxPy], data: { type: 'coarse', coarseW, coarseH, intersectionMask: intersectionMask } };
+  this._pixelCache = { w, h, cameraX, cameraY, zoom, bbox: [minPx, minPy, maxPx, maxPy], data: { type: 'coarse', coarseW, coarseH, originWorldX, originWorldY, stepWorldX, stepWorldY, intersectionMask } };
     try { if ((this as any)._DEBUG) console.log('[NoiseZoning] redraw FINISHED and cached pixels'); } catch (e) {}
   },
   _syncSizeAndRedraw() {
@@ -717,196 +741,6 @@ const NoiseZoning: InternalNoiseZoning = {
     return !!(this as any)._showIntersectionOutline;
   },
 };
-
-// marching squares: extract contours from binary grid (values 0/1)
-function marchingSquaresContours(grid: Uint8Array, w: number, h: number, sampleStep: number, minPx: number, minPy: number, stepOffset: number) {
-  const segments: Array<[[number, number], [number, number]]> = [];
-  const get = (x: number, y: number) => (x >= 0 && y >= 0 && x < w && y < h) ? (grid[y * w + x] ? 1 : 0) : 0;
-  const sx = (gx: number) => minPx + gx * sampleStep + stepOffset;
-  const sy = (gy: number) => minPy + gy * sampleStep + stepOffset;
-
-  // For each cell, compute case and produce 0..2 segments between edge midpoints
-  for (let y = 0; y < h - 1; y++) {
-    for (let x = 0; x < w - 1; x++) {
-      const tl = get(x, y);
-      const tr = get(x + 1, y);
-      const br = get(x + 1, y + 1);
-      const bl = get(x, y + 1);
-      const code = (tl << 3) | (tr << 2) | (br << 1) | bl;
-      if (code === 0 || code === 15) continue;
-      // edge midpoints
-  const top: [number, number] = [(sx(x) + sx(x + 1)) * 0.5, sy(y)];
-  const right: [number, number] = [sx(x + 1), (sy(y) + sy(y + 1)) * 0.5];
-  const bottom: [number, number] = [(sx(x) + sx(x + 1)) * 0.5, sy(y + 1)];
-  const left: [number, number] = [sx(x), (sy(y) + sy(y + 1)) * 0.5];
-
-      // mapping standard marching squares cases to segments (pairs of points)
-      switch (code) {
-        case 1: segments.push([bottom, left]); break;
-        case 2: segments.push([right, bottom]); break;
-        case 3: segments.push([right, left]); break;
-        case 4: segments.push([top, right]); break;
-        case 5: segments.push([top, left]); segments.push([right, bottom]); break;
-        case 6: segments.push([top, bottom]); break;
-        case 7: segments.push([top, left]); break;
-        case 8: segments.push([left, top]); break;
-        case 9: segments.push([bottom, top]); break;
-        case 10: segments.push([left, right]); segments.push([top, bottom]); break;
-        case 11: segments.push([right, top]); break;
-        case 12: segments.push([left, right]); break;
-        case 13: segments.push([bottom, right]); break;
-        case 14: segments.push([left, bottom]); break;
-        default: break;
-      }
-    }
-  }
-
-  // Chain segments into polylines
-  // use higher precision when keying points to avoid accidentally merging nearby
-  // midpoints (which causes straight-line artifacts in contours)
-  const key = (p: [number, number]) => `${p[0].toFixed(6)}:${p[1].toFixed(6)}`;
-  const mapNext = new Map<string, Array<string>>();
-  const pointMap = new Map<string, [number, number]>();
-  const edgeVisited = new Set<string>();
-  for (const seg of segments) {
-    const a = seg[0]; const b = seg[1];
-    const ka = key(a); const kb = key(b);
-    pointMap.set(ka, a); pointMap.set(kb, b);
-    if (!mapNext.has(ka)) mapNext.set(ka, []);
-    if (!mapNext.has(kb)) mapNext.set(kb, []);
-    mapNext.get(ka)!.push(kb);
-    mapNext.get(kb)!.push(ka);
-  }
-
-  const contours: number[][][] = [];
-  for (const startKey of mapNext.keys()) {
-    if (!mapNext.has(startKey)) continue;
-    // try to build a loop starting from startKey
-    for (const neighbor of mapNext.get(startKey) || []) {
-      const edgeId = `${startKey}->${neighbor}`;
-      if (edgeVisited.has(edgeId)) continue;
-      const poly: Array<[number, number]> = [];
-      let cur = startKey; let prev = neighbor; // we'll walk and invert later
-      // walk forward
-      poly.push(pointMap.get(cur)!);
-      let next = neighbor;
-      while (true) {
-        const eId = `${cur}->${next}`;
-        if (edgeVisited.has(eId)) break;
-        edgeVisited.add(eId);
-        // append next point
-        const nextPt = pointMap.get(next)!;
-        poly.push(nextPt);
-        // find next neighbor to continue (choose one that's not cur)
-        const neighbors = mapNext.get(next) || [];
-        let chosen: string | null = null;
-        for (const nb of neighbors) {
-          if (nb === cur) continue;
-          // prefer unvisited edge
-          if (!edgeVisited.has(`${next}->${nb}`)) { chosen = nb; break; }
-        }
-        if (!chosen) {
-          // closed or dead end
-          break;
-        }
-        cur = next; next = chosen;
-      }
-      if (poly.length >= 2) {
-        // convert to simple number[][] and push
-        contours.push(poly.map(p => [p[0], p[1]]));
-      }
-    }
-  }
-
-  return contours;
-}
-
-// marching squares that returns contours in WORLD coordinates (not screen).
-function marchingSquaresContoursWorld(grid: Uint8Array, w: number, h: number, worldStep: number, minWx: number, minWy: number, stepOffsetWorld: number) {
-  // reuse same logic but map cell centers to world positions
-  const sx = (gx: number) => minWx + gx * worldStep + stepOffsetWorld;
-  const sy = (gy: number) => minWy + gy * worldStep + stepOffsetWorld;
-  // We'll call the original marchingSquaresContours but need to return world coords.
-  // Create a temporary wrapper that maps edges to midpoints in world-space and chains segments similarly.
-  const segments: Array<[[number, number], [number, number]]> = [];
-  const get = (x: number, y: number) => (x >= 0 && y >= 0 && x < w && y < h) ? (grid[y * w + x] ? 1 : 0) : 0;
-  for (let y = 0; y < h - 1; y++) {
-    for (let x = 0; x < w - 1; x++) {
-      const tl = get(x, y);
-      const tr = get(x + 1, y);
-      const br = get(x + 1, y + 1);
-      const bl = get(x, y + 1);
-      const code = (tl << 3) | (tr << 2) | (br << 1) | bl;
-      if (code === 0 || code === 15) continue;
-      const top: [number, number] = [(sx(x) + sx(x + 1)) * 0.5, sy(y)];
-      const right: [number, number] = [sx(x + 1), (sy(y) + sy(y + 1)) * 0.5];
-      const bottom: [number, number] = [(sx(x) + sx(x + 1)) * 0.5, sy(y + 1)];
-      const left: [number, number] = [sx(x), (sy(y) + sy(y + 1)) * 0.5];
-      switch (code) {
-        case 1: segments.push([bottom, left]); break;
-        case 2: segments.push([right, bottom]); break;
-        case 3: segments.push([right, left]); break;
-        case 4: segments.push([top, right]); break;
-        case 5: segments.push([top, left]); segments.push([right, bottom]); break;
-        case 6: segments.push([top, bottom]); break;
-        case 7: segments.push([top, left]); break;
-        case 8: segments.push([left, top]); break;
-        case 9: segments.push([bottom, top]); break;
-        case 10: segments.push([left, right]); segments.push([top, bottom]); break;
-        case 11: segments.push([right, top]); break;
-        case 12: segments.push([left, right]); break;
-        case 13: segments.push([bottom, right]); break;
-        case 14: segments.push([left, bottom]); break;
-        default: break;
-      }
-    }
-  }
-
-  // Chain segments into polylines (same algorithm as before but points are world coords)
-  // use higher precision when keying world coordinates for the same reason
-  const key = (p: [number, number]) => `${p[0].toFixed(6)}:${p[1].toFixed(6)}`;
-  const mapNext = new Map<string, Array<string>>();
-  const pointMap = new Map<string, [number, number]>();
-  const edgeVisited = new Set<string>();
-  for (const seg of segments) {
-    const a = seg[0]; const b = seg[1];
-    const ka = key(a); const kb = key(b);
-    pointMap.set(ka, a); pointMap.set(kb, b);
-    if (!mapNext.has(ka)) mapNext.set(ka, []);
-    if (!mapNext.has(kb)) mapNext.set(kb, []);
-    mapNext.get(ka)!.push(kb);
-    mapNext.get(kb)!.push(ka);
-  }
-  const contours: number[][][] = [];
-  for (const startKey of mapNext.keys()) {
-    if (!mapNext.has(startKey)) continue;
-    for (const neighbor of mapNext.get(startKey) || []) {
-      const edgeId = `${startKey}->${neighbor}`;
-      if (edgeVisited.has(edgeId)) continue;
-      const poly: Array<[number, number]> = [];
-      let cur = startKey; let next = neighbor;
-      poly.push(pointMap.get(cur)!);
-      while (true) {
-        const eId = `${cur}->${next}`;
-        if (edgeVisited.has(eId)) break;
-        edgeVisited.add(eId);
-        const nextPt = pointMap.get(next)!;
-        poly.push(nextPt);
-        const neighbors = mapNext.get(next) || [];
-        let chosen: string | null = null;
-        for (const nb of neighbors) {
-          if (nb === cur) continue;
-          if (!edgeVisited.has(`${next}->${nb}`)) { chosen = nb; break; }
-        }
-        if (!chosen) break;
-        cur = next; next = chosen;
-      }
-      if (poly.length >= 2) contours.push(poly.map(p => [p[0], p[1]]));
-    }
-  }
-  return contours;
-}
-
 
 function intToRgb(intColor: number): [number, number, number] {
   return [(intColor >> 16) & 255, (intColor >> 8) & 255, intColor & 255];
