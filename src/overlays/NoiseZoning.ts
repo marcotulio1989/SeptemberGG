@@ -557,42 +557,85 @@ const NoiseZoning: InternalNoiseZoning = {
           const screenDx = endScreen.x - startScreen.x;
           const screenDy = endScreen.y - startScreen.y;
           const screenLen = Math.hypot(screenDx, screenDy);
-          const steps = Math.max(1, Math.ceil(screenLen / minCellSizePx));
-          let intersectsNoise = false;
-          for (let s = 0; s <= steps; s++) {
+          const sampleScreenAt = (t: number) => ({
+            x: startScreen.x + screenDx * t,
+            y: startScreen.y + screenDy * t,
+          });
+          const refineBoundary = (t0: number, t1: number, insideAtT1: boolean) => {
+            let a = t0;
+            let b = t1;
+            for (let iter = 0; iter < 4; iter++) {
+              const mid = (a + b) * 0.5;
+              const midInside = pointHitsIntersection(sampleScreenAt(mid));
+              if (midInside === insideAtT1) {
+                b = mid;
+              } else {
+                a = mid;
+              }
+            }
+            return b;
+          };
+          const steps = Math.max(1, Math.ceil(screenLen / Math.max(1, minCellSizePx * 0.5)));
+          let prevT = 0;
+          let prevInside = pointHitsIntersection(sampleScreenAt(0));
+          let currentStart: number | null = prevInside ? 0 : null;
+          const spans: { start: number; end: number }[] = [];
+          for (let s = 1; s <= steps; s++) {
             const t = steps === 0 ? 0 : s / steps;
-            const samplePt = {
-              x: startScreen.x + screenDx * t,
-              y: startScreen.y + screenDy * t,
-            };
-            if (pointHitsIntersection(samplePt)) { intersectsNoise = true; break; }
+            const inside = pointHitsIntersection(sampleScreenAt(t));
+            if (inside && !prevInside) {
+              currentStart = refineBoundary(prevT, t, true);
+            } else if (!inside && prevInside) {
+              const exitT = refineBoundary(prevT, t, false);
+              const startT = currentStart != null ? currentStart : prevT;
+              if (exitT - startT > 1e-4) spans.push({ start: startT, end: exitT });
+              currentStart = null;
+            }
+            prevInside = inside;
+            prevT = t;
           }
-          if (!intersectsNoise) continue;
+          if (prevInside) {
+            const startT = currentStart != null ? currentStart : 0;
+            if (1 - startT > 1e-4) spans.push({ start: startT, end: 1 });
+          }
+          if (!spans.length) continue;
 
           const dirX = endWorld.x - startWorld.x;
           const dirY = endWorld.y - startWorld.y;
           const dirLen = Math.hypot(dirX, dirY);
           if (!(dirLen > 1e-6)) continue;
           const invLen = 1 / dirLen;
-          const ux = dirX * invLen;
-          const uy = dirY * invLen;
-          const nx = -uy;
-          const ny = ux;
+          const nx = -(dirY * invLen);
+          const ny = dirX * invLen;
           const widthWorld = seg.width || 0;
           if (!(widthWorld > 0)) continue;
           const halfWidth = widthWorld * 0.5;
-          const cornersWorld = [
-            { x: startWorld.x + nx * halfWidth, y: startWorld.y + ny * halfWidth },
-            { x: endWorld.x + nx * halfWidth, y: endWorld.y + ny * halfWidth },
-            { x: endWorld.x - nx * halfWidth, y: endWorld.y - ny * halfWidth },
-            { x: startWorld.x - nx * halfWidth, y: startWorld.y - ny * halfWidth },
-          ];
-          const polygon = cornersWorld.map(pt => {
-            const scr = projectWorldToScreen(pt);
-            return [scr.x, scr.y];
-          });
-          if (polygon.some(([px, py]) => !Number.isFinite(px) || !Number.isFinite(py))) continue;
-          polygons.push(polygon);
+
+          for (const span of spans) {
+            const startT = Math.max(0, Math.min(1, span.start));
+            const endT = Math.max(0, Math.min(1, span.end));
+            if (!(endT > startT)) continue;
+            const startSeg = {
+              x: startWorld.x + dirX * startT,
+              y: startWorld.y + dirY * startT,
+            };
+            const endSeg = {
+              x: startWorld.x + dirX * endT,
+              y: startWorld.y + dirY * endT,
+            };
+            const cornersWorld = [
+              { x: startSeg.x + nx * halfWidth, y: startSeg.y + ny * halfWidth },
+              { x: endSeg.x + nx * halfWidth, y: endSeg.y + ny * halfWidth },
+              { x: endSeg.x - nx * halfWidth, y: endSeg.y - ny * halfWidth },
+              { x: startSeg.x - nx * halfWidth, y: startSeg.y - ny * halfWidth },
+            ];
+            const polygon = cornersWorld.map(pt => {
+              const scr = projectWorldToScreen(pt);
+              return [scr.x, scr.y];
+            });
+            if (polygon.some(([px, py]) => !Number.isFinite(px) || !Number.isFinite(py))) continue;
+            polygons.push(polygon);
+          }
         }
         roadPolys = polygons;
         this._contourCache = { key: contourKey, contours: roadPolys };
