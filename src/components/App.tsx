@@ -9,6 +9,7 @@ import ToggleButton from './ToggleButton';
 import MapStore from '../stores/MapStore';
 import NoiseZoning from '../overlays/NoiseZoning';
 import OverlayToggle from './OverlayToggle';
+import { CRACK_PATTERNS, CrackPatternAssignments } from '../lib/crackPatterns';
 // Controles avançados removidos: sem overlay/zonas aleatórias aqui
 
 const App: React.FC = () => {
@@ -319,7 +320,77 @@ const App: React.FC = () => {
         setCrackMaxSamplesAlong(240);
         setCrackMaxSamplesAcross(96);
         setCrackProbeStep(1.1);
+        try { (config as any).render.crackedRoadPatternAssignments = null; } catch (e) {}
+        broadcastCrackedRoadConfigChange();
+        setUiTick(t => t + 1);
     };
+
+    const randomizeCrackPatterns = useCallback(() => {
+        const patternCount = CRACK_PATTERNS.length;
+        if (!patternCount) return;
+        const createTester = (NoiseZoning as any)?.createIntersectionTester;
+        if (typeof createTester !== 'function') {
+            try { console.warn('[App] Random cracks: tester unavailable'); } catch (e) {}
+            return;
+        }
+        const tester = createTester.call(NoiseZoning) as ((x: number, y: number) => boolean) | null;
+        if (!tester) {
+            try { console.warn('[App] Random cracks: tester returned null'); } catch (e) {}
+            return;
+        }
+        const segments = MapStore.getSegments();
+        if (!segments || !segments.length) return;
+        const assignments: CrackPatternAssignments = {
+            version: Date.now(),
+            segments: {},
+        };
+        let applied = 0;
+        const probeStep = Math.max(0.25, (config as any).render?.crackedRoadProbeStepM ?? 1.1);
+        segments.forEach((segment, index) => {
+            if (!segment || !segment.r) return;
+            const start = segment.r.start;
+            const end = segment.r.end;
+            const dx = end.x - start.x;
+            const dy = end.y - start.y;
+            const length = Math.hypot(dx, dy);
+            if (!(length > 1e-3)) return;
+            const ux = dx / length;
+            const uy = dy / length;
+            const nx = -uy;
+            const ny = ux;
+            const roadWidth = Math.max(1.5, segment.width || 0);
+            const stepCount = Math.max(6, Math.ceil(length / probeStep));
+            let intersects = false;
+            for (let s = 0; s <= stepCount && !intersects; s++) {
+                const t = stepCount === 0 ? 0 : s / stepCount;
+                const px = start.x + dx * t;
+                const py = start.y + dy * t;
+                if (tester(px, py)) { intersects = true; break; }
+                const lateralSamples = 2;
+                for (let l = -lateralSamples; l <= lateralSamples && !intersects; l++) {
+                    if (l === 0) continue;
+                    const offset = (l / lateralSamples) * (roadWidth * 0.5);
+                    const lx = px + nx * offset;
+                    const ly = py + ny * offset;
+                    if (tester(lx, ly)) { intersects = true; }
+                }
+            }
+            if (!intersects) return;
+            const pattern = CRACK_PATTERNS[Math.floor(Math.random() * patternCount)];
+            const key = segment?.id != null ? String(segment.id) : `idx:${index}`;
+            assignments.segments[key] = pattern.id;
+            applied++;
+        });
+        if (!applied) {
+            try { (config as any).render.crackedRoadPatternAssignments = null; } catch (e) {}
+            broadcastCrackedRoadConfigChange();
+            setUiTick(t => t + 1);
+            return;
+        }
+        (config as any).render.crackedRoadPatternAssignments = assignments;
+        broadcastCrackedRoadConfigChange();
+        setUiTick(t => t + 1);
+    }, [broadcastCrackedRoadConfigChange]);
 
     useEffect(() => {
         try { (config as any).render.showCrackedRoadsOutline = crackedRoadsVisible; } catch (e) {}
@@ -1101,23 +1172,47 @@ const App: React.FC = () => {
                             />
                         </div>
                     </div>
-                    <button
-                        type="button"
-                        onClick={resetCrackConfig}
+                    <div
                         style={{
                             marginTop: 16,
-                            width: '100%',
-                            padding: '6px 0',
-                            borderRadius: 4,
-                            border: 'none',
-                            background: '#263238',
-                            color: '#ECEFF1',
-                            cursor: 'pointer',
-                            fontWeight: 600,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 8,
                         }}
                     >
-                        Restaurar padrões
-                    </button>
+                        <button
+                            type="button"
+                            onClick={randomizeCrackPatterns}
+                            style={{
+                                width: '100%',
+                                padding: '6px 0',
+                                borderRadius: 4,
+                                border: 'none',
+                                background: '#1565c0',
+                                color: '#ECEFF1',
+                                cursor: 'pointer',
+                                fontWeight: 600,
+                            }}
+                        >
+                            Random
+                        </button>
+                        <button
+                            type="button"
+                            onClick={resetCrackConfig}
+                            style={{
+                                width: '100%',
+                                padding: '6px 0',
+                                borderRadius: 4,
+                                border: 'none',
+                                background: '#263238',
+                                color: '#ECEFF1',
+                                cursor: 'pointer',
+                                fontWeight: 600,
+                            }}
+                        >
+                            Restaurar padrões
+                        </button>
+                    </div>
                 </div>
             )}
             {heatmapVisible && (
