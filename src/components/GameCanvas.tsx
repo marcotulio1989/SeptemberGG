@@ -15,6 +15,11 @@ import type { Point } from '../generic_modules/math';
 import NoiseZoning from '../overlays/NoiseZoning';
 import { createGrassTexture } from '../overlays/grassTexture';
 import Quadtree from '../lib/quadtree';
+import {
+    CRACKED_ROAD_VARIANT_MAP,
+    type CrackedRoadVariantAssignments,
+    type CrackedRoadVariantDefinition,
+} from '../lib/crackedRoadVariants';
 // ClipperLib (sem typings completos) - usar require para acessar classes
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const ClipperLib: any = require('clipper-lib');
@@ -1255,6 +1260,9 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         const maxSamplesAlong: number = Math.max(4, cfg.crackedRoadMaxSamplesAlong ?? 240);
         const maxSamplesAcross: number = Math.max(4, cfg.crackedRoadMaxSamplesAcross ?? 96);
         const probeStep: number = Math.max(0.4, cfg.crackedRoadProbeStepM ?? 1.1);
+        const variantAssignments = (cfg.crackedRoadVariantAssignments ?? null) as
+            | CrackedRoadVariantAssignments
+            | null;
         const globalSeed: number = (NoiseZoning as any)?.getSeed?.call(NoiseZoning) ?? 0;
 
         const graphics = new PIXI.Graphics();
@@ -1274,7 +1282,13 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             const uy = vy / segLen;
             const nx = -uy;
             const ny = ux;
-            const steps = Math.max(4, Math.ceil(segLen / probeStep));
+            const variantId =
+                (segment.id != null && variantAssignments && variantAssignments[segment.id]) || undefined;
+            const variant: CrackedRoadVariantDefinition | undefined =
+                variantId ? CRACKED_ROAD_VARIANT_MAP[variantId] : undefined;
+            const modifiers = variant?.modifiers;
+            const localProbeStep = Math.max(0.4, probeStep * (modifiers?.probeStepMultiplier ?? 1));
+            const steps = Math.max(4, Math.ceil(segLen / localProbeStep));
             const intervals: Array<{ start: number; end: number }> = [];
             let runStart: number | null = null;
             for (let s = 0; s <= steps; s++) {
@@ -1298,18 +1312,34 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 const endT = clamp(interval.end, 0, 1);
                 if (!(endT > startT + 1e-4)) return;
                 const intervalLen = segLen * (endT - startT);
-                if (intervalLen < minLength) return;
+                const localMinLength = Math.max(1, minLength * (modifiers?.minLengthMultiplier ?? 1));
+                if (intervalLen < localMinLength) return;
                 const area = intervalLen * roadWidth;
-                let seeds = Math.max(8, Math.round(area * seedDensity));
-                seeds = Math.min(seeds, maxSeeds);
+                const localSeedDensity = Math.max(0.005, seedDensity * (modifiers?.seedDensityMultiplier ?? 1));
+                let seeds = Math.max(8, Math.round(area * localSeedDensity));
+                const localMaxSeeds = Math.max(8, Math.round(maxSeeds * (modifiers?.maxSeedsMultiplier ?? 1)));
+                seeds = Math.min(seeds, localMaxSeeds);
                 if (seeds < 2) return;
-                let samplesU = Math.max(2, Math.round(intervalLen * sampleAlong));
-                let samplesV = Math.max(2, Math.round(roadWidth * sampleAcross));
-                samplesU = Math.min(samplesU, maxSamplesAlong);
-                samplesV = Math.min(samplesV, maxSamplesAcross);
+                const localSampleAlong = Math.max(0.25, sampleAlong * (modifiers?.sampleAlongMultiplier ?? 1));
+                const localSampleAcross = Math.max(0.25, sampleAcross * (modifiers?.sampleAcrossMultiplier ?? 1));
+                let samplesU = Math.max(2, Math.round(intervalLen * localSampleAlong));
+                let samplesV = Math.max(2, Math.round(roadWidth * localSampleAcross));
+                const localMaxSamplesAlong = Math.max(4, Math.round(maxSamplesAlong * (modifiers?.maxSamplesAlongMultiplier ?? 1)));
+                const localMaxSamplesAcross = Math.max(4, Math.round(maxSamplesAcross * (modifiers?.maxSamplesAcrossMultiplier ?? 1)));
+                samplesU = Math.min(samplesU, localMaxSamplesAlong);
+                samplesV = Math.min(samplesV, localMaxSamplesAcross);
                 if (samplesU < 2 || samplesV < 2) return;
                 const hash = hashNumbers(globalSeed, segmentIndex, intervalIndex, startT * 1000, endT * 1000, roadWidth);
-                const contours = generateVoronoiContours(intervalLen, roadWidth, seeds, samplesU, samplesV, threshold, hash);
+                const localThreshold = clamp(threshold + (modifiers?.thresholdOffset ?? 0), 0.05, 0.95);
+                const contours = generateVoronoiContours(
+                    intervalLen,
+                    roadWidth,
+                    seeds,
+                    samplesU,
+                    samplesV,
+                    localThreshold,
+                    hash,
+                );
                 if (!contours.length) return;
                 const startOffset = segLen * startT;
                 const baseX = start.x + ux * startOffset;
@@ -1318,6 +1348,10 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 for (const contour of contours) {
                     if (!contour || contour.length < 2) continue;
                     if (polylineLength(contour) < minContourLen) continue;
+                    const localStroke = Math.max(0.05, strokePx * (modifiers?.strokeMultiplier ?? 1));
+                    const localAlpha = clamp(alpha * (modifiers?.alphaMultiplier ?? 1), 0, 1);
+                    const localColor = variant?.color ?? color;
+                    graphics.lineStyle(localStroke, localColor, localAlpha, 0.5, true);
                     contour.forEach((pt, idx) => {
                         const along = pt[0];
                         const lateral = pt[1];
