@@ -114,33 +114,12 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         characterSprite: null as PIXI.Sprite | null,
     }).current;
 
-    const syncNoiseOverlayView = (cameraX: number, cameraY: number, zoom: number) => {
-        const hasApi = !!NoiseZoning && typeof NoiseZoning.setView === 'function';
-        if (!hasApi) return;
-        const prev = noiseOverlayViewRef.current;
-        const changed = !prev
-            || Math.abs(prev.cameraX - cameraX) > 0.5
-            || Math.abs(prev.cameraY - cameraY) > 0.5
-            || Math.abs(prev.zoom - zoom) > 0.005;
-        if (!changed) return;
-        try {
-            NoiseZoning.setView?.({ cameraX, cameraY, zoom });
-            noiseOverlayViewRef.current = { cameraX, cameraY, zoom };
-            if (NoiseZoning.enabled && typeof NoiseZoning.redraw === 'function') {
-                NoiseZoning.redraw();
-            }
-        } catch (err) {
-            try { console.warn('[GameCanvas] Failed to sync NoiseZoning view', err); } catch (e) {}
-        }
-    };
-
     const worldToIso = (p: Point): Point => {
         if (config.render.mode !== 'isometric') return p;
         const { isoA, isoB, isoC, isoD } = config.render;
         return { x: isoA * p.x + isoC * p.y, y: isoB * p.x + isoD * p.y };
     };
 
-    // Inverse of worldToIso (assumes linear 2x2 matrix [A C; B D])
     const isoToWorld = (p: Point): Point => {
         if (config.render.mode !== 'isometric') return p;
         const { isoA: A, isoB: B, isoC: C, isoD: D } = config.render;
@@ -151,6 +130,27 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         const invC = -C / det;
         const invD = A / det;
         return { x: invA * p.x + invC * p.y, y: invB * p.x + invD * p.y };
+    };
+
+    const syncNoiseOverlayView = (cameraX: number, cameraY: number, zoom: number) => {
+        const hasApi = !!NoiseZoning && typeof NoiseZoning.setView === 'function';
+        if (!hasApi) return;
+        const worldCam = isoToWorld({ x: cameraX, y: cameraY });
+        const prev = noiseOverlayViewRef.current;
+        const changed = !prev
+            || Math.abs(prev.cameraX - worldCam.x) > 0.5
+            || Math.abs(prev.cameraY - worldCam.y) > 0.5
+            || Math.abs(prev.zoom - zoom) > 0.005;
+        if (!changed) return;
+        try {
+            NoiseZoning.setView?.({ cameraX: worldCam.x, cameraY: worldCam.y, zoom });
+            noiseOverlayViewRef.current = { cameraX: worldCam.x, cameraY: worldCam.y, zoom };
+            if (NoiseZoning.enabled && typeof NoiseZoning.redraw === 'function') {
+                NoiseZoning.redraw();
+            }
+        } catch (err) {
+            try { console.warn('[GameCanvas] Failed to sync NoiseZoning view', err); } catch (e) {}
+        }
     };
 
     // Stable node key generator: snap coordinates to a small grid before stringifying.
