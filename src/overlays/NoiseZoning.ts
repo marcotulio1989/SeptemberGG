@@ -52,6 +52,17 @@ export type NoiseZoningAPI = {
   getIntersectionOutlineEnabled?: () => boolean;
   setPixelSize?: (px: number) => void;
   getPixelSize?: () => number;
+  getIntersectionMaskData?: () => {
+    coarseW: number;
+    coarseH: number;
+    gridMinX: number;
+    gridMinY: number;
+    worldStep: number;
+    pixelSizePx: number;
+    intersectionMask: Uint8Array;
+  } | null;
+  createIntersectionTester?: () => ((x: number, y: number) => boolean) | null;
+  getSeed?: () => number;
 };
 
 type InternalNoiseZoning = NoiseZoningAPI & {
@@ -759,6 +770,21 @@ const NoiseZoning: InternalNoiseZoning = {
         intersectionMask: intersectionMask,
       },
     };
+    try {
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+        const evt = new CustomEvent('noise-overlay-intersection-updated', {
+          detail: {
+            coarseW,
+            coarseH,
+            gridMinX,
+            gridMinY,
+            worldStep,
+            pixelSizePx,
+          },
+        });
+        window.dispatchEvent(evt);
+      }
+    } catch (e) {}
     try { if ((this as any)._DEBUG) console.log('[NoiseZoning] redraw FINISHED and cached pixels'); } catch (e) {}
   },
   _syncSizeAndRedraw() {
@@ -881,6 +907,39 @@ const NoiseZoning: InternalNoiseZoning = {
   },
   getIntersectionOutlineEnabled() {
     return !!(this as any)._showIntersectionOutline;
+  },
+  getIntersectionMaskData() {
+    const cache = this._pixelCache;
+    if (!cache || !cache.data || cache.data.type !== 'coarse') return null;
+    const data = cache.data;
+    const mask = data.intersectionMask as Uint8Array | undefined;
+    if (!mask || !mask.length) return null;
+    if (!(data.coarseW > 0) || !(data.coarseH > 0) || !(data.worldStep > 0)) return null;
+    return {
+      coarseW: data.coarseW,
+      coarseH: data.coarseH,
+      gridMinX: data.gridMinX,
+      gridMinY: data.gridMinY,
+      worldStep: data.worldStep,
+      pixelSizePx: data.pixelSizePx,
+      intersectionMask: mask,
+    };
+  },
+  createIntersectionTester() {
+    const info = this.getIntersectionMaskData?.();
+    if (!info || !(info.worldStep > 0)) return null;
+    const { coarseW, coarseH, gridMinX, gridMinY, worldStep, intersectionMask } = info;
+    const invStep = 1 / worldStep;
+    return (x: number, y: number) => {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+      const gx = Math.floor(x * invStep) - gridMinX;
+      const gy = Math.floor(y * invStep) - gridMinY;
+      if (gx < 0 || gy < 0 || gx >= coarseW || gy >= coarseH) return false;
+      return intersectionMask[gy * coarseW + gx] > 0;
+    };
+  },
+  getSeed() {
+    return this._seed;
   },
 };
 
