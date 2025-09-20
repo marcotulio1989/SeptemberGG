@@ -117,15 +117,19 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     const syncNoiseOverlayView = (cameraX: number, cameraY: number, zoom: number) => {
         const hasApi = !!NoiseZoning && typeof NoiseZoning.setView === 'function';
         if (!hasApi) return;
+        // Camera no GameCanvas está em coordenadas projetadas quando em modo isométrico.
+        // Converter para coordenadas reais do mundo antes de sincronizar com o overlay,
+        // garantindo que o ruído de Perlin permaneça estático no mapa.
+        const worldCam = isoToWorld({ x: cameraX, y: cameraY });
         const prev = noiseOverlayViewRef.current;
         const changed = !prev
-            || Math.abs(prev.cameraX - cameraX) > 0.5
-            || Math.abs(prev.cameraY - cameraY) > 0.5
+            || Math.abs(prev.cameraX - worldCam.x) > 0.5
+            || Math.abs(prev.cameraY - worldCam.y) > 0.5
             || Math.abs(prev.zoom - zoom) > 0.005;
         if (!changed) return;
         try {
-            NoiseZoning.setView?.({ cameraX, cameraY, zoom });
-            noiseOverlayViewRef.current = { cameraX, cameraY, zoom };
+            NoiseZoning.setView?.({ cameraX: worldCam.x, cameraY: worldCam.y, zoom });
+            noiseOverlayViewRef.current = { cameraX: worldCam.x, cameraY: worldCam.y, zoom };
             if (NoiseZoning.enabled && typeof NoiseZoning.redraw === 'function') {
                 NoiseZoning.redraw();
             }
