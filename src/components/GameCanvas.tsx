@@ -118,10 +118,13 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         const hasApi = !!NoiseZoning && typeof NoiseZoning.setView === 'function';
         if (!hasApi) return;
         const prev = noiseOverlayViewRef.current;
+        const safeZoom = Math.max(zoom, 1e-6);
+        const movedPxX = prev ? Math.abs(prev.cameraX - cameraX) * safeZoom : Infinity;
+        const movedPxY = prev ? Math.abs(prev.cameraY - cameraY) * safeZoom : Infinity;
         const changed = !prev
-            || Math.abs(prev.cameraX - cameraX) > 0.5
-            || Math.abs(prev.cameraY - cameraY) > 0.5
-            || Math.abs(prev.zoom - zoom) > 0.005;
+            || movedPxX > 0.1
+            || movedPxY > 0.1
+            || Math.abs(prev.zoom - zoom) > 0.001;
         if (!changed) return;
         try {
             NoiseZoning.setView?.({ cameraX, cameraY, zoom });
