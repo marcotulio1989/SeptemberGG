@@ -10,7 +10,7 @@
  * Independent of roads/buildings
  */
 import { ZoneName } from '../game_modules/mapgen';
-import { config } from '../game_modules/config';
+import { config, roadWidthM, highwayWidthM } from '../game_modules/config';
 import Zoning from '../game_modules/zoning';
 import { Noise } from 'noisejs';
 import { sampleWarpedNoise } from '../lib/noiseField';
@@ -374,9 +374,28 @@ const NoiseZoning: InternalNoiseZoning = {
     }
     const coarse = new Float32Array(coarseW * coarseH);
     const coarseRoadMask = new Uint8Array(coarseW * coarseH); // 0/1 mask indicating presence of road
-    // pixel size of each coarse cell (in screen px)
+    const coarseWorldCenters = new Float64Array(coarseW * coarseH * 2);
     const cellPxW = regionPxW / Math.max(1, coarseW);
     const cellPxH = regionPxH / Math.max(1, coarseH);
+    const buildEdges = (count: number, start: number, span: number) => {
+      const edges = new Float32Array(Math.max(0, count) + 1);
+      if (count <= 0) {
+        edges[0] = start;
+        return edges;
+      }
+      edges[0] = start;
+      let acc = start;
+      const step = span / count;
+      for (let i = 1; i < count; i++) {
+        acc += step;
+        const rounded = Math.round(acc);
+        edges[i] = rounded <= edges[i - 1] ? edges[i - 1] : rounded;
+      }
+      edges[count] = start + span;
+      return edges;
+    };
+    const xEdges = buildEdges(coarseW, minPx, regionPxW);
+    const yEdges = buildEdges(coarseH, minPy, regionPxH);
     // helper: convert screen px -> world coords (handles isometric)
     // Precompute sample positions: sample at center of each coarse cell in screen-space, map back to world and sample noise
     const safeZoom = Math.max(zoom, 1e-6);
@@ -408,81 +427,165 @@ const NoiseZoning: InternalNoiseZoning = {
       };
     };
     for (let gy = 0; gy < coarseH; gy++) {
-      const sampleScreenY = minPy + (gy + 0.5) * cellPxH;
+      const y0 = yEdges[Math.max(gy, 0)];
+      const y1 = yEdges[Math.min(gy + 1, yEdges.length - 1)];
+      const sampleScreenY = (y0 + y1) * 0.5;
       for (let gx = 0; gx < coarseW; gx++) {
         const idx = gy * coarseW + gx;
-        const sampleScreenX = minPx + (gx + 0.5) * cellPxW;
+        const x0 = xEdges[Math.max(gx, 0)];
+        const x1 = xEdges[Math.min(gx + 1, xEdges.length - 1)];
+        const sampleScreenX = (x0 + x1) * 0.5;
         const { x: worldX, y: worldY } = screenToWorld(sampleScreenX, sampleScreenY);
         coarse[idx] = sampleWarpedNoise(this._noise, worldX * baseScale, worldY * baseScale, octaves, lacunarity, gain);
+        coarseWorldCenters[idx * 2] = worldX;
+        coarseWorldCenters[idx * 2 + 1] = worldY;
       }
     }
-    // Build a rasterized low-resolution mask of roads once for this view (coarse grid). This is much faster
-    // than querying the quadtree per sample. We draw all segments into an offscreen canvas sized to the
-    // coarse grid, stroke with width proportional to segment width and then sample alpha to build mask.
+    // Build a coarse road mask for the current view by projecting each road segment to screen space and
+    // marking the coarse grid cells whose world-space centres fall within the road width (plus a small
+    // padding for the coarse cell footprint). This keeps the mask stable regardless of noise sampling.
     let maskOk = false;
-    try {
-      // cache key based on view
-      const maskCache = (this as any)._maskCache as any | undefined;
-      if (maskCache && maskCache.w === coarseW && maskCache.h === coarseH && maskCache.cameraX === cameraX && maskCache.cameraY === cameraY && maskCache.zoom === zoom) {
-        // reuse
-        const src = maskCache.data;
-        for (let i = 0; i < coarseRoadMask.length; i++) coarseRoadMask[i] = src[i];
-        maskOk = true;
-      } else {
-  const maskCanvas = document.createElement('canvas');
-  maskCanvas.width = coarseW;
-  maskCanvas.height = coarseH;
-  const mctx = maskCanvas.getContext('2d');
-        if (!mctx) throw new Error('no ctx');
-        // clear
-        mctx.clearRect(0, 0, coarseW, coarseH);
-        mctx.fillStyle = 'black';
-        mctx.fillRect(0, 0, coarseW, coarseH);
-        mctx.strokeStyle = 'white';
-        mctx.lineCap = 'butt';
-
-        // Helpers: project world point -> screen pixel then to coarse canvas coordinates
-        for (const seg of roadSegments) {
-          if (!seg || !seg.r) continue;
-          // project endpoints to screen px using same projection as above
-          const A = projectWorldToScreen(seg.r.start);
-          const B = projectWorldToScreen(seg.r.end);
-          // Map screen px -> coarse canvas coords
-          const toCoarse = (screenPt: { x: number; y: number }) => ({ x: (screenPt.x - minPx) / cellPxW, y: (screenPt.y - minPy) / cellPxH });
-          const a = toCoarse(A);
-          const b = toCoarse(B);
-          const strokePx = Math.max(1, (seg.width || 1) / Math.max(1e-6, Math.min(cellPxW, cellPxH)));
-          mctx.lineWidth = strokePx;
-          mctx.beginPath();
-          mctx.moveTo(a.x, a.y);
-          mctx.lineTo(b.x, b.y);
-          mctx.stroke();
-        }
-        // Read mask and populate coarseRoadMask
-        const md = mctx.getImageData(0, 0, coarseW, coarseH).data;
-        for (let gy = 0; gy < coarseH; gy++) {
-          for (let gx = 0; gx < coarseW; gx++) {
-            const i = (gy * coarseW + gx) * 4;
-            const alpha = md[i + 3];
-            coarseRoadMask[gy * coarseW + gx] = alpha > 0 ? 1 : 0;
-          }
-        }
-        // cache
-        (this as any)._maskCache = { w: coarseW, h: coarseH, cameraX, cameraY, zoom, data: new Uint8Array(coarseRoadMask) };
-        maskOk = true;
-      }
-    } catch (e) {
-      // fallback: if rasterization failed, leave mask as zeros
-      maskOk = false;
-    }
-  // If mask rasterization failed or produced no road pixels, fallback to full mask so
-    // the noise is visible across the region (this ensures enabling the overlay always shows noise).
-    if (!maskOk) {
-      // fill coarseRoadMask with 1s so noise can be rendered across the region
-      for (let i = 0; i < coarseRoadMask.length; i++) coarseRoadMask[i] = 1;
+    const approxCellRadiusWorld = Math.sqrt(
+      Math.max(0, cellPxW * cellPxW + cellPxH * cellPxH)
+    ) * 0.5 * invZoom;
+    const maskCache = (this as any)._maskCache as any | undefined;
+    if (
+      maskCache &&
+      maskCache.w === coarseW &&
+      maskCache.h === coarseH &&
+      maskCache.cameraX === cameraX &&
+      maskCache.cameraY === cameraY &&
+      maskCache.zoom === zoom &&
+      maskCache.minPx === minPx &&
+      maskCache.minPy === minPy &&
+      maskCache.maxPx === maxPx &&
+      maskCache.maxPy === maxPy
+    ) {
+      const src = maskCache.data as Uint8Array;
+      for (let i = 0; i < coarseRoadMask.length; i++) coarseRoadMask[i] = src[i];
       maskOk = true;
     } else {
-      // check if mask is empty (no road pixels); if so, fallback to full mask
+      const findCellIndex = (edges: Float32Array, value: number) => {
+        if (!(edges && edges.length > 1)) return -1;
+        if (value <= edges[0]) return 0;
+        if (value >= edges[edges.length - 1]) return edges.length - 2;
+        let lo = 0;
+        let hi = edges.length - 1;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (value < edges[mid]) {
+            hi = mid;
+          } else {
+            lo = mid + 1;
+          }
+        }
+        const idx = lo - 1;
+        if (idx < 0) return 0;
+        return Math.min(edges.length - 2, idx);
+      };
+      const computeRange = (edges: Float32Array, minVal: number, maxVal: number): [number, number] | null => {
+        if (!(edges && edges.length > 1)) return null;
+        const first = edges[0];
+        const last = edges[edges.length - 1];
+        if (maxVal <= first || minVal >= last) return null;
+        const clampedMin = Math.max(minVal, first + 1e-6);
+        const clampedMax = Math.min(maxVal, last - 1e-6);
+        if (clampedMax <= clampedMin) return null;
+        const start = Math.max(0, findCellIndex(edges, clampedMin));
+        const end = Math.max(start, findCellIndex(edges, clampedMax));
+        return [start, end];
+      };
+
+      for (let i = 0; i < coarseRoadMask.length; i++) coarseRoadMask[i] = 0;
+
+      const defaultRoadWidth = Math.max(roadWidthM(), highwayWidthM());
+      for (const seg of roadSegments) {
+        if (!seg || !seg.r) continue;
+        const startWorld = seg.r.start;
+        const endWorld = seg.r.end;
+        if (!startWorld || !endWorld) continue;
+        const startScreen = projectWorldToScreen(startWorld);
+        const endScreen = projectWorldToScreen(endWorld);
+        if (!isFinite(startScreen.x) || !isFinite(startScreen.y) || !isFinite(endScreen.x) || !isFinite(endScreen.y)) continue;
+        let minScreenX = Math.min(startScreen.x, endScreen.x);
+        let maxScreenX = Math.max(startScreen.x, endScreen.x);
+        let minScreenY = Math.min(startScreen.y, endScreen.y);
+        let maxScreenY = Math.max(startScreen.y, endScreen.y);
+        if (maxScreenX < minPx - 2 || minScreenX > maxPx + 2 || maxScreenY < minPy - 2 || minScreenY > maxPy + 2) continue;
+        const dirWorldX = endWorld.x - startWorld.x;
+        const dirWorldY = endWorld.y - startWorld.y;
+        const lenWorld = Math.hypot(dirWorldX, dirWorldY);
+        let padScreen = sampleStepPx;
+        const segWidthWorld = (typeof seg.width === 'number' && seg.width > 0) ? seg.width : defaultRoadWidth;
+        const segHalfWidthWorld = segWidthWorld * 0.5;
+        if (lenWorld > 1e-6) {
+          const nx = -dirWorldY / lenWorld;
+          const ny = dirWorldX / lenWorld;
+          const offsetWorldX = nx * segHalfWidthWorld;
+          const offsetWorldY = ny * segHalfWidthWorld;
+          const offsetScreen = projectWorldToScreen({ x: startWorld.x + offsetWorldX, y: startWorld.y + offsetWorldY });
+          const widthScreen = Math.hypot(offsetScreen.x - startScreen.x, offsetScreen.y - startScreen.y);
+          padScreen = Math.max(sampleStepPx, widthScreen + sampleStepPx);
+        } else {
+          padScreen = Math.max(sampleStepPx, segWidthWorld * zoom);
+        }
+        minScreenX -= padScreen;
+        maxScreenX += padScreen;
+        minScreenY -= padScreen;
+        maxScreenY += padScreen;
+        const rangeX = computeRange(xEdges, minScreenX, maxScreenX);
+        const rangeY = computeRange(yEdges, minScreenY, maxScreenY);
+        if (!rangeX || !rangeY) continue;
+        const [gx0, gx1] = rangeX;
+        const [gy0, gy1] = rangeY;
+        const halfWidthWorld = segHalfWidthWorld + approxCellRadiusWorld;
+        const halfWidthSq = halfWidthWorld * halfWidthWorld;
+        const segLengthSq = lenWorld * lenWorld;
+        for (let gy = gy0; gy <= gy1; gy++) {
+          const rowOff = gy * coarseW;
+          for (let gx = gx0; gx <= gx1; gx++) {
+            const idx = rowOff + gx;
+            if (coarseRoadMask[idx]) continue;
+            const worldX = coarseWorldCenters[idx * 2];
+            const worldY = coarseWorldCenters[idx * 2 + 1];
+            if (!isFinite(worldX) || !isFinite(worldY)) continue;
+            const pt = { x: worldX, y: worldY };
+            let inside = false;
+            if (segLengthSq > 1e-8) {
+              const { distance2, lineProj2, length2 } = math.distanceToLine(pt, startWorld, endWorld);
+              if (lineProj2 >= 0 && lineProj2 <= length2) {
+                if (distance2 <= halfWidthSq) inside = true;
+              }
+              if (!inside) {
+                const distStart2 = math.length2(pt, startWorld);
+                const distEnd2 = math.length2(pt, endWorld);
+                if (Math.min(distStart2, distEnd2) <= halfWidthSq) inside = true;
+              }
+            } else {
+              const distStart2 = math.length2(pt, startWorld);
+              if (distStart2 <= halfWidthSq) inside = true;
+            }
+            if (inside) coarseRoadMask[idx] = 1;
+          }
+        }
+      }
+      maskOk = true;
+      (this as any)._maskCache = {
+        w: coarseW,
+        h: coarseH,
+        cameraX,
+        cameraY,
+        zoom,
+        minPx,
+        minPy,
+        maxPx,
+        maxPy,
+        data: new Uint8Array(coarseRoadMask),
+      };
+    }
+    if (!maskOk) {
+      for (let i = 0; i < coarseRoadMask.length; i++) coarseRoadMask[i] = 1;
+    } else {
       let anyRoad = false;
       for (let i = 0; i < coarseRoadMask.length; i++) { if (coarseRoadMask[i]) { anyRoad = true; break; } }
       if (!anyRoad) {
@@ -506,20 +609,18 @@ const NoiseZoning: InternalNoiseZoning = {
       const aNorm = (alpha / 255) || 0;
       this._ctx.fillStyle = `rgba(0,0,0,${aNorm})`;
 
-      // compute pixel size of each coarse cell
-      const cellPxW = (maxPx - minPx + 1) / Math.max(1, coarseW);
-      const cellPxH = (maxPy - minPy + 1) / Math.max(1, coarseH);
-
       for (let gy = 0; gy < coarseH; gy++) {
-        const y0 = Math.round(minPy + gy * cellPxH);
-        const hPx = Math.max(1, Math.round((gy === coarseH - 1) ? (maxPy - minPy + 1) - Math.round(gy * cellPxH) : cellPxH));
+        const y0 = Math.round(yEdges[Math.max(gy, 0)]);
+        const y1 = Math.round(yEdges[Math.min(gy + 1, yEdges.length - 1)]);
+        const hPx = Math.max(1, y1 - y0);
         for (let gx = 0; gx < coarseW; gx++) {
           const i = gy * coarseW + gx;
           if (!coarseRoadMask[i]) continue; // skip non-road blocks
           const n = coarse[i];
           if (n <= noiseThreshold) continue;
-          const x0 = Math.round(minPx + gx * cellPxW);
-          const wPx = Math.max(1, Math.round((gx === coarseW - 1) ? (maxPx - minPx + 1) - Math.round(gx * cellPxW) : cellPxW));
+          const x0 = Math.round(xEdges[Math.max(gx, 0)]);
+          const x1 = Math.round(xEdges[Math.min(gx + 1, xEdges.length - 1)]);
+          const wPx = Math.max(1, x1 - x0);
           // draw block
           this._ctx.fillRect(x0, y0, wPx, hPx);
         }
@@ -542,9 +643,25 @@ const NoiseZoning: InternalNoiseZoning = {
       } else {
         const minCellSizePx = Math.max(1, Math.min(cellPxW, cellPxH));
         const polygons: number[][][] = [];
+        const findIndex = (edges: Float32Array, value: number) => {
+          if (value < edges[0] || value > edges[edges.length - 1]) return -1;
+          let lo = 0;
+          let hi = edges.length - 1;
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (value < edges[mid]) {
+              hi = mid;
+            } else {
+              lo = mid + 1;
+            }
+          }
+          const idx = lo - 1;
+          if (idx < 0) return -1;
+          return Math.min(edges.length - 2, idx);
+        };
         const pointHitsIntersection = (pt: { x: number; y: number }) => {
-          const gx = Math.floor((pt.x - minPx) / cellPxW);
-          const gy = Math.floor((pt.y - minPy) / cellPxH);
+          const gx = findIndex(xEdges, pt.x);
+          const gy = findIndex(yEdges, pt.y);
           if (gx < 0 || gy < 0 || gx >= coarseW || gy >= coarseH) return false;
           return intersectionMask[gy * coarseW + gx] > 0;
         };
@@ -825,11 +942,11 @@ const NoiseZoning: InternalNoiseZoning = {
 
 // marching squares: extract contours from binary grid (values 0/1)
 
-function marchingSquaresContoursScreen(grid: Uint8Array, w: number, h: number, minPx: number, minPy: number, cellPxW: number, cellPxH: number) {
+function marchingSquaresContoursScreen(grid: Uint8Array, w: number, h: number, xEdges: Float32Array, yEdges: Float32Array) {
   const segments: Array<[[number, number], [number, number]]> = [];
   const get = (x: number, y: number) => (x >= 0 && y >= 0 && x < w && y < h) ? (grid[y * w + x] ? 1 : 0) : 0;
-  const sx = (gx: number) => minPx + gx * cellPxW;
-  const sy = (gy: number) => minPy + gy * cellPxH;
+  const sx = (gx: number) => xEdges[Math.max(0, Math.min(xEdges.length - 1, gx))];
+  const sy = (gy: number) => yEdges[Math.max(0, Math.min(yEdges.length - 1, gy))];
   for (let y = 0; y < h - 1; y++) {
     for (let x = 0; x < w - 1; x++) {
       const tl = get(x, y);
