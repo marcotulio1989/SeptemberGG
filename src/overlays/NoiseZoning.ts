@@ -374,9 +374,52 @@ const NoiseZoning: InternalNoiseZoning = {
     }
     const coarse = new Float32Array(coarseW * coarseH);
     const coarseRoadMask = new Uint8Array(coarseW * coarseH); // 0/1 mask indicating presence of road
-    // pixel size of each coarse cell (in screen px)
     const cellPxW = regionPxW / Math.max(1, coarseW);
     const cellPxH = regionPxH / Math.max(1, coarseH);
+    const buildEdges = (count: number, start: number, span: number) => {
+      const edges = new Float32Array(Math.max(0, count) + 1);
+      if (count <= 0) {
+        edges[0] = start;
+        return edges;
+      }
+      const step = span / count;
+      for (let i = 0; i <= count; i++) {
+        edges[i] = start + step * i;
+      }
+      return edges;
+    };
+    const xEdges = buildEdges(coarseW, minPx, regionPxW);
+    const yEdges = buildEdges(coarseH, minPy, regionPxH);
+    const mapToCoarseCoord = (edges: Float32Array, count: number, value: number) => {
+      if (!Number.isFinite(value) || count <= 0) return 0;
+      const end = edges[Math.min(edges.length - 1, count)];
+      if (value <= edges[0]) return 0;
+      if (value >= end) return count;
+      let lo = 0;
+      let hi = count;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (value < edges[mid]) {
+          hi = mid;
+        } else {
+          lo = mid + 1;
+        }
+      }
+      const idx = lo - 1;
+      if (idx < 0) return 0;
+      const startEdge = edges[idx];
+      const nextEdge = edges[idx + 1];
+      const span = nextEdge - startEdge;
+      if (!(span > 1e-6)) return idx;
+      const frac = (value - startEdge) / span;
+      if (!Number.isFinite(frac)) return idx;
+      const clamped = Math.min(1, Math.max(0, frac));
+      return idx + clamped;
+    };
+    const toCoarsePoint = (screenPt: { x: number; y: number }) => ({
+      x: mapToCoarseCoord(xEdges, coarseW, screenPt.x),
+      y: mapToCoarseCoord(yEdges, coarseH, screenPt.y),
+    });
     // helper: convert screen px -> world coords (handles isometric)
     // Precompute sample positions: sample at center of each coarse cell in screen-space, map back to world and sample noise
     const safeZoom = Math.max(zoom, 1e-6);
@@ -408,10 +451,14 @@ const NoiseZoning: InternalNoiseZoning = {
       };
     };
     for (let gy = 0; gy < coarseH; gy++) {
-      const sampleScreenY = minPy + (gy + 0.5) * cellPxH;
+      const y0 = yEdges[Math.max(gy, 0)];
+      const y1 = yEdges[Math.min(gy + 1, yEdges.length - 1)];
+      const sampleScreenY = (y0 + y1) * 0.5;
       for (let gx = 0; gx < coarseW; gx++) {
         const idx = gy * coarseW + gx;
-        const sampleScreenX = minPx + (gx + 0.5) * cellPxW;
+        const x0 = xEdges[Math.max(gx, 0)];
+        const x1 = xEdges[Math.min(gx + 1, xEdges.length - 1)];
+        const sampleScreenX = (x0 + x1) * 0.5;
         const { x: worldX, y: worldY } = screenToWorld(sampleScreenX, sampleScreenY);
         coarse[idx] = sampleWarpedNoise(this._noise, worldX * baseScale, worldY * baseScale, octaves, lacunarity, gain);
       }
@@ -423,16 +470,27 @@ const NoiseZoning: InternalNoiseZoning = {
     try {
       // cache key based on view
       const maskCache = (this as any)._maskCache as any | undefined;
-      if (maskCache && maskCache.w === coarseW && maskCache.h === coarseH && maskCache.cameraX === cameraX && maskCache.cameraY === cameraY && maskCache.zoom === zoom) {
+      if (
+        maskCache &&
+        maskCache.w === coarseW &&
+        maskCache.h === coarseH &&
+        maskCache.cameraX === cameraX &&
+        maskCache.cameraY === cameraY &&
+        maskCache.zoom === zoom &&
+        maskCache.minPx === minPx &&
+        maskCache.minPy === minPy &&
+        maskCache.maxPx === maxPx &&
+        maskCache.maxPy === maxPy
+      ) {
         // reuse
         const src = maskCache.data;
         for (let i = 0; i < coarseRoadMask.length; i++) coarseRoadMask[i] = src[i];
         maskOk = true;
       } else {
-  const maskCanvas = document.createElement('canvas');
-  maskCanvas.width = coarseW;
-  maskCanvas.height = coarseH;
-  const mctx = maskCanvas.getContext('2d');
+        const maskCanvas = document.createElement('canvas');
+        maskCanvas.width = coarseW;
+        maskCanvas.height = coarseH;
+        const mctx = maskCanvas.getContext('2d');
         if (!mctx) throw new Error('no ctx');
         // clear
         mctx.clearRect(0, 0, coarseW, coarseH);
@@ -448,9 +506,8 @@ const NoiseZoning: InternalNoiseZoning = {
           const A = projectWorldToScreen(seg.r.start);
           const B = projectWorldToScreen(seg.r.end);
           // Map screen px -> coarse canvas coords
-          const toCoarse = (screenPt: { x: number; y: number }) => ({ x: (screenPt.x - minPx) / cellPxW, y: (screenPt.y - minPy) / cellPxH });
-          const a = toCoarse(A);
-          const b = toCoarse(B);
+          const a = toCoarsePoint(A);
+          const b = toCoarsePoint(B);
           const strokePx = Math.max(1, (seg.width || 1) / Math.max(1e-6, Math.min(cellPxW, cellPxH)));
           mctx.lineWidth = strokePx;
           mctx.beginPath();
@@ -468,14 +525,25 @@ const NoiseZoning: InternalNoiseZoning = {
           }
         }
         // cache
-        (this as any)._maskCache = { w: coarseW, h: coarseH, cameraX, cameraY, zoom, data: new Uint8Array(coarseRoadMask) };
+        (this as any)._maskCache = {
+          w: coarseW,
+          h: coarseH,
+          cameraX,
+          cameraY,
+          zoom,
+          minPx,
+          minPy,
+          maxPx,
+          maxPy,
+          data: new Uint8Array(coarseRoadMask),
+        };
         maskOk = true;
       }
     } catch (e) {
       // fallback: if rasterization failed, leave mask as zeros
       maskOk = false;
     }
-  // If mask rasterization failed or produced no road pixels, fallback to full mask so
+    // If mask rasterization failed or produced no road pixels, fallback to full mask so
     // the noise is visible across the region (this ensures enabling the overlay always shows noise).
     if (!maskOk) {
       // fill coarseRoadMask with 1s so noise can be rendered across the region
@@ -506,22 +574,26 @@ const NoiseZoning: InternalNoiseZoning = {
       const aNorm = (alpha / 255) || 0;
       this._ctx.fillStyle = `rgba(0,0,0,${aNorm})`;
 
-      // compute pixel size of each coarse cell
-      const cellPxW = (maxPx - minPx + 1) / Math.max(1, coarseW);
-      const cellPxH = (maxPy - minPy + 1) / Math.max(1, coarseH);
-
       for (let gy = 0; gy < coarseH; gy++) {
-        const y0 = Math.round(minPy + gy * cellPxH);
-        const hPx = Math.max(1, Math.round((gy === coarseH - 1) ? (maxPy - minPy + 1) - Math.round(gy * cellPxH) : cellPxH));
+        const y0 = Math.floor(yEdges[Math.max(gy, 0)]);
+        const y1 = Math.ceil(yEdges[Math.min(gy + 1, yEdges.length - 1)]);
+        const clampedY0 = Math.max(0, Math.min(h, y0));
+        const clampedY1 = Math.max(0, Math.min(h, y1));
+        const hPx = clampedY1 - clampedY0;
+        if (!(hPx > 0)) continue;
         for (let gx = 0; gx < coarseW; gx++) {
           const i = gy * coarseW + gx;
           if (!coarseRoadMask[i]) continue; // skip non-road blocks
           const n = coarse[i];
           if (n <= noiseThreshold) continue;
-          const x0 = Math.round(minPx + gx * cellPxW);
-          const wPx = Math.max(1, Math.round((gx === coarseW - 1) ? (maxPx - minPx + 1) - Math.round(gx * cellPxW) : cellPxW));
+          const x0 = Math.floor(xEdges[Math.max(gx, 0)]);
+          const x1 = Math.ceil(xEdges[Math.min(gx + 1, xEdges.length - 1)]);
+          const clampedX0 = Math.max(0, Math.min(w, x0));
+          const clampedX1 = Math.max(0, Math.min(w, x1));
+          const wPx = clampedX1 - clampedX0;
+          if (!(wPx > 0)) continue;
           // draw block
-          this._ctx.fillRect(x0, y0, wPx, hPx);
+          this._ctx.fillRect(clampedX0, clampedY0, wPx, hPx);
         }
       }
 
@@ -542,9 +614,25 @@ const NoiseZoning: InternalNoiseZoning = {
       } else {
         const minCellSizePx = Math.max(1, Math.min(cellPxW, cellPxH));
         const polygons: number[][][] = [];
+        const findIndex = (edges: Float32Array, value: number) => {
+          if (value < edges[0] || value > edges[edges.length - 1]) return -1;
+          let lo = 0;
+          let hi = edges.length - 1;
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (value < edges[mid]) {
+              hi = mid;
+            } else {
+              lo = mid + 1;
+            }
+          }
+          const idx = lo - 1;
+          if (idx < 0) return -1;
+          return Math.min(edges.length - 2, idx);
+        };
         const pointHitsIntersection = (pt: { x: number; y: number }) => {
-          const gx = Math.floor((pt.x - minPx) / cellPxW);
-          const gy = Math.floor((pt.y - minPy) / cellPxH);
+          const gx = findIndex(xEdges, pt.x);
+          const gy = findIndex(yEdges, pt.y);
           if (gx < 0 || gy < 0 || gx >= coarseW || gy >= coarseH) return false;
           return intersectionMask[gy * coarseW + gx] > 0;
         };
@@ -825,11 +913,11 @@ const NoiseZoning: InternalNoiseZoning = {
 
 // marching squares: extract contours from binary grid (values 0/1)
 
-function marchingSquaresContoursScreen(grid: Uint8Array, w: number, h: number, minPx: number, minPy: number, cellPxW: number, cellPxH: number) {
+function marchingSquaresContoursScreen(grid: Uint8Array, w: number, h: number, xEdges: Float32Array, yEdges: Float32Array) {
   const segments: Array<[[number, number], [number, number]]> = [];
   const get = (x: number, y: number) => (x >= 0 && y >= 0 && x < w && y < h) ? (grid[y * w + x] ? 1 : 0) : 0;
-  const sx = (gx: number) => minPx + gx * cellPxW;
-  const sy = (gy: number) => minPy + gy * cellPxH;
+  const sx = (gx: number) => xEdges[Math.max(0, Math.min(xEdges.length - 1, gx))];
+  const sy = (gy: number) => yEdges[Math.max(0, Math.min(yEdges.length - 1, gy))];
   for (let y = 0; y < h - 1; y++) {
     for (let x = 0; x < w - 1; x++) {
       const tl = get(x, y);
