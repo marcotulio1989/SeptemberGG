@@ -421,10 +421,18 @@ const NoiseZoning: InternalNoiseZoning = {
     // coarse grid, stroke with width proportional to segment width and then sample alpha to build mask.
     let maskOk = false;
     try {
-      // cache key based on view
+      // cache key based on view and sampled region in screen-space
       const maskCache = (this as any)._maskCache as any | undefined;
-      if (maskCache && maskCache.w === coarseW && maskCache.h === coarseH && maskCache.cameraX === cameraX && maskCache.cameraY === cameraY && maskCache.zoom === zoom) {
-        // reuse
+      const sameView = !!(maskCache && maskCache.w === coarseW && maskCache.h === coarseH && maskCache.cameraX === cameraX && maskCache.cameraY === cameraY && maskCache.zoom === zoom);
+      const sameBBox = sameView && Array.isArray(maskCache?.bbox)
+        && maskCache.bbox[0] === minPx && maskCache.bbox[1] === minPy
+        && maskCache.bbox[2] === maxPx && maskCache.bbox[3] === maxPy;
+      const sameCellSize = sameBBox
+        && typeof maskCache.cellPxW === 'number' && typeof maskCache.cellPxH === 'number'
+        && Math.abs(maskCache.cellPxW - cellPxW) < 1e-6
+        && Math.abs(maskCache.cellPxH - cellPxH) < 1e-6;
+      if (sameCellSize) {
+        // reuse cached coarse mask when the view and sampled region match exactly
         const src = maskCache.data;
         for (let i = 0; i < coarseRoadMask.length; i++) coarseRoadMask[i] = src[i];
         maskOk = true;
@@ -468,7 +476,17 @@ const NoiseZoning: InternalNoiseZoning = {
           }
         }
         // cache
-        (this as any)._maskCache = { w: coarseW, h: coarseH, cameraX, cameraY, zoom, data: new Uint8Array(coarseRoadMask) };
+        (this as any)._maskCache = {
+          w: coarseW,
+          h: coarseH,
+          cameraX,
+          cameraY,
+          zoom,
+          bbox: [minPx, minPy, maxPx, maxPy],
+          cellPxW,
+          cellPxH,
+          data: new Uint8Array(coarseRoadMask),
+        };
         maskOk = true;
       }
     } catch (e) {
