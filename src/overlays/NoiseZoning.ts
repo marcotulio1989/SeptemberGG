@@ -309,7 +309,6 @@ const NoiseZoning: InternalNoiseZoning = {
     const cameraIsoX = renderModeIsometric ? (isoA * cameraX + isoC * cameraY) : 0;
     const cameraIsoY = renderModeIsometric ? (isoB * cameraX + isoD * cameraY) : 0;
     let minPx = w, minPy = h, maxPx = 0, maxPy = 0;
-    let minWorldX = Infinity, minWorldY = Infinity, maxWorldX = -Infinity, maxWorldY = -Infinity;
     let hasSegments = false;
     for (const s of segsForBbox) {
       if (!s || !s.r) continue;
@@ -333,19 +332,9 @@ const NoiseZoning: InternalNoiseZoning = {
       minPy = Math.min(minPy, a.y, b.y);
       maxPx = Math.max(maxPx, a.x, b.x);
       maxPy = Math.max(maxPy, a.y, b.y);
-      minWorldX = Math.min(minWorldX, s.r.start.x, s.r.end.x);
-      minWorldY = Math.min(minWorldY, s.r.start.y, s.r.end.y);
-      maxWorldX = Math.max(maxWorldX, s.r.start.x, s.r.end.x);
-      maxWorldY = Math.max(maxWorldY, s.r.start.y, s.r.end.y);
     }
     if (!hasSegments) {
       minPx = 0; minPy = 0; maxPx = w - 1; maxPy = h - 1;
-      const fallbackHalfWorldW = (w / Math.max(zoom, 1e-6)) * 0.5;
-      const fallbackHalfWorldH = (h / Math.max(zoom, 1e-6)) * 0.5;
-      minWorldX = cameraX - fallbackHalfWorldW;
-      maxWorldX = cameraX + fallbackHalfWorldW;
-      minWorldY = cameraY - fallbackHalfWorldH;
-      maxWorldY = cameraY + fallbackHalfWorldH;
     }
     if (maxPx < minPx || maxPy < minPy) {
       minPx = 0; minPy = 0; maxPx = w - 1; maxPy = h - 1;
@@ -355,31 +344,6 @@ const NoiseZoning: InternalNoiseZoning = {
     minPy = Math.max(0, Math.floor(minPy - pad));
     maxPx = Math.min(w - 1, Math.ceil(maxPx + pad));
     maxPy = Math.min(h - 1, Math.ceil(maxPy + pad));
-    const padWorld = pad / Math.max(zoom, 1e-6);
-    if (!isFinite(minWorldX) || !isFinite(minWorldY) || !isFinite(maxWorldX) || !isFinite(maxWorldY)) {
-      const fallbackHalfWorldW = (w / Math.max(zoom, 1e-6)) * 0.5;
-      const fallbackHalfWorldH = (h / Math.max(zoom, 1e-6)) * 0.5;
-      minWorldX = cameraX - fallbackHalfWorldW;
-      maxWorldX = cameraX + fallbackHalfWorldW;
-      minWorldY = cameraY - fallbackHalfWorldH;
-      maxWorldY = cameraY + fallbackHalfWorldH;
-    }
-    if (padWorld > 0) {
-      minWorldX -= padWorld;
-      maxWorldX += padWorld;
-      minWorldY -= padWorld;
-      maxWorldY += padWorld;
-    }
-    if (maxWorldX <= minWorldX) {
-      const adjust = padWorld > 0 ? padWorld : (1 / Math.max(zoom, 1e-6));
-      minWorldX -= adjust;
-      maxWorldX += adjust;
-    }
-    if (maxWorldY <= minWorldY) {
-      const adjust = padWorld > 0 ? padWorld : (1 / Math.max(zoom, 1e-6));
-      minWorldY -= adjust;
-      maxWorldY += adjust;
-    }
 
     try { if ((this as any)._DEBUG) console.log('[NoiseZoning] redraw pixel bbox', minPx, minPy, maxPx, maxPy); } catch (e) {}
 
@@ -414,15 +378,40 @@ const NoiseZoning: InternalNoiseZoning = {
     const cellPxH = regionPxH / Math.max(1, coarseH);
     // helper: convert screen px -> world coords (handles isometric)
     // Precompute sample positions: sample at center of each coarse cell in screen-space, map back to world and sample noise
-    const regionWorldW = Math.max(1e-6, maxWorldX - minWorldX);
-    const regionWorldH = Math.max(1e-6, maxWorldY - minWorldY);
-    const cellWorldW = regionWorldW / Math.max(1, coarseW);
-    const cellWorldH = regionWorldH / Math.max(1, coarseH);
+    const safeZoom = Math.max(zoom, 1e-6);
+    const invZoom = 1 / safeZoom;
+    const screenToWorld = (screenX: number, screenY: number) => {
+      if (renderModeIsometric) {
+        const isoX = cameraIsoX + (screenX - cx) * invZoom;
+        const isoY = cameraIsoY + (screenY - cy) * invZoom;
+        const det = (isoA * isoD) - (isoB * isoC);
+        if (!isFinite(det) || Math.abs(det) < 1e-8 || !isFinite(isoX) || !isFinite(isoY)) {
+          return {
+            x: cameraX + (screenX - cx) * invZoom,
+            y: cameraY + (screenY - cy) * invZoom,
+          };
+        }
+        const worldX = (isoD * isoX - isoC * isoY) / det;
+        const worldY = (-isoB * isoX + isoA * isoY) / det;
+        if (!isFinite(worldX) || !isFinite(worldY)) {
+          return {
+            x: cameraX + (screenX - cx) * invZoom,
+            y: cameraY + (screenY - cy) * invZoom,
+          };
+        }
+        return { x: worldX, y: worldY };
+      }
+      return {
+        x: cameraX + (screenX - cx) * invZoom,
+        y: cameraY + (screenY - cy) * invZoom,
+      };
+    };
     for (let gy = 0; gy < coarseH; gy++) {
-      const worldY = minWorldY + (gy + 0.5) * cellWorldH;
+      const sampleScreenY = minPy + (gy + 0.5) * cellPxH;
       for (let gx = 0; gx < coarseW; gx++) {
         const idx = gy * coarseW + gx;
-        const worldX = minWorldX + (gx + 0.5) * cellWorldW;
+        const sampleScreenX = minPx + (gx + 0.5) * cellPxW;
+        const { x: worldX, y: worldY } = screenToWorld(sampleScreenX, sampleScreenY);
         coarse[idx] = sampleWarpedNoise(this._noise, worldX * baseScale, worldY * baseScale, octaves, lacunarity, gain);
       }
     }
