@@ -15,6 +15,7 @@ import type { Point } from '../generic_modules/math';
 import NoiseZoning from '../overlays/NoiseZoning';
 import { createGrassTexture } from '../overlays/grassTexture';
 import Quadtree from '../lib/quadtree';
+import { CrackPatternAssignments, getCrackPatternById } from '../lib/crackPatterns';
 // ClipperLib (sem typings completos) - usar require para acessar classes
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const ClipperLib: any = require('clipper-lib');
@@ -1202,6 +1203,8 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         container.removeChildren();
         const cfg = (config as any).render;
         const show = !!cfg.showCrackedRoadsOutline;
+        if (roadOutlines.current) roadOutlines.current.visible = !show;
+        if (roadLaneOutlines.current) roadLaneOutlines.current.visible = !show;
         if (!show) {
             container.visible = false;
             return;
@@ -1243,22 +1246,22 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             container.visible = false;
             return;
         }
-        const color: number = cfg.crackedRoadColor ?? 0x00E5FF;
-        const alpha: number = cfg.crackedRoadAlpha ?? 0.88;
-        const strokePx: number = cfg.crackedRoadStrokePx ?? 1.35;
-        const seedDensity: number = Math.max(0.005, cfg.crackedRoadSeedDensity ?? 0.055);
-        const sampleAlong: number = Math.max(0.25, cfg.crackedRoadSampleDensityAlong ?? 1.6);
-        const sampleAcross: number = Math.max(0.25, cfg.crackedRoadSampleDensityAcross ?? 1.1);
-        const threshold: number = cfg.crackedRoadVoronoiThreshold ?? 0.65;
-        const minLength: number = Math.max(1, cfg.crackedRoadMinLengthM ?? 5.0);
-        const maxSeeds: number = Math.max(8, cfg.crackedRoadMaxSeeds ?? 520);
-        const maxSamplesAlong: number = Math.max(4, cfg.crackedRoadMaxSamplesAlong ?? 240);
-        const maxSamplesAcross: number = Math.max(4, cfg.crackedRoadMaxSamplesAcross ?? 96);
-        const probeStep: number = Math.max(0.4, cfg.crackedRoadProbeStepM ?? 1.1);
+        const baseColor: number = cfg.crackedRoadColor ?? 0x00E5FF;
+        const baseAlpha: number = Math.min(1, Math.max(0, cfg.crackedRoadAlpha ?? 0.88));
+        const baseStrokePx: number = Math.max(0.05, cfg.crackedRoadStrokePx ?? 1.35);
+        const baseSeedDensity: number = Math.max(0.005, cfg.crackedRoadSeedDensity ?? 0.055);
+        const baseSampleAlong: number = Math.max(0.25, cfg.crackedRoadSampleDensityAlong ?? 1.6);
+        const baseSampleAcross: number = Math.max(0.25, cfg.crackedRoadSampleDensityAcross ?? 1.1);
+        const baseThreshold: number = clamp(cfg.crackedRoadVoronoiThreshold ?? 0.65, 0, 1);
+        const baseMinLength: number = Math.max(1, cfg.crackedRoadMinLengthM ?? 5.0);
+        const baseMaxSeeds: number = Math.max(8, cfg.crackedRoadMaxSeeds ?? 520);
+        const baseMaxSamplesAlong: number = Math.max(4, cfg.crackedRoadMaxSamplesAlong ?? 240);
+        const baseMaxSamplesAcross: number = Math.max(4, cfg.crackedRoadMaxSamplesAcross ?? 96);
+        const baseProbeStep: number = Math.max(0.4, cfg.crackedRoadProbeStepM ?? 1.1);
+        const assignments = ((cfg.crackedRoadPatternAssignments as CrackPatternAssignments | undefined)?.segments) ?? null;
         const globalSeed: number = (NoiseZoning as any)?.getSeed?.call(NoiseZoning) ?? 0;
 
         const graphics = new PIXI.Graphics();
-        graphics.lineStyle(strokePx, color, alpha, 0.5, true);
         let drewAny = false;
 
         segments.forEach((segment, segmentIndex) => {
@@ -1274,7 +1277,24 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             const uy = vy / segLen;
             const nx = -uy;
             const ny = ux;
-            const steps = Math.max(4, Math.ceil(segLen / probeStep));
+            const segKey = segment?.id != null ? String(segment.id) : `idx:${segmentIndex}`;
+            const patternId = assignments ? assignments[segKey] : undefined;
+            const pattern = patternId ? getCrackPatternById(patternId) : undefined;
+            const mult = pattern?.multipliers || {};
+            const segSeedDensity = Math.max(0.005, baseSeedDensity * (mult.seedDensity ?? 1));
+            const segSampleAlong = Math.max(0.25, baseSampleAlong * (mult.sampleAlong ?? 1));
+            const segSampleAcross = Math.max(0.25, baseSampleAcross * (mult.sampleAcross ?? 1));
+            const segThreshold = clamp(baseThreshold + (pattern?.thresholdOffset ?? 0), 0, 1);
+            const segMinLength = Math.max(0.5, baseMinLength * (mult.minLength ?? 1));
+            const segMaxSeeds = Math.max(8, Math.round(baseMaxSeeds * (mult.maxSeeds ?? 1)));
+            const segMaxSamplesAlong = Math.max(4, Math.round(baseMaxSamplesAlong * (mult.maxSamplesAlong ?? 1)));
+            const segMaxSamplesAcross = Math.max(4, Math.round(baseMaxSamplesAcross * (mult.maxSamplesAcross ?? 1)));
+            const segProbeStep = Math.max(0.25, baseProbeStep * (mult.probeStep ?? 1));
+            const segStrokePx = Math.max(0.05, baseStrokePx * (mult.strokePx ?? 1));
+            const segAlpha = Math.max(0.05, Math.min(1, baseAlpha * (mult.alpha ?? 1)));
+            const segColor = pattern?.color ?? baseColor;
+            const segSeedOffset = pattern?.seedOffset ?? 0;
+            const steps = Math.max(4, Math.ceil(segLen / segProbeStep));
             const intervals: Array<{ start: number; end: number }> = [];
             let runStart: number | null = null;
             for (let s = 0; s <= steps; s++) {
@@ -1298,18 +1318,18 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 const endT = clamp(interval.end, 0, 1);
                 if (!(endT > startT + 1e-4)) return;
                 const intervalLen = segLen * (endT - startT);
-                if (intervalLen < minLength) return;
+                if (intervalLen < segMinLength) return;
                 const area = intervalLen * roadWidth;
-                let seeds = Math.max(8, Math.round(area * seedDensity));
-                seeds = Math.min(seeds, maxSeeds);
+                let seeds = Math.max(8, Math.round(area * segSeedDensity));
+                seeds = Math.min(seeds, segMaxSeeds);
                 if (seeds < 2) return;
-                let samplesU = Math.max(2, Math.round(intervalLen * sampleAlong));
-                let samplesV = Math.max(2, Math.round(roadWidth * sampleAcross));
-                samplesU = Math.min(samplesU, maxSamplesAlong);
-                samplesV = Math.min(samplesV, maxSamplesAcross);
+                let samplesU = Math.max(2, Math.round(intervalLen * segSampleAlong));
+                let samplesV = Math.max(2, Math.round(roadWidth * segSampleAcross));
+                samplesU = Math.min(samplesU, segMaxSamplesAlong);
+                samplesV = Math.min(samplesV, segMaxSamplesAcross);
                 if (samplesU < 2 || samplesV < 2) return;
-                const hash = hashNumbers(globalSeed, segmentIndex, intervalIndex, startT * 1000, endT * 1000, roadWidth);
-                const contours = generateVoronoiContours(intervalLen, roadWidth, seeds, samplesU, samplesV, threshold, hash);
+                const hash = hashNumbers(globalSeed, segmentIndex, intervalIndex, startT * 1000, endT * 1000, roadWidth, segSeedOffset);
+                const contours = generateVoronoiContours(intervalLen, roadWidth, seeds, samplesU, samplesV, segThreshold, hash);
                 if (!contours.length) return;
                 const startOffset = segLen * startT;
                 const baseX = start.x + ux * startOffset;
@@ -1318,6 +1338,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 for (const contour of contours) {
                     if (!contour || contour.length < 2) continue;
                     if (polylineLength(contour) < minContourLen) continue;
+                    graphics.lineStyle(segStrokePx, segColor, segAlpha, 0.5, true);
                     contour.forEach((pt, idx) => {
                         const along = pt[0];
                         const lateral = pt[1];
