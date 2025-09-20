@@ -48,6 +48,65 @@ const createPRNG = (seed: number) => {
     };
 };
 
+type CrackVariant = {
+    id: string;
+    seedDensityMul: number;
+    sampleAlongMul: number;
+    sampleAcrossMul: number;
+    thresholdOffset: number;
+    strokeMul: number;
+    minLengthMul: number;
+    minContourMul: number;
+    seedJitter: number;
+};
+
+const CRACK_VARIANTS: CrackVariant[] = [
+    {
+        id: 'fissuras-finas',
+        seedDensityMul: 1.25,
+        sampleAlongMul: 1.15,
+        sampleAcrossMul: 1.1,
+        thresholdOffset: -0.08,
+        strokeMul: 0.75,
+        minLengthMul: 0.85,
+        minContourMul: 0.9,
+        seedJitter: 0x1a2b3c,
+    },
+    {
+        id: 'fraturas-grossas',
+        seedDensityMul: 0.7,
+        sampleAlongMul: 0.85,
+        sampleAcrossMul: 0.9,
+        thresholdOffset: 0.1,
+        strokeMul: 1.5,
+        minLengthMul: 1.1,
+        minContourMul: 1.2,
+        seedJitter: 0x2b3c4d,
+    },
+    {
+        id: 'reticulado',
+        seedDensityMul: 1.05,
+        sampleAlongMul: 1.35,
+        sampleAcrossMul: 1.45,
+        thresholdOffset: -0.02,
+        strokeMul: 1.0,
+        minLengthMul: 1.0,
+        minContourMul: 1.05,
+        seedJitter: 0x3c4d5e,
+    },
+    {
+        id: 'ramificacoes',
+        seedDensityMul: 0.95,
+        sampleAlongMul: 0.9,
+        sampleAcrossMul: 0.75,
+        thresholdOffset: 0.04,
+        strokeMul: 1.2,
+        minLengthMul: 1.05,
+        minContourMul: 0.95,
+        seedJitter: 0x4d5e6f,
+    },
+];
+
 const polylineLength = (poly: LocalPoint[]) => {
     let total = 0;
     for (let i = 1; i < poly.length; i++) {
@@ -1256,9 +1315,9 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         const maxSamplesAcross: number = Math.max(4, cfg.crackedRoadMaxSamplesAcross ?? 96);
         const probeStep: number = Math.max(0.4, cfg.crackedRoadProbeStepM ?? 1.1);
         const globalSeed: number = (NoiseZoning as any)?.getSeed?.call(NoiseZoning) ?? 0;
+        const variantSeed: number = Math.floor(cfg.crackedRoadVariantSeed ?? 0) >>> 0;
 
         const graphics = new PIXI.Graphics();
-        graphics.lineStyle(strokePx, color, alpha, 0.5, true);
         let drewAny = false;
 
         segments.forEach((segment, segmentIndex) => {
@@ -1275,6 +1334,20 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             const nx = -uy;
             const ny = ux;
             const steps = Math.max(4, Math.ceil(segLen / probeStep));
+            const variantIndexSeed = CRACK_VARIANTS.length
+                ? hashNumbers(variantSeed, segment.id ?? segmentIndex, 0x9e3779b9)
+                : 0;
+            const variant = CRACK_VARIANTS.length
+                ? CRACK_VARIANTS[variantIndexSeed % CRACK_VARIANTS.length]
+                : null;
+            const variantSeedDensity = seedDensity * (variant?.seedDensityMul ?? 1);
+            const variantSampleAlong = sampleAlong * (variant?.sampleAlongMul ?? 1);
+            const variantSampleAcross = sampleAcross * (variant?.sampleAcrossMul ?? 1);
+            const variantThreshold = clamp(threshold + (variant?.thresholdOffset ?? 0), 0.05, 0.95);
+            const variantMinLength = Math.max(1, minLength * (variant?.minLengthMul ?? 1));
+            const variantStrokePx = Math.max(0.05, strokePx * (variant?.strokeMul ?? 1));
+            const variantSeedJitter = variant?.seedJitter ?? 0;
+            const variantMinContourMul = variant?.minContourMul ?? 1;
             const intervals: Array<{ start: number; end: number }> = [];
             let runStart: number | null = null;
             for (let s = 0; s <= steps; s++) {
@@ -1298,26 +1371,44 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 const endT = clamp(interval.end, 0, 1);
                 if (!(endT > startT + 1e-4)) return;
                 const intervalLen = segLen * (endT - startT);
-                if (intervalLen < minLength) return;
+                if (intervalLen < variantMinLength) return;
                 const area = intervalLen * roadWidth;
-                let seeds = Math.max(8, Math.round(area * seedDensity));
+                let seeds = Math.max(8, Math.round(area * variantSeedDensity));
                 seeds = Math.min(seeds, maxSeeds);
                 if (seeds < 2) return;
-                let samplesU = Math.max(2, Math.round(intervalLen * sampleAlong));
-                let samplesV = Math.max(2, Math.round(roadWidth * sampleAcross));
+                let samplesU = Math.max(2, Math.round(intervalLen * variantSampleAlong));
+                let samplesV = Math.max(2, Math.round(roadWidth * variantSampleAcross));
                 samplesU = Math.min(samplesU, maxSamplesAlong);
                 samplesV = Math.min(samplesV, maxSamplesAcross);
                 if (samplesU < 2 || samplesV < 2) return;
-                const hash = hashNumbers(globalSeed, segmentIndex, intervalIndex, startT * 1000, endT * 1000, roadWidth);
-                const contours = generateVoronoiContours(intervalLen, roadWidth, seeds, samplesU, samplesV, threshold, hash);
+                const hash = hashNumbers(
+                    globalSeed,
+                    variantIndexSeed,
+                    variantSeedJitter,
+                    segmentIndex,
+                    intervalIndex,
+                    startT * 1000,
+                    endT * 1000,
+                    roadWidth,
+                );
+                const contours = generateVoronoiContours(
+                    intervalLen,
+                    roadWidth,
+                    seeds,
+                    samplesU,
+                    samplesV,
+                    variantThreshold,
+                    hash,
+                );
                 if (!contours.length) return;
                 const startOffset = segLen * startT;
                 const baseX = start.x + ux * startOffset;
                 const baseY = start.y + uy * startOffset;
-                const minContourLen = Math.max(roadWidth * 0.35, 2.5);
+                const minContourLen = Math.max(roadWidth * 0.35 * variantMinContourMul, 2.5);
                 for (const contour of contours) {
                     if (!contour || contour.length < 2) continue;
                     if (polylineLength(contour) < minContourLen) continue;
+                    graphics.lineStyle(variantStrokePx, color, alpha, 0.5, true);
                     contour.forEach((pt, idx) => {
                         const along = pt[0];
                         const lateral = pt[1];

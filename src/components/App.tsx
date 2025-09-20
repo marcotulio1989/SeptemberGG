@@ -249,6 +249,7 @@ const App: React.FC = () => {
     const [crackMaxSamplesAlong, setCrackMaxSamplesAlong] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAlong ?? 240);
     const [crackMaxSamplesAcross, setCrackMaxSamplesAcross] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAcross ?? 96);
     const [crackProbeStep, setCrackProbeStep] = useState<number>(() => (config as any).render.crackedRoadProbeStepM ?? 1.1);
+    const [crackVariantSeed, setCrackVariantSeed] = useState<number>(() => (config as any).render.crackedRoadVariantSeed ?? 0);
     const broadcastCrackedRoadConfigChange = useCallback(() => {
         try { window.dispatchEvent(new CustomEvent('cracked-roads-config-change')); } catch (e) {}
     }, []);
@@ -319,7 +320,13 @@ const App: React.FC = () => {
         setCrackMaxSamplesAlong(240);
         setCrackMaxSamplesAcross(96);
         setCrackProbeStep(1.1);
+        setCrackVariantSeed(0);
     };
+
+    const randomizeCrackVariants = useCallback(() => {
+        const seed = Math.floor(Math.random() * 0x1_0000_0000) >>> 0;
+        setCrackVariantSeed(seed);
+    }, []);
 
     useEffect(() => {
         try { (config as any).render.showCrackedRoadsOutline = crackedRoadsVisible; } catch (e) {}
@@ -370,6 +377,8 @@ const App: React.FC = () => {
         renderCfg.crackedRoadMaxSamplesAlong = Math.max(4, Math.round(crackMaxSamplesAlong));
         renderCfg.crackedRoadMaxSamplesAcross = Math.max(4, Math.round(crackMaxSamplesAcross));
         renderCfg.crackedRoadProbeStepM = Math.max(0.25, crackProbeStep);
+        const safeVariantSeed = Number.isFinite(crackVariantSeed) ? (Math.floor(Math.abs(crackVariantSeed)) >>> 0) : 0;
+        renderCfg.crackedRoadVariantSeed = safeVariantSeed;
         broadcastCrackedRoadConfigChange();
     }, [
         crackAlpha,
@@ -384,6 +393,7 @@ const App: React.FC = () => {
         crackSeedDensity,
         crackStrokePx,
         crackThreshold,
+        crackVariantSeed,
         broadcastCrackedRoadConfigChange,
     ]);
 
@@ -1103,9 +1113,26 @@ const App: React.FC = () => {
                     </div>
                     <button
                         type="button"
-                        onClick={resetCrackConfig}
+                        onClick={randomizeCrackVariants}
                         style={{
                             marginTop: 16,
+                            width: '100%',
+                            padding: '6px 0',
+                            borderRadius: 4,
+                            border: 'none',
+                            background: '#37474F',
+                            color: '#ECEFF1',
+                            cursor: 'pointer',
+                            fontWeight: 600,
+                        }}
+                    >
+                        Randomizar tipos
+                    </button>
+                    <button
+                        type="button"
+                        onClick={resetCrackConfig}
+                        style={{
+                            marginTop: 8,
                             width: '100%',
                             padding: '6px 0',
                             borderRadius: 4,
