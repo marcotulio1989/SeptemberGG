@@ -358,27 +358,24 @@ const NoiseZoning: InternalNoiseZoning = {
     // Compute coarse grid size in screen-space so the number of samples is bounded
     const regionPxW = (maxPx - minPx + 1);
     const regionPxH = (maxPy - minPy + 1);
-    // compute initial coarse grid size
-    let coarseW = Math.max(2, Math.floor(regionPxW / sampleStepPx) + 1);
-    let coarseH = Math.max(2, Math.floor(regionPxH / sampleStepPx) + 1);
+    // Estimate coarse grid counts based on the requested sample step.
+    const estimateCoarseDims = () => ({
+      w: Math.max(2, Math.floor(regionPxW / sampleStepPx) + 1),
+      h: Math.max(2, Math.floor(regionPxH / sampleStepPx) + 1),
+    });
+    let { w: estimatedCoarseW, h: estimatedCoarseH } = estimateCoarseDims();
     // Cap total cells to avoid explosion at high zoom — adaptively increase sampleStepPx
     const MAX_CELLS = 20000; // safe upper bound for cells (tunable)
-    let totalCells = coarseW * coarseH;
+    let totalCells = estimatedCoarseW * estimatedCoarseH;
     if (totalCells > MAX_CELLS) {
       const scale = Math.sqrt(totalCells / MAX_CELLS);
       // increase sample step in pixel-space to reduce sample count
       const newStep = Math.max(sampleStepPx, Math.ceil(sampleStepPx * scale));
       sampleStepPx = newStep;
-      coarseW = Math.max(2, Math.floor(regionPxW / sampleStepPx) + 1);
-      coarseH = Math.max(2, Math.floor(regionPxH / sampleStepPx) + 1);
-      totalCells = coarseW * coarseH;
+      ({ w: estimatedCoarseW, h: estimatedCoarseH } = estimateCoarseDims());
+      totalCells = estimatedCoarseW * estimatedCoarseH;
       try { if ((this as any)._DEBUG) console.log('[NoiseZoning] capped coarse cells', totalCells, 'using stepPx', sampleStepPx); } catch (e) {}
     }
-    const coarse = new Float32Array(coarseW * coarseH);
-    const coarseRoadMask = new Uint8Array(coarseW * coarseH); // 0/1 mask indicating presence of road
-    // pixel size of each coarse cell (in screen px)
-    const cellPxW = regionPxW / Math.max(1, coarseW);
-    const cellPxH = regionPxH / Math.max(1, coarseH);
     // helper: convert screen px -> world coords (handles isometric)
     // Precompute sample positions: sample at center of each coarse cell in screen-space, map back to world and sample noise
     const safeZoom = Math.max(zoom, 1e-6);
@@ -410,24 +407,80 @@ const NoiseZoning: InternalNoiseZoning = {
       };
     };
 
-    // Define the size of a coarse "pixel" in world units. This is used to snap the
-    // noise sampling coordinates to a world-aligned grid.
-    const worldStep = sampleStepPx / safeZoom;
+    const pixelSizePx = sampleStepPx;
+    const worldStep = pixelSizePx / safeZoom;
+    if (!(worldStep > 0) || !Number.isFinite(worldStep)) {
+      return;
+    }
+    const invWorldStep = 1 / worldStep;
+
+    const worldCorners = [
+      screenToWorld(minPx, minPy),
+      screenToWorld(maxPx, minPy),
+      screenToWorld(minPx, maxPy),
+      screenToWorld(maxPx, maxPy),
+    ];
+    let minWorldX = Infinity;
+    let minWorldY = Infinity;
+    let maxWorldX = -Infinity;
+    let maxWorldY = -Infinity;
+    for (const corner of worldCorners) {
+      const wx = corner?.x;
+      const wy = corner?.y;
+      if (!Number.isFinite(wx) || !Number.isFinite(wy)) continue;
+      if (wx < minWorldX) minWorldX = wx;
+      if (wy < minWorldY) minWorldY = wy;
+      if (wx > maxWorldX) maxWorldX = wx;
+      if (wy > maxWorldY) maxWorldY = wy;
+    }
+    if (!Number.isFinite(minWorldX) || !Number.isFinite(minWorldY) || !Number.isFinite(maxWorldX) || !Number.isFinite(maxWorldY)) {
+      minWorldX = cameraX - (cx - minPx) * invZoom;
+      maxWorldX = cameraX + (maxPx - cx) * invZoom;
+      minWorldY = cameraY - (cy - minPy) * invZoom;
+      maxWorldY = cameraY + (maxPy - cy) * invZoom;
+    }
+
+    const padCells = 2;
+    let gridMinX = Math.floor(minWorldX * invWorldStep) - padCells;
+    let gridMaxX = Math.floor(maxWorldX * invWorldStep) + padCells;
+    let gridMinY = Math.floor(minWorldY * invWorldStep) - padCells;
+    let gridMaxY = Math.floor(maxWorldY * invWorldStep) + padCells;
+    if (gridMaxX < gridMinX) {
+      const tmp = gridMinX;
+      gridMinX = gridMaxX;
+      gridMaxX = tmp;
+    }
+    if (gridMaxY < gridMinY) {
+      const tmp = gridMinY;
+      gridMinY = gridMaxY;
+      gridMaxY = tmp;
+    }
+
+    const coarseW = Math.max(1, gridMaxX - gridMinX + 1);
+    const coarseH = Math.max(1, gridMaxY - gridMinY + 1);
+    const coarse = new Float32Array(coarseW * coarseH);
+    const coarseRoadMask = new Uint8Array(coarseW * coarseH); // 0/1 mask indicating presence of road
+    const coarseCenters = new Float32Array(coarseW * coarseH * 2);
 
     for (let gy = 0; gy < coarseH; gy++) {
-      const sampleScreenY = minPy + (gy + 0.5) * cellPxH;
+      const gridY = gridMinY + gy;
+      const worldY = (gridY + 0.5) * worldStep;
       for (let gx = 0; gx < coarseW; gx++) {
         const idx = gy * coarseW + gx;
-        const sampleScreenX = minPx + (gx + 0.5) * cellPxW;
-        const { x: worldX, y: worldY } = screenToWorld(sampleScreenX, sampleScreenY);
-        // Snap world coordinates to a grid. This anchors the noise pattern to the world,
-        // preventing the visual "swimming" artifact when the camera moves.
-        const snappedWorldX = Math.round(worldX / worldStep) * worldStep;
-        const snappedWorldY = Math.round(worldY / worldStep) * worldStep;
-
-        coarse[idx] = sampleWarpedNoise(this._noise, snappedWorldX * baseScale, snappedWorldY * baseScale, octaves, lacunarity, gain);
+        const gridX = gridMinX + gx;
+        const worldX = (gridX + 0.5) * worldStep;
+        coarse[idx] = sampleWarpedNoise(this._noise, worldX * baseScale, worldY * baseScale, octaves, lacunarity, gain);
+        const screenPt = projectWorldToScreen({ x: worldX, y: worldY });
+        if (!Number.isFinite(screenPt.x) || !Number.isFinite(screenPt.y)) {
+          coarseCenters[idx * 2] = NaN;
+          coarseCenters[idx * 2 + 1] = NaN;
+        } else {
+          coarseCenters[idx * 2] = screenPt.x;
+          coarseCenters[idx * 2 + 1] = screenPt.y;
+        }
       }
     }
+
     // Build a rasterized low-resolution mask of roads once for this view (coarse grid). This is much faster
     // than querying the quadtree per sample. We draw all segments into an offscreen canvas sized to the
     // coarse grid, stroke with width proportional to segment width and then sample alpha to build mask.
@@ -439,23 +492,19 @@ const NoiseZoning: InternalNoiseZoning = {
         maskCache &&
         maskCache.w === coarseW &&
         maskCache.h === coarseH &&
-        maskCache.cameraX === cameraX &&
-        maskCache.cameraY === cameraY &&
-        maskCache.zoom === zoom &&
-        maskCache.minPx === minPx &&
-        maskCache.minPy === minPy &&
-        maskCache.maxPx === maxPx &&
-        maskCache.maxPy === maxPy
+        maskCache.gridMinX === gridMinX &&
+        maskCache.gridMinY === gridMinY &&
+        maskCache.worldStep === worldStep
       ) {
         // reuse
         const src = maskCache.data;
         for (let i = 0; i < coarseRoadMask.length; i++) coarseRoadMask[i] = src[i];
         maskOk = true;
       } else {
-  const maskCanvas = document.createElement('canvas');
-  maskCanvas.width = coarseW;
-  maskCanvas.height = coarseH;
-  const mctx = maskCanvas.getContext('2d');
+        const maskCanvas = document.createElement('canvas');
+        maskCanvas.width = coarseW;
+        maskCanvas.height = coarseH;
+        const mctx = maskCanvas.getContext('2d');
         if (!mctx) throw new Error('no ctx');
         // clear
         mctx.clearRect(0, 0, coarseW, coarseH);
@@ -464,17 +513,17 @@ const NoiseZoning: InternalNoiseZoning = {
         mctx.strokeStyle = 'white';
         mctx.lineCap = 'butt';
 
-        // Helpers: project world point -> screen pixel then to coarse canvas coordinates
+        // Helpers: convert world point -> coarse grid coordinates
+        const toCoarse = (worldPt: { x: number; y: number }) => ({
+          x: worldPt.x * invWorldStep - gridMinX,
+          y: worldPt.y * invWorldStep - gridMinY,
+        });
         for (const seg of roadSegments) {
           if (!seg || !seg.r) continue;
-          // project endpoints to screen px using same projection as above
-          const A = projectWorldToScreen(seg.r.start);
-          const B = projectWorldToScreen(seg.r.end);
-          // Map screen px -> coarse canvas coords
-          const toCoarse = (screenPt: { x: number; y: number }) => ({ x: (screenPt.x - minPx) / cellPxW, y: (screenPt.y - minPy) / cellPxH });
-          const a = toCoarse(A);
-          const b = toCoarse(B);
-          const strokePx = Math.max(1, (seg.width || 1) / Math.max(1e-6, Math.min(cellPxW, cellPxH)));
+          const a = toCoarse(seg.r.start);
+          const b = toCoarse(seg.r.end);
+          if (!Number.isFinite(a.x) || !Number.isFinite(a.y) || !Number.isFinite(b.x) || !Number.isFinite(b.y)) continue;
+          const strokePx = Math.max(1, (seg.width || 1) / Math.max(1e-6, worldStep));
           mctx.lineWidth = strokePx;
           mctx.beginPath();
           mctx.moveTo(a.x, a.y);
@@ -494,13 +543,9 @@ const NoiseZoning: InternalNoiseZoning = {
         (this as any)._maskCache = {
           w: coarseW,
           h: coarseH,
-          cameraX,
-          cameraY,
-          zoom,
-          minPx,
-          minPy,
-          maxPx,
-          maxPy,
+          gridMinX,
+          gridMinY,
+          worldStep,
           data: new Uint8Array(coarseRoadMask),
         };
         maskOk = true;
@@ -540,22 +585,24 @@ const NoiseZoning: InternalNoiseZoning = {
       const aNorm = (alpha / 255) || 0;
       this._ctx.fillStyle = `rgba(0,0,0,${aNorm})`;
 
-      // compute pixel size of each coarse cell
-      const cellPxW = (maxPx - minPx + 1) / Math.max(1, coarseW);
-      const cellPxH = (maxPy - minPy + 1) / Math.max(1, coarseH);
+      const drawW = Math.max(1, Math.ceil(pixelSizePx));
+      const drawH = Math.max(1, Math.ceil(pixelSizePx));
+      const halfW = drawW * 0.5;
+      const halfH = drawH * 0.5;
 
       for (let gy = 0; gy < coarseH; gy++) {
-        const y0 = Math.round(minPy + gy * cellPxH);
-        const hPx = Math.max(1, Math.round((gy === coarseH - 1) ? (maxPy - minPy + 1) - Math.round(gy * cellPxH) : cellPxH));
         for (let gx = 0; gx < coarseW; gx++) {
           const i = gy * coarseW + gx;
           if (!coarseRoadMask[i]) continue; // skip non-road blocks
           const n = coarse[i];
           if (n <= noiseThreshold) continue;
-          const x0 = Math.round(minPx + gx * cellPxW);
-          const wPx = Math.max(1, Math.round((gx === coarseW - 1) ? (maxPx - minPx + 1) - Math.round(gx * cellPxW) : cellPxW));
-          // draw block
-          this._ctx.fillRect(x0, y0, wPx, hPx);
+          const centerX = coarseCenters[i * 2];
+          const centerY = coarseCenters[i * 2 + 1];
+          if (!Number.isFinite(centerX) || !Number.isFinite(centerY)) continue;
+          if (centerX + halfW < minPx || centerX - halfW > maxPx || centerY + halfH < minPy || centerY - halfH > maxPy) continue;
+          const x0 = Math.round(centerX - halfW);
+          const y0 = Math.round(centerY - halfH);
+          this._ctx.fillRect(x0, y0, drawW, drawH);
         }
       }
 
@@ -569,16 +616,20 @@ const NoiseZoning: InternalNoiseZoning = {
       // Compute outlines by following the actual road geometry for the segments
       // whose centerline intersects noisy cells. This ensures the contour hugs
       // the affected streets instead of the noise field itself.
-      const contourKey = `${this._seed}|intersection|${this._params.baseScale}|${this._params.octaves}|${this._params.lacunarity}|${this._params.gain}|${coarseW}x${coarseH}|${cameraX.toFixed(3)}|${cameraY.toFixed(3)}|${zoom.toFixed(3)}|${noiseThreshold.toFixed(3)}|${minPx}|${minPy}|${maxPx}|${maxPy}|${roadSegments.length}`;
+      const contourKey = `${this._seed}|intersection|${this._params.baseScale}|${this._params.octaves}|${this._params.lacunarity}|${this._params.gain}|${coarseW}x${coarseH}|grid:${gridMinX},${gridMinY}|step:${worldStep.toFixed(6)}|${cameraX.toFixed(3)}|${cameraY.toFixed(3)}|${zoom.toFixed(3)}|${noiseThreshold.toFixed(3)}|${roadSegments.length}`;
       let roadPolys: number[][][] = [];
       if (this._contourCache && this._contourCache.key === contourKey) {
         roadPolys = this._contourCache.contours || [];
       } else {
-        const minCellSizePx = Math.max(1, Math.min(cellPxW, cellPxH));
+        const minCellSizePx = Math.max(1, Math.ceil(pixelSizePx));
         const polygons: number[][][] = [];
         const pointHitsIntersection = (pt: { x: number; y: number }) => {
-          const gx = Math.floor((pt.x - minPx) / cellPxW);
-          const gy = Math.floor((pt.y - minPy) / cellPxH);
+          const worldPt = screenToWorld(pt.x, pt.y);
+          const wx = worldPt?.x;
+          const wy = worldPt?.y;
+          if (!Number.isFinite(wx) || !Number.isFinite(wy)) return false;
+          const gx = Math.floor(wx * invWorldStep) - gridMinX;
+          const gy = Math.floor(wy * invWorldStep) - gridMinY;
           if (gx < 0 || gy < 0 || gx >= coarseW || gy >= coarseH) return false;
           return intersectionMask[gy * coarseW + gx] > 0;
         };
@@ -689,8 +740,25 @@ const NoiseZoning: InternalNoiseZoning = {
         this._ctx.restore();
       }
     }
-  // Store a small coarse cache so subsequent redraws can reuse the intersection mask
-  this._pixelCache = { w, h, cameraX, cameraY, zoom, bbox: [minPx, minPy, maxPx, maxPy], data: { type: 'coarse', coarseW, coarseH, intersectionMask: intersectionMask } };
+    // Store a small coarse cache so subsequent redraws can reuse the intersection mask
+    this._pixelCache = {
+      w,
+      h,
+      cameraX,
+      cameraY,
+      zoom,
+      bbox: [minPx, minPy, maxPx, maxPy],
+      data: {
+        type: 'coarse',
+        coarseW,
+        coarseH,
+        gridMinX,
+        gridMinY,
+        worldStep,
+        pixelSizePx,
+        intersectionMask: intersectionMask,
+      },
+    };
     try { if ((this as any)._DEBUG) console.log('[NoiseZoning] redraw FINISHED and cached pixels'); } catch (e) {}
   },
   _syncSizeAndRedraw() {
