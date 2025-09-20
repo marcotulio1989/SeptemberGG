@@ -548,6 +548,28 @@ const NoiseZoning: InternalNoiseZoning = {
           if (gx < 0 || gy < 0 || gx >= coarseW || gy >= coarseH) return false;
           return intersectionMask[gy * coarseW + gx] > 0;
         };
+        const refineTransition = (
+          tA: number,
+          tB: number,
+          target: boolean,
+          sampler: (t: number) => boolean,
+        ) => {
+          let a = tA;
+          let b = tB;
+          for (let iter = 0; iter < 5; iter++) {
+            const mid = (a + b) * 0.5;
+            const midHit = sampler(mid);
+            if (midHit === target) {
+              b = mid;
+            } else {
+              a = mid;
+            }
+            if (!(Number.isFinite(a) && Number.isFinite(b))) break;
+            if (Math.abs(b - a) < 1e-3) break;
+          }
+          return target ? b : a;
+        };
+
         for (const seg of roadSegments) {
           if (!seg || !seg.r) continue;
           const startWorld = seg.r.start;
@@ -558,16 +580,61 @@ const NoiseZoning: InternalNoiseZoning = {
           const screenDy = endScreen.y - startScreen.y;
           const screenLen = Math.hypot(screenDx, screenDy);
           const steps = Math.max(1, Math.ceil(screenLen / minCellSizePx));
-          let intersectsNoise = false;
+          const sampleAtT = (t: number) => {
+            const clampedT = Math.min(1, Math.max(0, t));
+            const samplePt = {
+              x: startScreen.x + screenDx * clampedT,
+              y: startScreen.y + screenDy * clampedT,
+            };
+            return pointHitsIntersection(samplePt);
+          };
+          const hits: boolean[] = [];
+          const ts: number[] = [];
           for (let s = 0; s <= steps; s++) {
             const t = steps === 0 ? 0 : s / steps;
-            const samplePt = {
-              x: startScreen.x + screenDx * t,
-              y: startScreen.y + screenDy * t,
-            };
-            if (pointHitsIntersection(samplePt)) { intersectsNoise = true; break; }
+            ts.push(t);
+            hits.push(sampleAtT(t));
           }
-          if (!intersectsNoise) continue;
+          let anyHit = false;
+          for (const h of hits) { if (h) { anyHit = true; break; } }
+          if (!anyHit) continue;
+
+          const ranges: Array<{ t0: number; t1: number }> = [];
+          let active = false;
+          let rangeStart = 0;
+          for (let i = 0; i < hits.length; i++) {
+            const hit = hits[i];
+            const t = ts[i];
+            const prevHit = i > 0 ? hits[i - 1] : undefined;
+            const prevT = i > 0 ? ts[i - 1] : undefined;
+            if (hit) {
+              if (!active) {
+                active = true;
+                if (prevHit === false && prevT !== undefined) {
+                  rangeStart = refineTransition(prevT, t, true, sampleAtT);
+                } else {
+                  rangeStart = t;
+                }
+              }
+            } else if (active) {
+              let rangeEnd = t;
+              if (prevHit === true && prevT !== undefined) {
+                rangeEnd = refineTransition(prevT, t, false, sampleAtT);
+              }
+              if (rangeEnd > rangeStart + 1e-4) {
+                ranges.push({ t0: Math.max(0, rangeStart), t1: Math.min(1, rangeEnd) });
+              }
+              active = false;
+            }
+          }
+          if (active) {
+            const lastT = ts[ts.length - 1] ?? 1;
+            const endT = Math.max(rangeStart, Math.min(1, lastT));
+            if (endT > rangeStart + 1e-4) {
+              ranges.push({ t0: Math.max(0, rangeStart), t1: endT });
+            }
+          }
+          if (!ranges.length) continue;
 
           const dirX = endWorld.x - startWorld.x;
           const dirY = endWorld.y - startWorld.y;
@@ -581,18 +648,28 @@ const NoiseZoning: InternalNoiseZoning = {
           const widthWorld = seg.width || 0;
           if (!(widthWorld > 0)) continue;
           const halfWidth = widthWorld * 0.5;
-          const cornersWorld = [
-            { x: startWorld.x + nx * halfWidth, y: startWorld.y + ny * halfWidth },
-            { x: endWorld.x + nx * halfWidth, y: endWorld.y + ny * halfWidth },
-            { x: endWorld.x - nx * halfWidth, y: endWorld.y - ny * halfWidth },
-            { x: startWorld.x - nx * halfWidth, y: startWorld.y - ny * halfWidth },
-          ];
-          const polygon = cornersWorld.map(pt => {
-            const scr = projectWorldToScreen(pt);
-            return [scr.x, scr.y];
-          });
-          if (polygon.some(([px, py]) => !Number.isFinite(px) || !Number.isFinite(py))) continue;
-          polygons.push(polygon);
+          for (const range of ranges) {
+            const segStart = {
+              x: startWorld.x + dirX * range.t0,
+              y: startWorld.y + dirY * range.t0,
+            };
+            const segEnd = {
+              x: startWorld.x + dirX * range.t1,
+              y: startWorld.y + dirY * range.t1,
+            };
+            const cornersWorld = [
+              { x: segStart.x + nx * halfWidth, y: segStart.y + ny * halfWidth },
+              { x: segEnd.x + nx * halfWidth, y: segEnd.y + ny * halfWidth },
+              { x: segEnd.x - nx * halfWidth, y: segEnd.y - ny * halfWidth },
+              { x: segStart.x - nx * halfWidth, y: segStart.y - ny * halfWidth },
+            ];
+            const polygon = cornersWorld.map(pt => {
+              const scr = projectWorldToScreen(pt);
+              return [scr.x, scr.y];
+            });
+            if (polygon.some(([px, py]) => !Number.isFinite(px) || !Number.isFinite(py))) continue;
+            polygons.push(polygon);
+          }
         }
         roadPolys = polygons;
         this._contourCache = { key: contourKey, contours: roadPolys };
