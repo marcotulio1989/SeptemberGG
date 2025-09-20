@@ -1,104 +1,350 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="UTF-8">
-  <title>Ruas — Bordas (Cinza Escuro)</title>
+  <meta charset="UTF-8" />
+  <title>Rachaduras (Voronoi) — Controles</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body {
-      background: #202020;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      margin: 0;
-      gap: 10px;
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      color: #ddd;
+    :root{ --bg:#2b2b2b; --panel:#353535; --ink:#eaeaea; --muted:#bdbdbd; }
+    html,body{height:100%}
+    body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Arial}
+    .wrap{max-width:980px;margin:24px auto;padding:0 16px;display:grid;grid-template-columns:340px 1fr;gap:16px}
+    @media (max-width:900px){.wrap{grid-template-columns:1fr}}
+    .panel{background:var(--panel);border:1px solid #0004;border-radius:12px;padding:14px;box-shadow:0 8px 20px #0006}
+    h1{margin:0 0 8px;font-size:18px}
+    .hint{color:var(--muted);font-size:12px;margin-bottom:8px}
+    .controls{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .controls label{display:flex;flex-direction:column;gap:6px}
+    input[type="range"]{width:100%}
+    input[type="number"], input[type="text"], input[type="color"]{
+      width:100%;padding:6px 8px;border-radius:8px;border:1px solid #0006;background:#2a2a2a;color:var(--ink);box-sizing:border-box
     }
-    canvas { border: 2px solid #111; image-rendering: pixelated; }
-    .legend { color:#ddd; font-size:13px; }
-    .sw { width:12px; height:12px; display:inline-block; border-radius:3px; margin-right:6px; box-shadow:0 0 0 1px rgba(0,0,0,.25) inset; }
-    .controls { display:flex; gap:12px; align-items:center; }
-    input[type=range] { width:240px; }
+    .row{display:flex;gap:10px;align-items:center;margin-top:10px}
+    button{flex:1;padding:8px 10px;border:0;border-radius:10px;background:#4a4a4a;color:#fff;cursor:pointer}
+    button:hover{background:#5a5a5a}
+    canvas{display:block;max-width:100%;background:#111;border-radius:12px;border:1px solid #0007}
+    .mini{font-size:12px;color:var(--muted)}
   </style>
 </head>
 <body>
-  <canvas id="canvas" width="512" height="512"></canvas>
-  <div class="controls">
-    <div class="legend"><i class="sw" style="background:#3a3a3a"></i>Ruas (cinza escuro)</div>
-    <label style="font-size:13px">Largura: <span id="thVal">1.6</span></label>
-    <input id="th" type="range" min="0.2" max="6" step="0.1" value="1.6">
-    <button id="regenerate">Regenerar</button>
+  <div class="wrap">
+    <section class="panel">
+      <h1>Rachaduras (Voronoi) — Controles</h1>
+      <div class="hint">As rachaduras são as arestas do diagrama de Voronoi. Ajuste as sementes (densidade) e a espessura (ε). O ruído de Perlin controla quais áreas da rua sofrem danos.</div>
+      <div class="controls">
+        <label>Largura (px)
+          <input id="w" type="number" min="64" max="2048" step="2" value="512">
+        </label>
+        <label>Altura (px)
+          <input id="h" type="number" min="64" max="2048" step="2" value="512">
+        </label>
+
+        <label>Sementes
+          <input id="num" type="range" min="50" max="3000" value="800">
+          <span class="mini" id="numv">800</span>
+        </label>
+        <label>Espessura (ε)
+          <input id="eps" type="range" min="1" max="30" value="6">
+          <span class="mini" id="epsv">0.6</span>
+        </label>
+
+        <label>Cor da rachadura
+          <input id="color" type="color" value="#00e5ff">
+        </label>
+        <label>Seed aleatória
+          <input id="seed" type="number" min="0" step="1" value="123456">
+        </label>
+
+        <label>Escala do ruído
+          <input id="noise-scale" type="range" min="0.2" max="8" step="0.1" value="3">
+          <span class="mini" id="scalev">3.0</span>
+        </label>
+        <label>Limite de dano (ruído)
+          <input id="noise-threshold" type="range" min="0" max="100" step="1" value="55">
+          <span class="mini" id="thresholdv">0.55</span>
+        </label>
+
+        <label>Intensidade do ruído
+          <input id="noise-intensity" type="range" min="0" max="100" step="1" value="80">
+          <span class="mini" id="intensityv">0.80</span>
+        </label>
+      </div>
+
+      <div class="row">
+        <button id="regen">Gerar / Atualizar</button>
+        <button id="reroll">Re-sortear seed</button>
+        <button id="save">Exportar PNG</button>
+      </div>
+      <div class="mini" id="info">—</div>
+    </section>
+
+    <section class="panel">
+      <canvas id="c" width="512" height="512"></canvas>
+    </section>
   </div>
 
   <script>
-    const N = 512;
-    const numPoints = 80;
-    const EDGE_COLOR = [58,58,58]; // cinza escuro
-
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
-
-    let pts = generatePoints();
-
-    function generatePoints(){
-      return Array.from({length: numPoints}, () => [Math.random()*N, Math.random()*N]);
+    // ---------- Util ----------
+    function PRNG(seed){ let s=(seed>>>0)||123456789; return ()=>((s=(s*1664525+1013904223)>>>0),(s/4294967296)); }
+    function hexToRGB(hex){
+      hex=hex.trim();
+      if(/^#?[0-9a-f]{3}$/i.test(hex)){ const h=hex.replace('#',''); hex='#'+h[0]+h[0]+h[1]+h[1]+h[2]+h[2]; }
+      const m=hex.match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+      return m ? [parseInt(m[1],16),parseInt(m[2],16),parseInt(m[3],16)] : [0,229,255];
     }
 
-    function setPixel(data, idx, r, g, b, a=255){
-      data[idx] = r; data[idx+1] = g; data[idx+2] = b; data[idx+3] = a;
+    // ---------- Estado ----------
+    const cvs = document.getElementById('c');
+    const ctx = cvs.getContext('2d', { willReadFrequently: true });
+    const wEl = document.getElementById('w');
+    const hEl = document.getElementById('h');
+    const numEl = document.getElementById('num');
+    const epsEl = document.getElementById('eps');
+    const colorEl = document.getElementById('color');
+    const seedEl = document.getElementById('seed');
+    const infoEl = document.getElementById('info');
+    const scaleEl = document.getElementById('noise-scale');
+    const thresholdEl = document.getElementById('noise-threshold');
+    const intensityEl = document.getElementById('noise-intensity');
+
+    const numv = document.getElementById('numv');
+    const epsv = document.getElementById('epsv');
+    const scalev = document.getElementById('scalev');
+    const thresholdv = document.getElementById('thresholdv');
+    const intensityv = document.getElementById('intensityv');
+
+    const regenBtn = document.getElementById('regen');
+    const rerollBtn = document.getElementById('reroll');
+    const saveBtn = document.getElementById('save');
+
+    let W = +wEl.value|0;
+    let H = +hEl.value|0;
+    let NUM = +numEl.value|0;
+    let EPS = (+epsEl.value)/10; // 0.1..3.0
+    let EDGE = [...hexToRGB(colorEl.value), 255];
+    let SEED = +seedEl.value|0;
+    let NOISE_SCALE = parseFloat(scaleEl.value);
+    let NOISE_THRESHOLD = parseFloat(thresholdEl.value)/100;
+    let NOISE_INTENSITY = parseFloat(intensityEl.value)/100;
+
+    let pts = null;      // Float32Array de sementes (x,y)
+    let grid = null;     // grade espacial
+    let perm = null;     // permutação para o Perlin
+    let G = 0, csx = 0, csy = 0;
+
+    // ---------- Ruído Perlin ----------
+    function buildPermutation(){
+      const rng = PRNG(SEED ^ 0x9e3779b9);
+      const base = new Uint8Array(256);
+      for(let i=0;i<256;i++) base[i] = i;
+      for(let i=255;i>0;i--){
+        const j = Math.floor(rng()*(i+1));
+        const tmp = base[i];
+        base[i] = base[j];
+        base[j] = tmp;
+      }
+      perm = new Uint8Array(512);
+      for(let i=0;i<512;i++) perm[i] = base[i & 255];
     }
 
-    function drawEdgesOnly(threshold) {
-      const imageData = ctx.createImageData(N, N);
-      const data = imageData.data;
+    const fade = t => t*t*t*(t*(t*6-15)+10);
+    const lerp = (a,b,t) => a + t*(b-a);
+    const grad = (hash,x,y) => {
+      switch(hash & 3){
+        case 0: return  x + y;
+        case 1: return -x + y;
+        case 2: return  x - y;
+        default:return -x - y;
+      }
+    };
 
-      for (let y=0; y<N; y++) {
-        for (let x=0; x<N; x++) {
-          const p = (y*N + x) * 4;
+    function perlin2(x, y){
+      if(!perm) buildPermutation();
+      const xi = Math.floor(x) & 255;
+      const yi = Math.floor(y) & 255;
+      const xf = x - Math.floor(x);
+      const yf = y - Math.floor(y);
+      const u = fade(xf);
+      const v = fade(yf);
+      const aa = perm[xi] + yi;
+      const ab = perm[xi] + yi + 1;
+      const ba = perm[xi + 1] + yi;
+      const bb = perm[xi + 1] + yi + 1;
+      const x1 = lerp(grad(perm[aa], xf, yf), grad(perm[ba], xf - 1, yf), u);
+      const x2 = lerp(grad(perm[ab], xf, yf - 1), grad(perm[bb], xf - 1, yf - 1), u);
+      return lerp(x1, x2, v);
+    }
 
-          // compute squared distances to all points to find nearest and second nearest
-          let nearest = -1, d1 = Infinity, second = -1, d2 = Infinity;
-          for (let i=0;i<pts.length;i++){
-            const dx = x-pts[i][0]; const dy = y-pts[i][1];
-            const d = dx*dx + dy*dy;
-            if (d < d1) { d2 = d1; second = nearest; d1 = d; nearest = i; }
-            else if (d < d2) { d2 = d; second = i; }
+    function sampleDamageMask(x, y){
+      const raw = perlin2(x * NOISE_SCALE / 100, y * NOISE_SCALE / 100);
+      const normalized = (raw + 1) * 0.5; // 0..1
+      const mixed = 0.5 + (normalized - 0.5) * NOISE_INTENSITY;
+      return mixed;
+    }
+
+    // ---------- Geração ----------
+    function seedPoints(){
+      const rng = PRNG(SEED);
+      pts = new Float32Array(NUM*2);
+      for(let i=0;i<NUM;i++){ pts[2*i] = rng()*W; pts[2*i+1] = rng()*H; }
+    }
+
+    function buildGrid(){
+      G = Math.max(8, Math.round(Math.sqrt(NUM)));
+      csx = W / G; csy = H / G;
+      grid = new Array(G*G); for(let i=0;i<grid.length;i++) grid[i] = [];
+      for(let i=0;i<NUM;i++){
+        const gx = Math.min(G-1, Math.floor(pts[2*i]   / csx));
+        const gy = Math.min(G-1, Math.floor(pts[2*i+1] / csy));
+        grid[gy*G + gx].push(i);
+      }
+    }
+
+    function candidates(x, y){
+      const gx = Math.min(G-1, Math.floor(x / csx));
+      const gy = Math.min(G-1, Math.floor(y / csy));
+      let out = [];
+      for(let r=1; r<=2; r++){
+        out.length = 0;
+        for(let j=gy-r; j<=gy+r; j++){
+          if(j<0||j>=G) continue;
+          for(let i=gx-r; i<=gx+r; i++){
+            if(i<0||i>=G) continue;
+            const arr = grid[j*G+i];
+            if(arr && arr.length) out.push(...arr);
+          }
+        }
+        if(out.length || r===2) return out;
+      }
+      return out;
+    }
+
+    function drawCracks(){
+      const t0 = performance.now();
+      if(!perm) buildPermutation();
+      const img = ctx.createImageData(W, H);
+      const d = img.data;
+      const baseAlpha = EDGE[3] ?? 255;
+
+      for(let y=0;y<H;y++){
+        for(let x=0;x<W;x++){
+          const cand = candidates(x,y);
+          let b1 = Infinity, b2 = Infinity;
+
+          if(cand.length){
+            for(let k=0;k<cand.length;k++){
+              const i = cand[k];
+              const dx = x - pts[2*i];
+              const dy = y - pts[2*i+1];
+              const dist2 = dx*dx + dy*dy;
+              if(dist2 < b1){ b2 = b1; b1 = dist2; }
+              else if(dist2 < b2){ b2 = dist2; }
+            }
+          }else{
+            for(let i=0;i<NUM;i++){
+              const dx = x - pts[2*i];
+              const dy = y - pts[2*i+1];
+              const dist2 = dx*dx + dy*dy;
+              if(dist2 < b1){ b2 = b1; b1 = dist2; }
+              else if(dist2 < b2){ b2 = dist2; }
+            }
           }
 
-          // distance difference between nearest and second nearest (using sqrt to get real distances)
-          const distDiff = Math.sqrt(d2) - Math.sqrt(d1);
+          const delta = Math.sqrt(b2) - Math.sqrt(b1);
+          const p = (y*W + x)*4;
 
-          // If the difference is small, we are near an edge (Voronoi boundary). Use threshold to control width.
-          if (distDiff < threshold) {
-            setPixel(data, p, EDGE_COLOR[0], EDGE_COLOR[1], EDGE_COLOR[2], 255);
-          } else {
-            // transparent background so you can overlay on other maps if desired
-            setPixel(data, p, 0, 0, 0, 0);
+          if(delta < EPS){
+            const mask = sampleDamageMask(x, y);
+            if(mask >= NOISE_THRESHOLD){
+              const strength = Math.min(1, (mask - NOISE_THRESHOLD) / Math.max(1e-5, 1 - NOISE_THRESHOLD));
+              d[p]   = EDGE[0];
+              d[p+1] = EDGE[1];
+              d[p+2] = EDGE[2];
+              d[p+3] = Math.round(baseAlpha * strength);
+              continue;
+            }
           }
+          d[p] = d[p+1] = d[p+2] = 0;
+          d[p+3] = 0;
         }
       }
 
-      ctx.putImageData(imageData, 0, 0);
+      ctx.putImageData(img, 0, 0);
+      const t1 = performance.now();
+      infoEl.textContent = `Canvas ${W}×${H} • sementes ${NUM} • ε=${EPS.toFixed(1)} • ruído esc=${NOISE_SCALE.toFixed(1)} lim=${NOISE_THRESHOLD.toFixed(2)} • ${Math.round(t1-t0)}ms`;
     }
 
-    // UI wiring
-    const thSlider = document.getElementById('th');
-    const thVal = document.getElementById('thVal');
-    const regen = document.getElementById('regenerate');
-
-    function render(){
-      const t = parseFloat(thSlider.value);
-      thVal.textContent = t.toFixed(1);
-      drawEdgesOnly(t);
+    function resizeCanvas(){
+      cvs.width = W; cvs.height = H;
     }
 
-    thSlider.addEventListener('input', render);
-    regen.addEventListener('click', () => { pts = generatePoints(); render(); });
+    function regenerate(all=true){
+      if(all){
+        resizeCanvas();
+        seedPoints();
+        buildGrid();
+        buildPermutation();
+      }
+      drawCracks();
+    }
 
-    // initial render
-    render();
+    // ---------- UI ----------
+    function syncLabels(){
+      numv.textContent = `${NUM}`;
+      epsv.textContent = EPS.toFixed(1);
+      scalev.textContent = NOISE_SCALE.toFixed(1);
+      thresholdv.textContent = NOISE_THRESHOLD.toFixed(2);
+      intensityv.textContent = NOISE_INTENSITY.toFixed(2);
+    }
+
+    wEl.addEventListener('change', ()=>{ W = +wEl.value|0; regenerate(true); });
+    hEl.addEventListener('change', ()=>{ H = +hEl.value|0; regenerate(true); });
+
+    numEl.addEventListener('input', ()=>{
+      NUM = +numEl.value|0; syncLabels(); regenerate(true);
+    });
+
+    epsEl.addEventListener('input', ()=>{
+      EPS = (+epsEl.value)/10; syncLabels(); regenerate(false);
+    });
+
+    colorEl.addEventListener('input', ()=>{
+      const [r,g,b] = hexToRGB(colorEl.value); EDGE = [r,g,b,255];
+      regenerate(false);
+    });
+
+    seedEl.addEventListener('change', ()=>{
+      SEED = +seedEl.value|0; regenerate(true);
+    });
+
+    scaleEl.addEventListener('input', ()=>{
+      NOISE_SCALE = parseFloat(scaleEl.value); syncLabels(); regenerate(false);
+    });
+
+    thresholdEl.addEventListener('input', ()=>{
+      NOISE_THRESHOLD = parseFloat(thresholdEl.value)/100; syncLabels(); regenerate(false);
+    });
+
+    intensityEl.addEventListener('input', ()=>{
+      NOISE_INTENSITY = parseFloat(intensityEl.value)/100; syncLabels(); regenerate(false);
+    });
+
+    regenBtn.addEventListener('click', ()=>regenerate(true));
+    rerollBtn.addEventListener('click', ()=>{
+      SEED = (Math.random()*0xFFFFFFFF)>>>0;
+      seedEl.value = SEED;
+      regenerate(true);
+    });
+
+    saveBtn.addEventListener('click', ()=>{
+      const url = cvs.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = url; a.download = 'rachaduras.png'; a.click();
+    });
+
+    // ---------- init ----------
+    syncLabels();
+    regenerate(true);
   </script>
 </body>
 </html>
