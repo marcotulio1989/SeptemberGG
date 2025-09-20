@@ -1202,8 +1202,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         container.removeChildren();
         const cfg = (config as any).render;
         const show = !!cfg.showCrackedRoadsOutline;
-        const overlayEnabled = !!NoiseZoning?.enabled;
-        if (!show || !overlayEnabled) {
+        if (!show) {
             container.visible = false;
             return;
         }
