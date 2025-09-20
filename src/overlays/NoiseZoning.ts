@@ -423,7 +423,18 @@ const NoiseZoning: InternalNoiseZoning = {
     try {
       // cache key based on view
       const maskCache = (this as any)._maskCache as any | undefined;
-      if (maskCache && maskCache.w === coarseW && maskCache.h === coarseH && maskCache.cameraX === cameraX && maskCache.cameraY === cameraY && maskCache.zoom === zoom) {
+      if (
+        maskCache &&
+        maskCache.w === coarseW &&
+        maskCache.h === coarseH &&
+        maskCache.cameraX === cameraX &&
+        maskCache.cameraY === cameraY &&
+        maskCache.zoom === zoom &&
+        maskCache.minPx === minPx &&
+        maskCache.minPy === minPy &&
+        maskCache.maxPx === maxPx &&
+        maskCache.maxPy === maxPy
+      ) {
         // reuse
         const src = maskCache.data;
         for (let i = 0; i < coarseRoadMask.length; i++) coarseRoadMask[i] = src[i];
@@ -468,7 +479,18 @@ const NoiseZoning: InternalNoiseZoning = {
           }
         }
         // cache
-        (this as any)._maskCache = { w: coarseW, h: coarseH, cameraX, cameraY, zoom, data: new Uint8Array(coarseRoadMask) };
+        (this as any)._maskCache = {
+          w: coarseW,
+          h: coarseH,
+          cameraX,
+          cameraY,
+          zoom,
+          minPx,
+          minPy,
+          maxPx,
+          maxPy,
+          data: new Uint8Array(coarseRoadMask),
+        };
         maskOk = true;
       }
     } catch (e) {
