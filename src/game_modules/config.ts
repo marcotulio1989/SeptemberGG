@@ -288,6 +288,18 @@ export const config = {
     // Show warped-noise delimitations (separate toggle for noise regions / buckets)
     showNoiseDelimitations: false,
     showCrackedRoadsOutline: false,
+    crackedRoadColor: 0x00E5FF,
+    crackedRoadAlpha: 0.88,
+    crackedRoadStrokePx: 1.35,
+    crackedRoadSeedDensity: 0.055,
+    crackedRoadSampleDensityAlong: 1.6,
+    crackedRoadSampleDensityAcross: 1.1,
+    crackedRoadVoronoiThreshold: 0.65,
+    crackedRoadMinLengthM: 5.0,
+    crackedRoadMaxSeeds: 520,
+    crackedRoadMaxSamplesAlong: 240,
+    crackedRoadMaxSamplesAcross: 96,
+    crackedRoadProbeStepM: 1.1,
     // Mostrar apenas os contornos dos quarteirões (esconde ruas e preenchimento dos prédios)
     showOnlyBlockOutlines: false,
     // Mostrar apenas o interior dos quarteirões (preenchidos), escondendo ruas e demais elementos

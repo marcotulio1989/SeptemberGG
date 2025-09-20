@@ -19,6 +19,220 @@ import Quadtree from '../lib/quadtree';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const ClipperLib: any = require('clipper-lib');
 
+type LocalPoint = [number, number];
+
+const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+
+const toUint32 = (value: number) => {
+    if (!Number.isFinite(value)) return 0;
+    const scaled = Math.floor(value * 1_000_003);
+    const mod = ((scaled % 0x1_0000_0000) + 0x1_0000_0000) % 0x1_0000_0000;
+    return mod >>> 0;
+};
+
+const hashNumbers = (...values: number[]) => {
+    let h = 0x811c9dc5 >>> 0;
+    for (const v of values) {
+        h ^= toUint32(v);
+        h = Math.imul(h, 0x01000193);
+        h >>>= 0;
+    }
+    return h >>> 0;
+};
+
+const createPRNG = (seed: number) => {
+    let s = (seed >>> 0) || 0x12345678;
+    return () => {
+        s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+        return (s >>> 0) / 0x1_0000_0000;
+    };
+};
+
+const polylineLength = (poly: LocalPoint[]) => {
+    let total = 0;
+    for (let i = 1; i < poly.length; i++) {
+        const dx = poly[i][0] - poly[i - 1][0];
+        const dy = poly[i][1] - poly[i - 1][1];
+        total += Math.hypot(dx, dy);
+    }
+    return total;
+};
+
+const marchingSquaresContoursLocal = (
+    grid: Uint8Array,
+    w: number,
+    h: number,
+    stepX: number,
+    stepY: number,
+    originX: number,
+    originY: number,
+): LocalPoint[][] => {
+    if (w < 2 || h < 2) return [];
+    const get = (x: number, y: number) => (x >= 0 && y >= 0 && x < w && y < h ? (grid[y * w + x] ? 1 : 0) : 0);
+    const sx = (gx: number) => originX + gx * stepX;
+    const sy = (gy: number) => originY + gy * stepY;
+    const segments: Array<[LocalPoint, LocalPoint]> = [];
+    for (let y = 0; y < h - 1; y++) {
+        for (let x = 0; x < w - 1; x++) {
+            const tl = get(x, y);
+            const tr = get(x + 1, y);
+            const br = get(x + 1, y + 1);
+            const bl = get(x, y + 1);
+            const code = (tl << 3) | (tr << 2) | (br << 1) | bl;
+            if (code === 0 || code === 15) continue;
+            const top: LocalPoint = [sx(x) + stepX * 0.5, sy(y)];
+            const right: LocalPoint = [sx(x + 1), sy(y) + stepY * 0.5];
+            const bottom: LocalPoint = [sx(x) + stepX * 0.5, sy(y + 1)];
+            const left: LocalPoint = [sx(x), sy(y) + stepY * 0.5];
+            switch (code) {
+                case 1: segments.push([bottom, left]); break;
+                case 2: segments.push([right, bottom]); break;
+                case 3: segments.push([right, left]); break;
+                case 4: segments.push([top, right]); break;
+                case 5: segments.push([top, left]); segments.push([right, bottom]); break;
+                case 6: segments.push([top, bottom]); break;
+                case 7: segments.push([top, left]); break;
+                case 8: segments.push([left, top]); break;
+                case 9: segments.push([bottom, top]); break;
+                case 10: segments.push([left, right]); segments.push([top, bottom]); break;
+                case 11: segments.push([right, top]); break;
+                case 12: segments.push([left, right]); break;
+                case 13: segments.push([bottom, right]); break;
+                case 14: segments.push([left, bottom]); break;
+                default: break;
+            }
+        }
+    }
+    if (!segments.length) return [];
+    const key = (p: LocalPoint) => `${p[0].toFixed(3)}:${p[1].toFixed(3)}`;
+    const nextMap = new Map<string, string[]>();
+    const pointMap = new Map<string, LocalPoint>();
+    segments.forEach(([a, b]) => {
+        const ka = key(a);
+        const kb = key(b);
+        pointMap.set(ka, a);
+        pointMap.set(kb, b);
+        if (!nextMap.has(ka)) nextMap.set(ka, []);
+        if (!nextMap.has(kb)) nextMap.set(kb, []);
+        nextMap.get(ka)!.push(kb);
+        nextMap.get(kb)!.push(ka);
+    });
+    const visited = new Set<string>();
+    const contours: LocalPoint[][] = [];
+    for (const startKey of nextMap.keys()) {
+        const neighbors = nextMap.get(startKey) || [];
+        for (const neighbor of neighbors) {
+            const edgeId = `${startKey}->${neighbor}`;
+            if (visited.has(edgeId)) continue;
+            const poly: LocalPoint[] = [];
+            let cur = startKey;
+            let next = neighbor;
+            poly.push(pointMap.get(cur)!);
+            while (true) {
+                const id = `${cur}->${next}`;
+                if (visited.has(id)) break;
+                visited.add(id);
+                const nextPt = pointMap.get(next);
+                if (!nextPt) break;
+                poly.push(nextPt);
+                const nbs = nextMap.get(next) || [];
+                let chosen: string | null = null;
+                for (const nb of nbs) {
+                    if (nb === cur) continue;
+                    if (!visited.has(`${next}->${nb}`)) { chosen = nb; break; }
+                }
+                if (!chosen) break;
+                cur = next;
+                next = chosen;
+            }
+            if (poly.length >= 2) contours.push(poly);
+        }
+    }
+    return contours;
+};
+
+const generateVoronoiContours = (
+    length: number,
+    width: number,
+    seedCount: number,
+    samplesU: number,
+    samplesV: number,
+    threshold: number,
+    seed: number,
+): LocalPoint[][] => {
+    if (!(length > 0) || !(width > 0)) return [];
+    if (seedCount < 2 || samplesU < 2 || samplesV < 2) return [];
+    const halfW = width * 0.5;
+    const rng = createPRNG(seed);
+    const pts = new Float32Array(seedCount * 2);
+    for (let i = 0; i < seedCount; i++) {
+        pts[2 * i] = rng() * length;
+        pts[2 * i + 1] = (rng() - 0.5) * width;
+    }
+    const gridX = Math.max(4, Math.round(Math.sqrt(seedCount)));
+    const gridY = Math.max(4, Math.round(Math.sqrt(seedCount)));
+    const cellU = Math.max(length / gridX, 1e-6);
+    const cellV = Math.max(width / gridY, 1e-6);
+    const grid: number[][] = new Array(gridX * gridY);
+    for (let i = 0; i < grid.length; i++) grid[i] = [];
+    for (let i = 0; i < seedCount; i++) {
+        const u = pts[2 * i];
+        const v = pts[2 * i + 1] + halfW;
+        const gx = clamp(Math.floor(u / cellU), 0, gridX - 1);
+        const gy = clamp(Math.floor(v / cellV), 0, gridY - 1);
+        grid[gy * gridX + gx].push(i);
+    }
+    const allIndices = new Array<number>(seedCount);
+    for (let i = 0; i < seedCount; i++) allIndices[i] = i;
+    const candidateBuf: number[] = [];
+    const stepU = length / (samplesU - 1);
+    const stepV = width / (samplesV - 1);
+    const mask = new Uint8Array(samplesU * samplesV);
+    for (let jy = 0; jy < samplesV; jy++) {
+        const sy = -halfW + jy * stepV;
+        for (let ix = 0; ix < samplesU; ix++) {
+            const sx = ix * stepU;
+            candidateBuf.length = 0;
+            const gx = clamp(Math.floor(sx / cellU), 0, gridX - 1);
+            const gy = clamp(Math.floor((sy + halfW) / cellV), 0, gridY - 1);
+            for (let r = 1; r <= 2; r++) {
+                candidateBuf.length = 0;
+                for (let yy = gy - r; yy <= gy + r; yy++) {
+                    if (yy < 0 || yy >= gridY) continue;
+                    for (let xx = gx - r; xx <= gx + r; xx++) {
+                        if (xx < 0 || xx >= gridX) continue;
+                        const arr = grid[yy * gridX + xx];
+                        if (arr && arr.length) candidateBuf.push(...arr);
+                    }
+                }
+                if (candidateBuf.length || r === 2) break;
+            }
+            const source = candidateBuf.length ? candidateBuf : allIndices;
+            let best1 = Infinity;
+            let best2 = Infinity;
+            for (let k = 0; k < source.length; k++) {
+                const idx = source[k];
+                const dx = sx - pts[2 * idx];
+                const dy = sy - pts[2 * idx + 1];
+                const dist2 = dx * dx + dy * dy;
+                if (dist2 < best1) {
+                    best2 = best1;
+                    best1 = dist2;
+                } else if (dist2 < best2) {
+                    best2 = dist2;
+                }
+            }
+            if (!Number.isFinite(best1) || !Number.isFinite(best2) || best2 === Infinity) {
+                mask[jy * samplesU + ix] = 0;
+                continue;
+            }
+            const delta = Math.sqrt(best2) - Math.sqrt(best1);
+            mask[jy * samplesU + ix] = delta < threshold ? 1 : 0;
+        }
+    }
+    return marchingSquaresContoursLocal(mask, samplesU, samplesV, stepU, stepV, 0, -halfW);
+};
+
 interface GameCanvasProps {
     interiorTexture?: PIXI.Texture | null;
 }
@@ -62,6 +276,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     const debugState = useRef<{ markerContainer: boolean; markerTex: boolean; children: number; bbox: string; lanePolys: number }>({ markerContainer: false, markerTex: false, children: 0, bbox: '', lanePolys: 0 });
     const roadLaneOverlay = useRef<PIXI.Container | null>(null);
     const roadLaneOutlines = useRef<PIXI.Container | null>(null);
+    const crackedRoadOverlay = useRef<PIXI.Container | null>(null);
     const edgeOverlay = useRef<PIXI.Container | null>(null);
     const roadLaneTextureRef = useRef<PIXI.Texture | null>(roadLaneTexture || null);
     const edgeTextureRef = useRef<PIXI.Texture | null>(edgeTexture || null);
@@ -70,6 +285,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     const laneMarkerCacheRef = useRef<{ key: string; container: PIXI.Container | null } | null>(null);
     const roadLaneScaleRef = useRef<number | undefined>(roadLaneScale);
     const roadLaneAlphaRef = useRef<number | undefined>(roadLaneAlpha);
+    const crackedRoadsRaf = useRef<number | null>(null);
 
     // Keep refs in sync with incoming props so updates (from App TextureLoader) take effect
     useEffect(() => {
@@ -980,6 +1196,161 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         }
     };
 
+    const drawCrackedRoads = (segments: Segment[]) => {
+        const container = crackedRoadOverlay.current;
+        if (!container) return;
+        container.removeChildren();
+        const cfg = (config as any).render;
+        const show = !!cfg.showCrackedRoadsOutline;
+        const overlayEnabled = !!NoiseZoning?.enabled;
+        if (!show || !overlayEnabled) {
+            container.visible = false;
+            return;
+        }
+        const getMask = (NoiseZoning as any)?.getIntersectionMaskData;
+        const createTester = (NoiseZoning as any)?.createIntersectionTester;
+        if (typeof getMask !== 'function' || typeof createTester !== 'function') {
+            container.visible = false;
+            return;
+        }
+        const maskInfo = getMask.call(NoiseZoning) as {
+            coarseW: number;
+            coarseH: number;
+            gridMinX: number;
+            gridMinY: number;
+            worldStep: number;
+            pixelSizePx: number;
+            intersectionMask: Uint8Array;
+        } | null;
+        const tester = createTester.call(NoiseZoning) as ((x: number, y: number) => boolean) | null;
+        if (!maskInfo || !tester || !(maskInfo.worldStep > 0)) {
+            container.visible = false;
+            return;
+        }
+        const mask = maskInfo.intersectionMask;
+        if (!mask || !mask.length) {
+            container.visible = false;
+            return;
+        }
+        let anyMask = false;
+        for (let i = 0; i < mask.length; i++) {
+            if (mask[i]) { anyMask = true; break; }
+        }
+        if (!anyMask) {
+            container.visible = false;
+            return;
+        }
+        const color: number = cfg.crackedRoadColor ?? 0x00E5FF;
+        const alpha: number = cfg.crackedRoadAlpha ?? 0.88;
+        const strokePx: number = cfg.crackedRoadStrokePx ?? 1.35;
+        const seedDensity: number = Math.max(0.005, cfg.crackedRoadSeedDensity ?? 0.055);
+        const sampleAlong: number = Math.max(0.25, cfg.crackedRoadSampleDensityAlong ?? 1.6);
+        const sampleAcross: number = Math.max(0.25, cfg.crackedRoadSampleDensityAcross ?? 1.1);
+        const threshold: number = cfg.crackedRoadVoronoiThreshold ?? 0.65;
+        const minLength: number = Math.max(1, cfg.crackedRoadMinLengthM ?? 5.0);
+        const maxSeeds: number = Math.max(8, cfg.crackedRoadMaxSeeds ?? 520);
+        const maxSamplesAlong: number = Math.max(4, cfg.crackedRoadMaxSamplesAlong ?? 240);
+        const maxSamplesAcross: number = Math.max(4, cfg.crackedRoadMaxSamplesAcross ?? 96);
+        const probeStep: number = Math.max(0.4, cfg.crackedRoadProbeStepM ?? 1.1);
+        const globalSeed: number = (NoiseZoning as any)?.getSeed?.call(NoiseZoning) ?? 0;
+
+        const graphics = new PIXI.Graphics();
+        graphics.lineStyle(strokePx, color, alpha, 0.5, true);
+        let drewAny = false;
+
+        segments.forEach((segment, segmentIndex) => {
+            if (!segment || !segment.r) return;
+            const start = segment.r.start;
+            const end = segment.r.end;
+            const vx = end.x - start.x;
+            const vy = end.y - start.y;
+            const segLen = Math.hypot(vx, vy);
+            if (!(segLen > 1e-3)) return;
+            const roadWidth = Math.max(1.5, segment.width || 0);
+            const ux = vx / segLen;
+            const uy = vy / segLen;
+            const nx = -uy;
+            const ny = ux;
+            const steps = Math.max(4, Math.ceil(segLen / probeStep));
+            const intervals: Array<{ start: number; end: number }> = [];
+            let runStart: number | null = null;
+            for (let s = 0; s <= steps; s++) {
+                const t = steps === 0 ? 0 : s / steps;
+                const px = start.x + vx * t;
+                const py = start.y + vy * t;
+                const inside = tester(px, py);
+                if (inside) {
+                    if (runStart === null) runStart = t;
+                } else if (runStart !== null) {
+                    if (t > runStart + 1e-4) intervals.push({ start: runStart, end: t });
+                    runStart = null;
+                }
+            }
+            if (runStart !== null) {
+                intervals.push({ start: runStart, end: 1 });
+            }
+
+            intervals.forEach((interval, intervalIndex) => {
+                const startT = clamp(interval.start, 0, 1);
+                const endT = clamp(interval.end, 0, 1);
+                if (!(endT > startT + 1e-4)) return;
+                const intervalLen = segLen * (endT - startT);
+                if (intervalLen < minLength) return;
+                const area = intervalLen * roadWidth;
+                let seeds = Math.max(8, Math.round(area * seedDensity));
+                seeds = Math.min(seeds, maxSeeds);
+                if (seeds < 2) return;
+                let samplesU = Math.max(2, Math.round(intervalLen * sampleAlong));
+                let samplesV = Math.max(2, Math.round(roadWidth * sampleAcross));
+                samplesU = Math.min(samplesU, maxSamplesAlong);
+                samplesV = Math.min(samplesV, maxSamplesAcross);
+                if (samplesU < 2 || samplesV < 2) return;
+                const hash = hashNumbers(globalSeed, segmentIndex, intervalIndex, startT * 1000, endT * 1000, roadWidth);
+                const contours = generateVoronoiContours(intervalLen, roadWidth, seeds, samplesU, samplesV, threshold, hash);
+                if (!contours.length) return;
+                const startOffset = segLen * startT;
+                const baseX = start.x + ux * startOffset;
+                const baseY = start.y + uy * startOffset;
+                const minContourLen = Math.max(roadWidth * 0.35, 2.5);
+                for (const contour of contours) {
+                    if (!contour || contour.length < 2) continue;
+                    if (polylineLength(contour) < minContourLen) continue;
+                    contour.forEach((pt, idx) => {
+                        const along = pt[0];
+                        const lateral = pt[1];
+                        const worldPt = {
+                            x: baseX + ux * along + nx * lateral,
+                            y: baseY + uy * along + ny * lateral,
+                        };
+                        const iso = worldToIso(worldPt);
+                        if (idx === 0) graphics.moveTo(iso.x, iso.y); else graphics.lineTo(iso.x, iso.y);
+                    });
+                    drewAny = true;
+                }
+            });
+        });
+
+        container.visible = drewAny;
+        if (drewAny) {
+            container.addChild(graphics);
+        } else {
+            graphics.destroy();
+        }
+    };
+
+    const scheduleCrackedRoadRedraw = () => {
+        const run = () => {
+            crackedRoadsRaf.current = null;
+            try { drawCrackedRoads(state.segments); } catch (e) {}
+        };
+        if (crackedRoadsRaf.current != null) return;
+        if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+            crackedRoadsRaf.current = window.requestAnimationFrame(run);
+        } else {
+            run();
+        }
+    };
+
     // Desenha os patches ("losangos" / travesseiros) de interseção em container separado
     const drawIntersectionPatches = () => {
         if (!intersectionPatches.current) return;
@@ -1107,6 +1478,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     roadsSecondary.current?.removeChildren();
     roadOutlines.current.removeChildren();
     intersectionPatches.current.removeChildren();
+    crackedRoadOverlay.current?.removeChildren();
     if (rebuildBuildings) blockOutlines.current?.removeChildren();
     // Limpeza adicional: bandas de borda devem ser sempre limpas ao atualizar mapa
     blockEdgeBands.current?.removeChildren();
@@ -2188,6 +2560,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         }
     // Desenhar overlay estilizado adicional
     drawOverlayRoadLayer(segments);
+    drawCrackedRoads(segments);
         // ...existing code...
 
         // Contornos conforme modo atual
@@ -2785,6 +3158,13 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         };
         window.addEventListener('noise-overlay-request-sync', onNoiseReq as EventListener);
 
+        const onNoiseMaskUpdated = () => { scheduleCrackedRoadRedraw(); };
+        const onNoiseOverlayToggle = () => { scheduleCrackedRoadRedraw(); };
+        const onNoiseOutlineToggle = () => { scheduleCrackedRoadRedraw(); };
+        window.addEventListener('noise-overlay-intersection-updated', onNoiseMaskUpdated as EventListener);
+        window.addEventListener('noise-overlay-change', onNoiseOverlayToggle as EventListener);
+        window.addEventListener('noise-overlay-outline-change', onNoiseOutlineToggle as EventListener);
+
         const handleResize = () => {
             if (!canvasContainerRef.current) return;
             const { offsetWidth, offsetHeight } = canvasContainerRef.current;
@@ -2867,6 +3247,9 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     roadLaneOutlines.current = new PIXI.Container();
     // outlines slightly below lane overlay so they don't occlude marker texture
     (roadLaneOutlines.current as any).zIndex = 40;
+    crackedRoadOverlay.current = new PIXI.Container();
+    (crackedRoadOverlay.current as any).zIndex = 45;
+    crackedRoadOverlay.current.visible = false;
     edgeOverlay.current = new PIXI.Container();
     // ensure concrete overlay renders above the bands
     (edgeOverlay.current as any).zIndex = 200;
@@ -2900,6 +3283,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     drawables.current.addChild(roadLaneOverlay.current);
     // linhas de contorno das faixas
     drawables.current.addChild(roadLaneOutlines.current);
+    drawables.current.addChild(crackedRoadOverlay.current);
     if ((config as any).render.intersectionPatchForceOnTop) {
         drawables.current.addChild(intersectionPatches.current);
     }
@@ -2921,6 +3305,8 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     // character graphics / sprite setup
     state.characterGraphics = new PIXI.Graphics();
     characters.current.addChild(state.characterGraphics);
+
+    scheduleCrackedRoadRedraw();
 
     handleResize();
     // Redesenhar handler
@@ -3128,6 +3514,14 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             window.removeEventListener('resize', handleResize);
             window.removeEventListener('keydown', onKeyDown);
             window.removeEventListener('keyup', onKeyUp);
+            window.removeEventListener('noise-overlay-request-sync', onNoiseReq as EventListener);
+            window.removeEventListener('noise-overlay-intersection-updated', onNoiseMaskUpdated as EventListener);
+            window.removeEventListener('noise-overlay-change', onNoiseOverlayToggle as EventListener);
+            window.removeEventListener('noise-overlay-outline-change', onNoiseOutlineToggle as EventListener);
+            if (crackedRoadsRaf.current != null && typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+                window.cancelAnimationFrame(crackedRoadsRaf.current);
+                crackedRoadsRaf.current = null;
+            }
             MapStore.removeChangeListener(onMapChange);
             pixiRenderer.current?.destroy();
             canvasContainerRef.current?.removeChild(canvasEl);
