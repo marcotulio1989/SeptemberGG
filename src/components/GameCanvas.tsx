@@ -1202,18 +1202,22 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         container.removeChildren();
         const cfg = (config as any).render;
         const show = !!cfg.showCrackedRoadsOutline;
-        const overlayEnabled = !!NoiseZoning?.enabled;
-        if (!show || !overlayEnabled) {
+        if (!show) {
             container.visible = false;
             return;
         }
         const getMask = (NoiseZoning as any)?.getIntersectionMaskData;
         const createTester = (NoiseZoning as any)?.createIntersectionTester;
-        if (typeof getMask !== 'function' || typeof createTester !== 'function') {
+        if (typeof createTester !== 'function') {
             container.visible = false;
             return;
         }
-        const maskInfo = getMask.call(NoiseZoning) as {
+        const tester = createTester.call(NoiseZoning) as ((x: number, y: number) => boolean) | null;
+        if (!tester) {
+            container.visible = false;
+            return;
+        }
+        const maskInfo = typeof getMask === 'function' ? getMask.call(NoiseZoning) as {
             coarseW: number;
             coarseH: number;
             gridMinX: number;
@@ -1221,9 +1225,8 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             worldStep: number;
             pixelSizePx: number;
             intersectionMask: Uint8Array;
-        } | null;
-        const tester = createTester.call(NoiseZoning) as ((x: number, y: number) => boolean) | null;
-        if (!maskInfo || !tester || !(maskInfo.worldStep > 0)) {
+        } | null : null;
+        if (!maskInfo || !(maskInfo.worldStep > 0)) {
             container.visible = false;
             return;
         }

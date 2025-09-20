@@ -287,7 +287,7 @@ export const config = {
     showBlockOutlines: true,
     // Show warped-noise delimitations (separate toggle for noise regions / buckets)
     showNoiseDelimitations: false,
-    showCrackedRoadsOutline: false,
+    showCrackedRoadsOutline: true,
     crackedRoadColor: 0x00E5FF,
     crackedRoadAlpha: 0.88,
     crackedRoadStrokePx: 1.35,
