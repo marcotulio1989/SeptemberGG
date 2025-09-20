@@ -306,8 +306,10 @@ const NoiseZoning: InternalNoiseZoning = {
     const roadSegments = MapStore.getSegments();
     const renderModeIsometric = (config.render as any).mode === 'isometric';
     const isoA = (config.render as any).isoA, isoB = (config.render as any).isoB, isoC = (config.render as any).isoC, isoD = (config.render as any).isoD;
-    const cameraIsoX = renderModeIsometric ? (isoA * cameraX + isoC * cameraY) : 0;
-    const cameraIsoY = renderModeIsometric ? (isoB * cameraX + isoD * cameraY) : 0;
+    // GameCanvas passes camera coordinates that are ALREADY in isometric space.
+    // We do not need to re-project them. This was the source of the offset.
+    const cameraIsoX = renderModeIsometric ? cameraX : 0;
+    const cameraIsoY = renderModeIsometric ? cameraY : 0;
     const projectWorldToScreen = (p: { x: number; y: number }) => {
       let screenX: number;
       let screenY: number;
