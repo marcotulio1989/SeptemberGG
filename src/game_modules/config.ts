@@ -1,4 +1,5 @@
 import { randomRange } from '../generic_modules/math';
+import type { CrackedRoadVariantAssignments } from '../lib/crackedRoadVariants';
 
 const branchAngleDev = 3;
 const forwardAngleDev = 15;
@@ -300,6 +301,7 @@ export const config = {
     crackedRoadMaxSamplesAlong: 240,
     crackedRoadMaxSamplesAcross: 96,
     crackedRoadProbeStepM: 1.1,
+    crackedRoadVariantAssignments: {} as CrackedRoadVariantAssignments,
     // Mostrar apenas os contornos dos quarteirões (esconde ruas e preenchimento dos prédios)
     showOnlyBlockOutlines: false,
     // Mostrar apenas o interior dos quarteirões (preenchidos), escondendo ruas e demais elementos

@@ -9,6 +9,11 @@ import ToggleButton from './ToggleButton';
 import MapStore from '../stores/MapStore';
 import NoiseZoning from '../overlays/NoiseZoning';
 import OverlayToggle from './OverlayToggle';
+import {
+    RANDOMIZABLE_CRACK_VARIANT_IDS,
+    type CrackedRoadVariantAssignments,
+    type CrackedRoadVariantId,
+} from '../lib/crackedRoadVariants';
 // Controles avançados removidos: sem overlay/zonas aleatórias aqui
 
 const App: React.FC = () => {
@@ -319,6 +324,29 @@ const App: React.FC = () => {
         setCrackMaxSamplesAlong(240);
         setCrackMaxSamplesAcross(96);
         setCrackProbeStep(1.1);
+        try { (config as any).render.crackedRoadVariantAssignments = {}; } catch (e) {}
+        broadcastCrackedRoadConfigChange();
+    };
+
+    const randomizeCrackVariants = () => {
+        const variantIds = RANDOMIZABLE_CRACK_VARIANT_IDS;
+        const segments = MapStore.getSegments() || [];
+        if (!variantIds.length || !segments.length) {
+            try { (config as any).render.crackedRoadVariantAssignments = {}; } catch (e) {}
+            broadcastCrackedRoadConfigChange();
+            return;
+        }
+        const assignments: CrackedRoadVariantAssignments = {};
+        for (const segment of segments) {
+            if (!segment || segment.id == null) continue;
+            const idx = Math.floor(Math.random() * variantIds.length);
+            const variantId = variantIds[idx] as CrackedRoadVariantId;
+            assignments[segment.id] = variantId;
+        }
+        try {
+            (config as any).render.crackedRoadVariantAssignments = assignments;
+        } catch (e) {}
+        broadcastCrackedRoadConfigChange();
     };
 
     useEffect(() => {
@@ -1101,23 +1129,40 @@ const App: React.FC = () => {
                             />
                         </div>
                     </div>
-                    <button
-                        type="button"
-                        onClick={resetCrackConfig}
-                        style={{
-                            marginTop: 16,
-                            width: '100%',
-                            padding: '6px 0',
-                            borderRadius: 4,
-                            border: 'none',
-                            background: '#263238',
-                            color: '#ECEFF1',
-                            cursor: 'pointer',
-                            fontWeight: 600,
-                        }}
-                    >
-                        Restaurar padrões
-                    </button>
+                    <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+                        <button
+                            type="button"
+                            onClick={randomizeCrackVariants}
+                            style={{
+                                flex: 1,
+                                padding: '6px 0',
+                                borderRadius: 4,
+                                border: 'none',
+                                background: '#37474F',
+                                color: '#ECEFF1',
+                                cursor: 'pointer',
+                                fontWeight: 600,
+                            }}
+                        >
+                            Randomizar tipos
+                        </button>
+                        <button
+                            type="button"
+                            onClick={resetCrackConfig}
+                            style={{
+                                flex: 1,
+                                padding: '6px 0',
+                                borderRadius: 4,
+                                border: 'none',
+                                background: '#263238',
+                                color: '#ECEFF1',
+                                cursor: 'pointer',
+                                fontWeight: 600,
+                            }}
+                        >
+                            Restaurar padrões
+                        </button>
+                    </div>
                 </div>
             )}
             {heatmapVisible && (
