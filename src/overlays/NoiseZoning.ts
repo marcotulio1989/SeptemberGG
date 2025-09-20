@@ -407,13 +407,23 @@ const NoiseZoning: InternalNoiseZoning = {
         y: cameraY + (screenY - cy) * invZoom,
       };
     };
+
+    // Define the size of a coarse "pixel" in world units. This is used to snap the
+    // noise sampling coordinates to a world-aligned grid.
+    const worldStep = sampleStepPx / safeZoom;
+
     for (let gy = 0; gy < coarseH; gy++) {
       const sampleScreenY = minPy + (gy + 0.5) * cellPxH;
       for (let gx = 0; gx < coarseW; gx++) {
         const idx = gy * coarseW + gx;
         const sampleScreenX = minPx + (gx + 0.5) * cellPxW;
         const { x: worldX, y: worldY } = screenToWorld(sampleScreenX, sampleScreenY);
-        coarse[idx] = sampleWarpedNoise(this._noise, worldX * baseScale, worldY * baseScale, octaves, lacunarity, gain);
+        // Snap world coordinates to a grid. This anchors the noise pattern to the world,
+        // preventing the visual "swimming" artifact when the camera moves.
+        const snappedWorldX = Math.round(worldX / worldStep) * worldStep;
+        const snappedWorldY = Math.round(worldY / worldStep) * worldStep;
+
+        coarse[idx] = sampleWarpedNoise(this._noise, snappedWorldX * baseScale, snappedWorldY * baseScale, octaves, lacunarity, gain);
       }
     }
     // Build a rasterized low-resolution mask of roads once for this view (coarse grid). This is much faster
