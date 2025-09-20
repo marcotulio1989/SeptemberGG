@@ -8,6 +8,7 @@ import TextureGallery from './TextureGallery';
 import ToggleButton from './ToggleButton';
 import MapStore from '../stores/MapStore';
 import NoiseZoning from '../overlays/NoiseZoning';
+import OverlayToggle from './OverlayToggle';
 // Controles avançados removidos: sem overlay/zonas aleatórias aqui
 
 const App: React.FC = () => {
@@ -343,6 +344,7 @@ const App: React.FC = () => {
                 edgeTexture={edgeTexture} edgeScale={edgeScale} edgeAlpha={edgeAlpha}
                 roadLaneTexture={laneTexture} roadLaneScale={laneScale} roadLaneAlpha={laneAlpha}
             />
+            <OverlayToggle />
             <div id="control-bar" className={controlsCollapsed ? 'collapsed' : ''}>
                 <button id="control-bar-toggle" onClick={() => setControlsCollapsed(c => !c)} style={{ marginRight: 8 }}>
                     {controlsCollapsed ? 'Expandir' : 'Colapsar'}

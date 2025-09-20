@@ -2779,6 +2779,12 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         try { console.warn('[GameCanvas] Failed to attach NoiseZoning overlay', e); } catch (err) {}
     }
 
+        // If NoiseZoning requests a sync (e.g. when it was just enabled), push current view
+        const onNoiseReq = () => {
+            try { syncNoiseOverlayView(state.camera.x, state.camera.y, state.zoom); } catch (e) {}
+        };
+        window.addEventListener('noise-overlay-request-sync', onNoiseReq as EventListener);
+
         const handleResize = () => {
             if (!canvasContainerRef.current) return;
             const { offsetWidth, offsetHeight } = canvasContainerRef.current;

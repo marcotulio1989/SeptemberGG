@@ -73,6 +73,14 @@ AppDispatcher.register((payload: Payload) => {
             }
             store.emitChange();
 
+            // Notify overlays and other consumers that a new map was generated, include the seed
+            try {
+                if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+                    const evt = new CustomEvent('map-generated', { detail: { seed: action.seed } });
+                    window.dispatchEvent(evt);
+                }
+            } catch (e) {}
+
             // Auto zonas desativado: não recalcular raios concêntricos nem regenerar.
             break;
         }
