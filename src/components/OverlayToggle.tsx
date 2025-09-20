@@ -4,7 +4,13 @@ import NoiseZoning from '../overlays/NoiseZoning';
 const OverlayToggle: React.FC = () => {
   const [enabled, setEnabled] = React.useState(NoiseZoning.enabled);
   const [threshold, setThreshold] = React.useState<number>(NoiseZoning.getNoiseThreshold ? NoiseZoning.getNoiseThreshold() : 0.5);
-  const [outlineOn, setOutlineOn] = React.useState<boolean>(NoiseZoning.getIntersectionOutlineEnabled ? NoiseZoning.getIntersectionOutlineEnabled() : false);
+  const [crackedOn, setCrackedOn] = React.useState<boolean>(
+    NoiseZoning.getCrackedRoadOutlineEnabled
+      ? NoiseZoning.getCrackedRoadOutlineEnabled()
+      : NoiseZoning.getIntersectionOutlineEnabled
+        ? NoiseZoning.getIntersectionOutlineEnabled()
+        : false
+  );
 
   const onToggle = () => {
     NoiseZoning.toggle();
@@ -25,7 +31,7 @@ const OverlayToggle: React.FC = () => {
     const outlineHandler = (event: Event) => {
       const detail = (event as CustomEvent<{ outline?: boolean }>).detail;
       if (detail && typeof detail.outline === 'boolean') {
-        setOutlineOn(detail.outline);
+        setCrackedOn(detail.outline);
       }
     };
     window.addEventListener('noise-overlay-change', handler as EventListener);
@@ -42,10 +48,14 @@ const OverlayToggle: React.FC = () => {
     if (NoiseZoning.setNoiseThreshold) NoiseZoning.setNoiseThreshold(v);
   };
 
-  const onToggleOutline = () => {
-    const next = !outlineOn;
-    setOutlineOn(next);
-    if (NoiseZoning.setIntersectionOutlineEnabled) NoiseZoning.setIntersectionOutlineEnabled(next);
+  const onToggleCracked = () => {
+    const next = !crackedOn;
+    setCrackedOn(next);
+    if (NoiseZoning.setCrackedRoadOutlineEnabled) {
+      NoiseZoning.setCrackedRoadOutlineEnabled(next);
+    } else if (NoiseZoning.setIntersectionOutlineEnabled) {
+      NoiseZoning.setIntersectionOutlineEnabled(next);
+    }
   };
 
   return (
@@ -58,7 +68,7 @@ const OverlayToggle: React.FC = () => {
         <div style={{ width: 36, textAlign: 'right', fontSize: 12 }}>{threshold.toFixed(2)}</div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center' }}>
-        <button onClick={onToggleOutline}>{outlineOn ? 'Esconder Contorno' : 'Mostrar Contorno'}</button>
+        <button onClick={onToggleCracked}>{crackedOn ? 'Esconder Ruas Rachadas' : 'Mostrar Ruas Rachadas'}</button>
       </div>
     </div>
   );
