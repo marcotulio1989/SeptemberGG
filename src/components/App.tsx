@@ -9,6 +9,22 @@ import ToggleButton from './ToggleButton';
 import MapStore from '../stores/MapStore';
 import NoiseZoning from '../overlays/NoiseZoning';
 import OverlayToggle from './OverlayToggle';
+import { CRACK_PATTERNS, CrackPatternAssignments } from '../lib/crackPatterns';
+
+type CrackRandomizeFlags = {
+    color: boolean;
+    alpha: boolean;
+    stroke: boolean;
+    seedDensity: boolean;
+    sampleAlong: boolean;
+    sampleAcross: boolean;
+    threshold: boolean;
+    minLength: boolean;
+    maxSeeds: boolean;
+    maxSamplesAlong: boolean;
+    maxSamplesAcross: boolean;
+    probeStep: boolean;
+};
 // Controles avançados removidos: sem overlay/zonas aleatórias aqui
 
 const App: React.FC = () => {
@@ -249,6 +265,23 @@ const App: React.FC = () => {
     const [crackMaxSamplesAlong, setCrackMaxSamplesAlong] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAlong ?? 240);
     const [crackMaxSamplesAcross, setCrackMaxSamplesAcross] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAcross ?? 96);
     const [crackProbeStep, setCrackProbeStep] = useState<number>(() => (config as any).render.crackedRoadProbeStepM ?? 1.1);
+    const [randomizeFlags, setRandomizeFlags] = useState<CrackRandomizeFlags>({
+        color: false,
+        alpha: false,
+        stroke: false,
+        seedDensity: false,
+        sampleAlong: false,
+        sampleAcross: false,
+        threshold: false,
+        minLength: false,
+        maxSeeds: false,
+        maxSamplesAlong: false,
+        maxSamplesAcross: false,
+        probeStep: false,
+    });
+    const toggleRandomizeFlag = useCallback((key: keyof CrackRandomizeFlags) => {
+        setRandomizeFlags(prev => ({ ...prev, [key]: !prev[key] }));
+    }, []);
     const broadcastCrackedRoadConfigChange = useCallback(() => {
         try { window.dispatchEvent(new CustomEvent('cracked-roads-config-change')); } catch (e) {}
     }, []);
@@ -319,7 +352,103 @@ const App: React.FC = () => {
         setCrackMaxSamplesAlong(240);
         setCrackMaxSamplesAcross(96);
         setCrackProbeStep(1.1);
+        try { (config as any).render.crackedRoadPatternAssignments = null; } catch (e) {}
+        broadcastCrackedRoadConfigChange();
+        setUiTick(t => t + 1);
     };
+
+    const randomizeCrackPatterns = useCallback(() => {
+        const randomInRange = (min: number, max: number) => min + Math.random() * (max - min);
+        const randomRounded = (min: number, max: number, decimals = 2) => {
+            const factor = Math.pow(10, decimals);
+            return Math.round(randomInRange(min, max) * factor) / factor;
+        };
+        const randomInt = (min: number, max: number) => Math.round(randomInRange(min, max));
+
+        if (randomizeFlags.color) {
+            const r = Math.floor(80 + Math.random() * 140);
+            const g = Math.floor(80 + Math.random() * 140);
+            const b = Math.floor(80 + Math.random() * 140);
+            const hex = ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
+            setCrackColor(`#${hex}`);
+        }
+        if (randomizeFlags.alpha) setCrackAlpha(randomRounded(0.45, 0.92, 2));
+        if (randomizeFlags.stroke) setCrackStrokePx(randomRounded(0.6, 2.2, 2));
+        if (randomizeFlags.seedDensity) setCrackSeedDensity(randomRounded(0.02, 0.12, 3));
+        if (randomizeFlags.sampleAlong) setCrackSampleAlong(randomRounded(0.9, 2.6, 2));
+        if (randomizeFlags.sampleAcross) setCrackSampleAcross(randomRounded(0.6, 1.8, 2));
+        if (randomizeFlags.threshold) setCrackThreshold(randomRounded(0.48, 0.82, 2));
+        if (randomizeFlags.minLength) setCrackMinLength(randomRounded(3.0, 8.0, 2));
+        if (randomizeFlags.maxSeeds) setCrackMaxSeeds(randomInt(220, 720));
+        if (randomizeFlags.maxSamplesAlong) setCrackMaxSamplesAlong(randomInt(140, 320));
+        if (randomizeFlags.maxSamplesAcross) setCrackMaxSamplesAcross(randomInt(60, 160));
+        if (randomizeFlags.probeStep) setCrackProbeStep(randomRounded(0.5, 1.6, 2));
+
+        const patternCount = CRACK_PATTERNS.length;
+        if (!patternCount) return;
+        const createTester = (NoiseZoning as any)?.createIntersectionTester;
+        if (typeof createTester !== 'function') {
+            try { console.warn('[App] Random cracks: tester unavailable'); } catch (e) {}
+            return;
+        }
+        const tester = createTester.call(NoiseZoning) as ((x: number, y: number) => boolean) | null;
+        if (!tester) {
+            try { console.warn('[App] Random cracks: tester returned null'); } catch (e) {}
+            return;
+        }
+        const segments = MapStore.getSegments();
+        if (!segments || !segments.length) return;
+        const assignments: CrackPatternAssignments = {
+            version: Date.now(),
+            segments: {},
+        };
+        let applied = 0;
+        const probeStep = Math.max(0.25, (config as any).render?.crackedRoadProbeStepM ?? 1.1);
+        segments.forEach((segment, index) => {
+            if (!segment || !segment.r) return;
+            const start = segment.r.start;
+            const end = segment.r.end;
+            const dx = end.x - start.x;
+            const dy = end.y - start.y;
+            const length = Math.hypot(dx, dy);
+            if (!(length > 1e-3)) return;
+            const ux = dx / length;
+            const uy = dy / length;
+            const nx = -uy;
+            const ny = ux;
+            const roadWidth = Math.max(1.5, segment.width || 0);
+            const stepCount = Math.max(6, Math.ceil(length / probeStep));
+            let intersects = false;
+            for (let s = 0; s <= stepCount && !intersects; s++) {
+                const t = stepCount === 0 ? 0 : s / stepCount;
+                const px = start.x + dx * t;
+                const py = start.y + dy * t;
+                if (tester(px, py)) { intersects = true; break; }
+                const lateralSamples = 2;
+                for (let l = -lateralSamples; l <= lateralSamples && !intersects; l++) {
+                    if (l === 0) continue;
+                    const offset = (l / lateralSamples) * (roadWidth * 0.5);
+                    const lx = px + nx * offset;
+                    const ly = py + ny * offset;
+                    if (tester(lx, ly)) { intersects = true; }
+                }
+            }
+            if (!intersects) return;
+            const pattern = CRACK_PATTERNS[Math.floor(Math.random() * patternCount)];
+            const key = segment?.id != null ? String(segment.id) : `idx:${index}`;
+            assignments.segments[key] = pattern.id;
+            applied++;
+        });
+        if (!applied) {
+            try { (config as any).render.crackedRoadPatternAssignments = null; } catch (e) {}
+            broadcastCrackedRoadConfigChange();
+            setUiTick(t => t + 1);
+            return;
+        }
+        (config as any).render.crackedRoadPatternAssignments = assignments;
+        broadcastCrackedRoadConfigChange();
+        setUiTick(t => t + 1);
+    }, [broadcastCrackedRoadConfigChange, randomizeFlags]);
 
     useEffect(() => {
         try { (config as any).render.showCrackedRoadsOutline = crackedRoadsVisible; } catch (e) {}
@@ -852,8 +981,20 @@ const App: React.FC = () => {
                         }}
                     >
                         <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Cor</label>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <label htmlFor="crackColorInput" style={{ fontSize: 11, fontWeight: 600 }}>Cor</label>
+                                <input
+                                    id="crackColorRandom"
+                                    type="checkbox"
+                                    checked={randomizeFlags.color}
+                                    onChange={() => toggleRandomizeFlag('color')}
+                                    style={{ width: 14, height: 14, cursor: 'pointer' }}
+                                    aria-label="Incluir cor na randomização"
+                                    title="Incluir cor na randomização"
+                                />
+                            </div>
                             <input
+                                id="crackColorInput"
                                 type="color"
                                 value={crackColor}
                                 onChange={(e) => setCrackColor(e.target.value)}
@@ -868,8 +1009,20 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Opacidade</label>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <label htmlFor="crackAlphaInput" style={{ fontSize: 11, fontWeight: 600 }}>Opacidade</label>
+                                <input
+                                    id="crackAlphaRandom"
+                                    type="checkbox"
+                                    checked={randomizeFlags.alpha}
+                                    onChange={() => toggleRandomizeFlag('alpha')}
+                                    style={{ width: 14, height: 14, cursor: 'pointer' }}
+                                    aria-label="Incluir opacidade na randomização"
+                                    title="Incluir opacidade na randomização"
+                                />
+                            </div>
                             <input
+                                id="crackAlphaInput"
                                 type="number"
                                 min={0}
                                 max={1}
@@ -890,8 +1043,20 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Espessura (px)</label>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <label htmlFor="crackStrokeInput" style={{ fontSize: 11, fontWeight: 600 }}>Espessura (px)</label>
+                                <input
+                                    id="crackStrokeRandom"
+                                    type="checkbox"
+                                    checked={randomizeFlags.stroke}
+                                    onChange={() => toggleRandomizeFlag('stroke')}
+                                    style={{ width: 14, height: 14, cursor: 'pointer' }}
+                                    aria-label="Incluir espessura na randomização"
+                                    title="Incluir espessura na randomização"
+                                />
+                            </div>
                             <input
+                                id="crackStrokeInput"
                                 type="number"
                                 min={0.05}
                                 step={0.05}
@@ -911,8 +1076,20 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Densidade Seeds</label>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <label htmlFor="crackSeedDensityInput" style={{ fontSize: 11, fontWeight: 600 }}>Densidade Seeds</label>
+                                <input
+                                    id="crackSeedDensityRandom"
+                                    type="checkbox"
+                                    checked={randomizeFlags.seedDensity}
+                                    onChange={() => toggleRandomizeFlag('seedDensity')}
+                                    style={{ width: 14, height: 14, cursor: 'pointer' }}
+                                    aria-label="Incluir densidade de seeds na randomização"
+                                    title="Incluir densidade de seeds na randomização"
+                                />
+                            </div>
                             <input
+                                id="crackSeedDensityInput"
                                 type="number"
                                 min={0.001}
                                 step={0.005}
@@ -932,8 +1109,20 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Amostras (comprimento)</label>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <label htmlFor="crackSampleAlongInput" style={{ fontSize: 11, fontWeight: 600 }}>Amostras (comprimento)</label>
+                                <input
+                                    id="crackSampleAlongRandom"
+                                    type="checkbox"
+                                    checked={randomizeFlags.sampleAlong}
+                                    onChange={() => toggleRandomizeFlag('sampleAlong')}
+                                    style={{ width: 14, height: 14, cursor: 'pointer' }}
+                                    aria-label="Incluir amostras no comprimento na randomização"
+                                    title="Incluir amostras no comprimento na randomização"
+                                />
+                            </div>
                             <input
+                                id="crackSampleAlongInput"
                                 type="number"
                                 min={0.1}
                                 step={0.1}
@@ -953,8 +1142,20 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Amostras (largura)</label>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <label htmlFor="crackSampleAcrossInput" style={{ fontSize: 11, fontWeight: 600 }}>Amostras (largura)</label>
+                                <input
+                                    id="crackSampleAcrossRandom"
+                                    type="checkbox"
+                                    checked={randomizeFlags.sampleAcross}
+                                    onChange={() => toggleRandomizeFlag('sampleAcross')}
+                                    style={{ width: 14, height: 14, cursor: 'pointer' }}
+                                    aria-label="Incluir amostras na largura na randomização"
+                                    title="Incluir amostras na largura na randomização"
+                                />
+                            </div>
                             <input
+                                id="crackSampleAcrossInput"
                                 type="number"
                                 min={0.1}
                                 step={0.1}
@@ -974,8 +1175,20 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Threshold Voronoi</label>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <label htmlFor="crackThresholdInput" style={{ fontSize: 11, fontWeight: 600 }}>Threshold Voronoi</label>
+                                <input
+                                    id="crackThresholdRandom"
+                                    type="checkbox"
+                                    checked={randomizeFlags.threshold}
+                                    onChange={() => toggleRandomizeFlag('threshold')}
+                                    style={{ width: 14, height: 14, cursor: 'pointer' }}
+                                    aria-label="Incluir threshold na randomização"
+                                    title="Incluir threshold na randomização"
+                                />
+                            </div>
                             <input
+                                id="crackThresholdInput"
                                 type="number"
                                 min={0}
                                 max={1}
@@ -996,8 +1209,20 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Comprimento mín. (m)</label>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <label htmlFor="crackMinLengthInput" style={{ fontSize: 11, fontWeight: 600 }}>Comprimento mín. (m)</label>
+                                <input
+                                    id="crackMinLengthRandom"
+                                    type="checkbox"
+                                    checked={randomizeFlags.minLength}
+                                    onChange={() => toggleRandomizeFlag('minLength')}
+                                    style={{ width: 14, height: 14, cursor: 'pointer' }}
+                                    aria-label="Incluir comprimento mínimo na randomização"
+                                    title="Incluir comprimento mínimo na randomização"
+                                />
+                            </div>
                             <input
+                                id="crackMinLengthInput"
                                 type="number"
                                 min={0.5}
                                 step={0.5}
@@ -1017,8 +1242,20 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Máx. Seeds</label>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <label htmlFor="crackMaxSeedsInput" style={{ fontSize: 11, fontWeight: 600 }}>Máx. Seeds</label>
+                                <input
+                                    id="crackMaxSeedsRandom"
+                                    type="checkbox"
+                                    checked={randomizeFlags.maxSeeds}
+                                    onChange={() => toggleRandomizeFlag('maxSeeds')}
+                                    style={{ width: 14, height: 14, cursor: 'pointer' }}
+                                    aria-label="Incluir máximo de seeds na randomização"
+                                    title="Incluir máximo de seeds na randomização"
+                                />
+                            </div>
                             <input
+                                id="crackMaxSeedsInput"
                                 type="number"
                                 min={8}
                                 step={1}
@@ -1038,8 +1275,20 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Máx. Samples (comprimento)</label>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <label htmlFor="crackMaxSamplesAlongInput" style={{ fontSize: 11, fontWeight: 600 }}>Máx. Samples (comprimento)</label>
+                                <input
+                                    id="crackMaxSamplesAlongRandom"
+                                    type="checkbox"
+                                    checked={randomizeFlags.maxSamplesAlong}
+                                    onChange={() => toggleRandomizeFlag('maxSamplesAlong')}
+                                    style={{ width: 14, height: 14, cursor: 'pointer' }}
+                                    aria-label="Incluir máximo de amostras no comprimento na randomização"
+                                    title="Incluir máximo de amostras no comprimento na randomização"
+                                />
+                            </div>
                             <input
+                                id="crackMaxSamplesAlongInput"
                                 type="number"
                                 min={4}
                                 step={1}
@@ -1059,8 +1308,20 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Máx. Samples (largura)</label>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <label htmlFor="crackMaxSamplesAcrossInput" style={{ fontSize: 11, fontWeight: 600 }}>Máx. Samples (largura)</label>
+                                <input
+                                    id="crackMaxSamplesAcrossRandom"
+                                    type="checkbox"
+                                    checked={randomizeFlags.maxSamplesAcross}
+                                    onChange={() => toggleRandomizeFlag('maxSamplesAcross')}
+                                    style={{ width: 14, height: 14, cursor: 'pointer' }}
+                                    aria-label="Incluir máximo de amostras na largura na randomização"
+                                    title="Incluir máximo de amostras na largura na randomização"
+                                />
+                            </div>
                             <input
+                                id="crackMaxSamplesAcrossInput"
                                 type="number"
                                 min={4}
                                 step={1}
@@ -1080,8 +1341,20 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <label style={{ fontSize: 11, fontWeight: 600 }}>Passo da sonda (m)</label>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <label htmlFor="crackProbeStepInput" style={{ fontSize: 11, fontWeight: 600 }}>Passo da sonda (m)</label>
+                                <input
+                                    id="crackProbeStepRandom"
+                                    type="checkbox"
+                                    checked={randomizeFlags.probeStep}
+                                    onChange={() => toggleRandomizeFlag('probeStep')}
+                                    style={{ width: 14, height: 14, cursor: 'pointer' }}
+                                    aria-label="Incluir passo da sonda na randomização"
+                                    title="Incluir passo da sonda na randomização"
+                                />
+                            </div>
                             <input
+                                id="crackProbeStepInput"
                                 type="number"
                                 min={0.25}
                                 step={0.05}
@@ -1101,23 +1374,47 @@ const App: React.FC = () => {
                             />
                         </div>
                     </div>
-                    <button
-                        type="button"
-                        onClick={resetCrackConfig}
+                    <div
                         style={{
                             marginTop: 16,
-                            width: '100%',
-                            padding: '6px 0',
-                            borderRadius: 4,
-                            border: 'none',
-                            background: '#263238',
-                            color: '#ECEFF1',
-                            cursor: 'pointer',
-                            fontWeight: 600,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 8,
                         }}
                     >
-                        Restaurar padrões
-                    </button>
+                        <button
+                            type="button"
+                            onClick={randomizeCrackPatterns}
+                            style={{
+                                width: '100%',
+                                padding: '6px 0',
+                                borderRadius: 4,
+                                border: 'none',
+                                background: '#1565c0',
+                                color: '#ECEFF1',
+                                cursor: 'pointer',
+                                fontWeight: 600,
+                            }}
+                        >
+                            Random
+                        </button>
+                        <button
+                            type="button"
+                            onClick={resetCrackConfig}
+                            style={{
+                                width: '100%',
+                                padding: '6px 0',
+                                borderRadius: 4,
+                                border: 'none',
+                                background: '#263238',
+                                color: '#ECEFF1',
+                                cursor: 'pointer',
+                                fontWeight: 600,
+                            }}
+                        >
+                            Restaurar padrões
+                        </button>
+                    </div>
                 </div>
             )}
             {heatmapVisible && (
