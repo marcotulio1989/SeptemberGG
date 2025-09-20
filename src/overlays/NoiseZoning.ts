@@ -303,31 +303,32 @@ const NoiseZoning: InternalNoiseZoning = {
     // Cache de pixels: se view for igual, reutiliza
     const alpha = this.enabled ? Math.floor((config.render.zoneOverlayAlpha ?? 0.12) * 255) : 0;
     // Calcular bounding box em pixels da área que contém ruas (projetada para tela)
-    const segsForBbox = MapStore.getSegments();
+    const roadSegments = MapStore.getSegments();
     const renderModeIsometric = (config.render as any).mode === 'isometric';
     const isoA = (config.render as any).isoA, isoB = (config.render as any).isoB, isoC = (config.render as any).isoC, isoD = (config.render as any).isoD;
     const cameraIsoX = renderModeIsometric ? (isoA * cameraX + isoC * cameraY) : 0;
     const cameraIsoY = renderModeIsometric ? (isoB * cameraX + isoD * cameraY) : 0;
+    const projectWorldToScreen = (p: { x: number; y: number }) => {
+      let screenX: number;
+      let screenY: number;
+      if (renderModeIsometric) {
+        const isoX = isoA * p.x + isoC * p.y;
+        const isoY = isoB * p.x + isoD * p.y;
+        screenX = cx + (isoX - cameraIsoX) * zoom;
+        screenY = cy + (isoY - cameraIsoY) * zoom;
+      } else {
+        screenX = cx + (p.x - cameraX) * zoom;
+        screenY = cy + (p.y - cameraY) * zoom;
+      }
+      return { x: screenX, y: screenY };
+    };
     let minPx = w, minPy = h, maxPx = 0, maxPy = 0;
     let hasSegments = false;
-    for (const s of segsForBbox) {
+    for (const s of roadSegments) {
       if (!s || !s.r) continue;
       hasSegments = true;
-      const proj = (p: { x: number; y: number }) => {
-        let screenX: number, screenY: number;
-        if (renderModeIsometric) {
-          const isoX = isoA * p.x + isoC * p.y;
-          const isoY = isoB * p.x + isoD * p.y;
-          screenX = cx + (isoX - cameraIsoX) * zoom;
-          screenY = cy + (isoY - cameraIsoY) * zoom;
-        } else {
-          screenX = cx + (p.x - cameraX) * zoom;
-          screenY = cy + (p.y - cameraY) * zoom;
-        }
-        return { x: screenX, y: screenY };
-      };
-      const a = proj(s.r.start);
-      const b = proj(s.r.end);
+      const a = projectWorldToScreen(s.r.start);
+      const b = projectWorldToScreen(s.r.end);
       minPx = Math.min(minPx, a.x, b.x);
       minPy = Math.min(minPy, a.y, b.y);
       maxPx = Math.max(maxPx, a.x, b.x);
@@ -441,22 +442,11 @@ const NoiseZoning: InternalNoiseZoning = {
         mctx.lineCap = 'butt';
 
         // Helpers: project world point -> screen pixel then to coarse canvas coordinates
-        const segs2 = MapStore.getSegments();
-        for (const seg of segs2) {
+        for (const seg of roadSegments) {
           if (!seg || !seg.r) continue;
           // project endpoints to screen px using same projection as above
-          const projScreen = (p: { x: number; y: number }) => {
-            if (renderModeIsometric) {
-              const isoX = isoA * p.x + isoC * p.y;
-              const isoY = isoB * p.x + isoD * p.y;
-              const screenX = cx + (isoX - cameraIsoX) * zoom;
-              const screenY = cy + (isoY - cameraIsoY) * zoom;
-              return { x: screenX, y: screenY };
-            }
-            return { x: cx + (p.x - cameraX) * zoom, y: cy + (p.y - cameraY) * zoom };
-          };
-          const A = projScreen(seg.r.start);
-          const B = projScreen(seg.r.end);
+          const A = projectWorldToScreen(seg.r.start);
+          const B = projectWorldToScreen(seg.r.end);
           // Map screen px -> coarse canvas coords
           const toCoarse = (screenPt: { x: number; y: number }) => ({ x: (screenPt.x - minPx) / cellPxW, y: (screenPt.y - minPy) / cellPxH });
           const a = toCoarse(A);
@@ -540,23 +530,79 @@ const NoiseZoning: InternalNoiseZoning = {
       // If rect drawing fails, clear canvas as a safe fallback
       try { this._ctx.clearRect(0, 0, w, h); } catch (e2) {}
     }
-    // If requested, compute contours of intersectionMask using marching squares and draw outlines
+    // If requested, draw outlines around the road geometry intersecting noisy areas
     if ((this as any)._showIntersectionOutline) {
-      // Instead of contouring the filled intersection area, we compute contours
-      // of the road mask and stroke only those segments whose midpoints fall
-      // inside the intersectionMask (i.e. road portions that are within noisy areas).
-      const contourKey = `${this._seed}|intersection|${this._params.baseScale}|${this._params.octaves}|${this._params.lacunarity}|${this._params.gain}|${coarseW}x${coarseH}|${cameraX.toFixed(3)}|${cameraY.toFixed(3)}|${zoom.toFixed(3)}|${noiseThreshold.toFixed(3)}|${minPx}|${minPy}|${maxPx}|${maxPx}`;
+      // Compute outlines by following the actual road geometry for the segments
+      // whose centerline intersects noisy cells. This ensures the contour hugs
+      // the affected streets instead of the noise field itself.
+      const contourKey = `${this._seed}|intersection|${this._params.baseScale}|${this._params.octaves}|${this._params.lacunarity}|${this._params.gain}|${coarseW}x${coarseH}|${cameraX.toFixed(3)}|${cameraY.toFixed(3)}|${zoom.toFixed(3)}|${noiseThreshold.toFixed(3)}|${minPx}|${minPy}|${maxPx}|${maxPy}|${roadSegments.length}`;
       let roadPolys: number[][][] = [];
       if (this._contourCache && this._contourCache.key === contourKey) {
         roadPolys = this._contourCache.contours || [];
       } else {
-        roadPolys = marchingSquaresContoursScreen(intersectionMask, coarseW, coarseH, minPx, minPy, cellPxW, cellPxH) || [];
+        const minCellSizePx = Math.max(1, Math.min(cellPxW, cellPxH));
+        const polygons: number[][][] = [];
+        const pointHitsIntersection = (pt: { x: number; y: number }) => {
+          const gx = Math.floor((pt.x - minPx) / cellPxW);
+          const gy = Math.floor((pt.y - minPy) / cellPxH);
+          if (gx < 0 || gy < 0 || gx >= coarseW || gy >= coarseH) return false;
+          return intersectionMask[gy * coarseW + gx] > 0;
+        };
+        for (const seg of roadSegments) {
+          if (!seg || !seg.r) continue;
+          const startWorld = seg.r.start;
+          const endWorld = seg.r.end;
+          const startScreen = projectWorldToScreen(startWorld);
+          const endScreen = projectWorldToScreen(endWorld);
+          const screenDx = endScreen.x - startScreen.x;
+          const screenDy = endScreen.y - startScreen.y;
+          const screenLen = Math.hypot(screenDx, screenDy);
+          const steps = Math.max(1, Math.ceil(screenLen / minCellSizePx));
+          let intersectsNoise = false;
+          for (let s = 0; s <= steps; s++) {
+            const t = steps === 0 ? 0 : s / steps;
+            const samplePt = {
+              x: startScreen.x + screenDx * t,
+              y: startScreen.y + screenDy * t,
+            };
+            if (pointHitsIntersection(samplePt)) { intersectsNoise = true; break; }
+          }
+          if (!intersectsNoise) continue;
+
+          const dirX = endWorld.x - startWorld.x;
+          const dirY = endWorld.y - startWorld.y;
+          const dirLen = Math.hypot(dirX, dirY);
+          if (!(dirLen > 1e-6)) continue;
+          const invLen = 1 / dirLen;
+          const ux = dirX * invLen;
+          const uy = dirY * invLen;
+          const nx = -uy;
+          const ny = ux;
+          const widthWorld = seg.width || 0;
+          if (!(widthWorld > 0)) continue;
+          const halfWidth = widthWorld * 0.5;
+          const cornersWorld = [
+            { x: startWorld.x + nx * halfWidth, y: startWorld.y + ny * halfWidth },
+            { x: endWorld.x + nx * halfWidth, y: endWorld.y + ny * halfWidth },
+            { x: endWorld.x - nx * halfWidth, y: endWorld.y - ny * halfWidth },
+            { x: startWorld.x - nx * halfWidth, y: startWorld.y - ny * halfWidth },
+          ];
+          const polygon = cornersWorld.map(pt => {
+            const scr = projectWorldToScreen(pt);
+            return [scr.x, scr.y];
+          });
+          if (polygon.some(([px, py]) => !Number.isFinite(px) || !Number.isFinite(py))) continue;
+          polygons.push(polygon);
+        }
+        roadPolys = polygons;
         this._contourCache = { key: contourKey, contours: roadPolys };
       }
       try {
         this._ctx.save();
         this._ctx.strokeStyle = '#ffffff';
         this._ctx.lineWidth = Math.max(1, 2 * (window.devicePixelRatio || 1));
+        this._ctx.lineJoin = 'round';
+        this._ctx.lineCap = 'round';
         for (const poly of roadPolys) {
           if (!poly || poly.length < 2) continue;
           this._ctx.beginPath();
@@ -564,11 +610,7 @@ const NoiseZoning: InternalNoiseZoning = {
           for (let i = 1; i < poly.length; i++) {
             this._ctx.lineTo(poly[i][0], poly[i][1]);
           }
-          const first = poly[0];
-          const last = poly[poly.length - 1];
-          if (poly.length > 2 && Math.hypot(first[0] - last[0], first[1] - last[1]) < 1e-3) {
-            this._ctx.closePath();
-          }
+          if (poly.length > 2) this._ctx.closePath();
           this._ctx.stroke();
         }
       } catch (e) {
