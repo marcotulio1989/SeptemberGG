@@ -287,6 +287,7 @@ export const config = {
     showBlockOutlines: true,
     // Show warped-noise delimitations (separate toggle for noise regions / buckets)
     showNoiseDelimitations: false,
+    showCrackedRoadsOutline: false,
     // Mostrar apenas os contornos dos quarteirões (esconde ruas e preenchimento dos prédios)
     showOnlyBlockOutlines: false,
     // Mostrar apenas o interior dos quarteirões (preenchidos), escondendo ruas e demais elementos

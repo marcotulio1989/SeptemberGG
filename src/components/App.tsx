@@ -23,6 +23,18 @@ const App: React.FC = () => {
             return !!NoiseZoning.enabled;
         }
     });
+    const [crackedRoadsVisible, setCrackedRoadsVisible] = useState<boolean>(() => {
+        try {
+            if (typeof NoiseZoning.getIntersectionOutlineEnabled === 'function') {
+                return !!NoiseZoning.getIntersectionOutlineEnabled();
+            }
+        } catch (e) {}
+        try {
+            return !!((config as any).render?.showCrackedRoadsOutline);
+        } catch (e) {
+            return false;
+        }
+    });
     const [uiTick, setUiTick] = useState(0); // força re-render para atualizar HUD
     const [outlineMode, setOutlineMode] = useState((config as any).render.roadOutlineMode);
     // Fonte de cor das bordas dos quarteirões: 'base'|'gap'|'outline'|'custom'
@@ -190,6 +202,34 @@ const App: React.FC = () => {
         };
     }, []);
 
+    useEffect(() => {
+        try { (config as any).render.showCrackedRoadsOutline = crackedRoadsVisible; } catch (e) {}
+        try {
+            const current = NoiseZoning.getIntersectionOutlineEnabled?.();
+            if (typeof current === 'boolean') {
+                if (current !== crackedRoadsVisible) {
+                    NoiseZoning.setIntersectionOutlineEnabled?.(crackedRoadsVisible);
+                }
+            } else {
+                NoiseZoning.setIntersectionOutlineEnabled?.(crackedRoadsVisible);
+            }
+        } catch (e) {}
+    }, [crackedRoadsVisible]);
+
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        const handler = (event: Event) => {
+            const detail = (event as CustomEvent<{ outline?: boolean }>).detail;
+            if (!detail || typeof detail.outline !== 'boolean') return;
+            const outlineEnabled = detail.outline;
+            setCrackedRoadsVisible(prev => (prev === outlineEnabled ? prev : outlineEnabled));
+        };
+        window.addEventListener('noise-overlay-outline-change', handler as EventListener);
+        return () => {
+            window.removeEventListener('noise-overlay-outline-change', handler as EventListener);
+        };
+    }, []);
+
     const [interiorTexture, setInteriorTexture] = useState<PIXI.Texture | null>(null);
     const [controlsCollapsed, setControlsCollapsed] = useState<boolean>(false);
     const [edgeTexture, setEdgeTexture] = useState<PIXI.Texture | null>(null);
@@ -354,22 +394,35 @@ const App: React.FC = () => {
                 <ToggleButton
                     onText="Hide Population Heatmap"
                     offText="Show Population Heatmap"
-                    action={() => {
-                        config.mapGeneration.DRAW_HEATMAP = !config.mapGeneration.DRAW_HEATMAP;
-                        setHeatmapVisible((v: boolean) => !v);
+                    action={(nextState) => {
+                        config.mapGeneration.DRAW_HEATMAP = nextState;
+                        setHeatmapVisible(nextState);
                         setUiTick(t => t + 1);
                     }}
+                    forcedState={heatmapVisible}
                 />
                 <button onClick={() => setNoiseOverlayVisible(v => !v)}>
                     {noiseOverlayVisible ? 'Ruído Perlin: ON' : 'Ruído Perlin: OFF'}
                 </button>
+                <ToggleButton
+                    onText="Esconder Ruas Rachadas"
+                    offText="Mostrar Ruas Rachadas"
+                    action={(nextState) => {
+                        setCrackedRoadsVisible(nextState);
+                        if (nextState && !noiseOverlayVisible) {
+                            setNoiseOverlayVisible(true);
+                        }
+                    }}
+                    forcedState={crackedRoadsVisible}
+                />
                 <button onClick={() => factorTargetZoom(3 / 2)}>Zoom in</button>
                 <button onClick={() => factorTargetZoom(2 / 3)}>Zoom out</button>
                 {/* Toggle Iso removido */}
-                <ToggleButton 
-                    onText="Camera Follow: ON" 
-                    offText="Camera Follow: OFF" 
-                    action={() => { config.render.cameraFollow = !config.render.cameraFollow; }}
+                <ToggleButton
+                    onText="Camera Follow: ON"
+                    offText="Camera Follow: OFF"
+                    action={(nextState) => { config.render.cameraFollow = nextState; }}
+                    initialState={!!config.render.cameraFollow}
                 />
                 {/* Camada overlay de vias removida */}
                 {/* Camada secundária de vias removida */}
@@ -394,20 +447,26 @@ const App: React.FC = () => {
                         onChange={(e) => { (config as any).render.roadOutlineColor = parseInt(e.target.value.replace('#',''),16); setUiTick(t=>t+1); }} />
                 </label>
                 {/* Auto Zonas (densidade) removido */}
-                <ToggleButton 
-                    onText="Hide Junction Markers" 
-                    offText="Show Junction Markers" 
-                    action={() => { config.render.showJunctionMarkers = !config.render.showJunctionMarkers; }}
+                <ToggleButton
+                    onText="Hide Junction Markers"
+                    offText="Show Junction Markers"
+                    action={(nextState) => { config.render.showJunctionMarkers = nextState; }}
+                    initialState={!!config.render.showJunctionMarkers}
                 />
-                <ToggleButton 
-                    onText="Hide Road Outline" 
-                    offText="Show Road Outline" 
-                    action={() => { config.render.showRoadOuterOutline = !config.render.showRoadOuterOutline; }}
+                <ToggleButton
+                    onText="Hide Road Outline"
+                    offText="Show Road Outline"
+                    action={(nextState) => { config.render.showRoadOuterOutline = nextState; }}
+                    initialState={!!config.render.showRoadOuterOutline}
                 />
                 <ToggleButton
                     onText="Hide Lane Outlines"
                     offText="Show Lane Outlines"
-                    action={() => { (config as any).render.showLaneOutlines = !(config as any).render.showLaneOutlines; setUiTick(t=>t+1); }}
+                    action={(nextState) => {
+                        (config as any).render.showLaneOutlines = nextState;
+                        setUiTick(t=>t+1);
+                    }}
+                    initialState={!!(config as any).render.showLaneOutlines}
                 />
                 {/* Controls for lane markers: width (m), length (m), gap (m), color */}
                             <div style={{ marginLeft: 8, display: 'inline-block', verticalAlign: 'middle' }}>
@@ -435,16 +494,17 @@ const App: React.FC = () => {
                 <ToggleButton
                     onText="Mostrar apenas contornos de quarteirões: ON"
                     offText="Mostrar apenas contornos de quarteirões: OFF"
-                    action={() => {
-                        (config as any).render.showOnlyBlockOutlines = !(config as any).render.showOnlyBlockOutlines;
+                    action={(nextState) => {
+                        (config as any).render.showOnlyBlockOutlines = nextState;
                         setUiTick(t => t + 1);
                     }}
+                    initialState={!!(config as any).render.showOnlyBlockOutlines}
                 />
-                <ToggleButton 
-                    onText="Mostrar apenas interiores de quarteirões: ON" 
-                    offText="Mostrar apenas interiores de quarteirões: OFF" 
-                    action={() => { 
-                        (config as any).render.showOnlyBlockInteriors = !(config as any).render.showOnlyBlockInteriors; 
+                <ToggleButton
+                    onText="Mostrar apenas interiores de quarteirões: ON"
+                    offText="Mostrar apenas interiores de quarteirões: OFF"
+                    action={(nextState) => {
+                        (config as any).render.showOnlyBlockInteriors = nextState;
                         // Se ligar interiores, desligar o modo 'apenas contornos' para evitar conflito visual
                         if ((config as any).render.showOnlyBlockInteriors) {
                             (config as any).render.showOnlyBlockOutlines = false;
@@ -452,6 +512,7 @@ const App: React.FC = () => {
                         }
                         setUiTick(t => t + 1);
                     }}
+                    initialState={!!(config as any).render.showOnlyBlockInteriors}
                 />
                 <label htmlFor="gap-m" style={{ marginLeft: 8 }}>Gap (m):</label>
                 <input 
