@@ -69,7 +69,6 @@ type InternalNoiseZoning = NoiseZoningAPI & {
   _ensureSize: () => void;
   _precomputed?: any;
   _mapGeneratedHandler?: (ev: Event) => void;
-  _contourCache?: { key: string; contours: number[][][] } | null;
   _DEBUG?: boolean;
   _pixelSize?: number;
   // _pixelCache.data may either be a full Uint8ClampedArray image buffer (legacy)
@@ -99,7 +98,6 @@ const NoiseZoning: InternalNoiseZoning = {
   _view: { cameraX: 0, cameraY: 0, zoom: 1 },
   _params: Zoning.getParams(),
   _pixelCache: null,
-  _contourCache: null as null | { key: string; contours: number[][][] },
   _showIntersectionOutline: false,
   _DEBUG: false,
   _pixelSize: 4,
@@ -333,13 +331,19 @@ const NoiseZoning: InternalNoiseZoning = {
     }
     // Se não houver segmentos, ocupar todo o canvas
     if (maxPx < minPx || maxPy < minPy) {
-      minPx = 0; minPy = 0; maxPx = w - 1; maxPy = h - 1;
+      minPx = 0; minPy = 0; maxPx = w; maxPy = h;
     }
     const pad = Math.ceil((config.render as any).noisePaddingPx ?? 64);
-    minPx = Math.max(0, Math.floor(minPx - pad));
-    minPy = Math.max(0, Math.floor(minPy - pad));
-    maxPx = Math.min(w - 1, Math.ceil(maxPx + pad));
-    maxPy = Math.min(h - 1, Math.ceil(maxPy + pad));
+    minPx = Math.max(0, minPx - pad);
+    minPy = Math.max(0, minPy - pad);
+    maxPx = Math.min(w, maxPx + pad);
+    maxPy = Math.min(h, maxPy + pad);
+    if (maxPx <= minPx) {
+      maxPx = Math.min(w, minPx + 1);
+    }
+    if (maxPy <= minPy) {
+      maxPy = Math.min(h, minPy + 1);
+    }
 
   try { if ((this as any)._DEBUG) console.log('[NoiseZoning] redraw pixel bbox', minPx, minPy, maxPx, maxPy); } catch (e) {}
 
@@ -349,8 +353,8 @@ const NoiseZoning: InternalNoiseZoning = {
     const minPxSize = (this as any)._pixelSize ?? 4;
   let sampleStepPx = Math.max(requestedStep, minPxSize);
     // Compute coarse grid size in screen-space so the number of samples is bounded
-    const regionPxW = (maxPx - minPx + 1);
-    const regionPxH = (maxPy - minPy + 1);
+    const regionPxW = Math.max(1, maxPx - minPx);
+    const regionPxH = Math.max(1, maxPy - minPy);
     // compute initial coarse grid size
     let coarseW = Math.max(2, Math.floor(regionPxW / sampleStepPx) + 1);
     let coarseH = Math.max(2, Math.floor(regionPxH / sampleStepPx) + 1);
@@ -497,19 +501,21 @@ const NoiseZoning: InternalNoiseZoning = {
       this._ctx.fillStyle = `rgba(0,0,0,${aNorm})`;
 
       // compute pixel size of each coarse cell
-      const cellPxW = (maxPx - minPx + 1) / Math.max(1, coarseW);
-      const cellPxH = (maxPy - minPy + 1) / Math.max(1, coarseH);
+      const cellPxW = regionPxW / Math.max(1, coarseW);
+      const cellPxH = regionPxH / Math.max(1, coarseH);
 
       for (let gy = 0; gy < coarseH; gy++) {
         const y0 = Math.round(minPy + gy * cellPxH);
-        const hPx = Math.max(1, Math.round((gy === coarseH - 1) ? (maxPy - minPy + 1) - Math.round(gy * cellPxH) : cellPxH));
+        const y1 = Math.round(minPy + (gy + 1) * cellPxH);
+        const hPx = Math.max(1, y1 - y0);
         for (let gx = 0; gx < coarseW; gx++) {
           const i = gy * coarseW + gx;
           if (!coarseRoadMask[i]) continue; // skip non-road blocks
           const n = coarse[i];
           if (n <= noiseThreshold) continue;
           const x0 = Math.round(minPx + gx * cellPxW);
-          const wPx = Math.max(1, Math.round((gx === coarseW - 1) ? (maxPx - minPx + 1) - Math.round(gx * cellPxW) : cellPxW));
+          const x1 = Math.round(minPx + (gx + 1) * cellPxW);
+          const wPx = Math.max(1, x1 - x0);
           // draw block
           this._ctx.fillRect(x0, y0, wPx, hPx);
         }
@@ -522,74 +528,38 @@ const NoiseZoning: InternalNoiseZoning = {
     }
     // If requested, compute contours of intersectionMask using marching squares and draw outlines
     if ((this as any)._showIntersectionOutline) {
-      // Instead of contouring the filled intersection area, we compute contours
-      // of the road mask and stroke only those segments whose midpoints fall
-      // inside the intersectionMask (i.e. road portions that are within noisy areas).
-      const contourKey = `${this._seed}|roads|${this._params.baseScale}|${this._params.octaves}|${this._params.lacunarity}|${this._params.gain}|${coarseW}x${coarseH}`;
-      let roadPolys: number[][][] = [];
-      if (this._contourCache && this._contourCache.key === contourKey) {
-        roadPolys = this._contourCache.contours || [];
-      } else {
-        // compute world-space equivalents for marching squares utility
-        const worldStep = (sampleStepPx) / Math.max(1e-6, zoom);
-        const stepOffsetWorld = worldStep * 0.5;
-        // map top-left coarse cell center to world
-        const topLeftCenterScreenX = minPx + 0 * cellPxW + cellPxW * 0.5;
-        const topLeftCenterScreenY = minPy + 0 * cellPxH + cellPxH * 0.5;
-        const topLeftWorld = screenToWorld(topLeftCenterScreenX, topLeftCenterScreenY);
-        const minWorldX = topLeftWorld.x - stepOffsetWorld;
-        const minWorldY = topLeftWorld.y - stepOffsetWorld;
-        roadPolys = marchingSquaresContoursWorld(coarseRoadMask, coarseW, coarseH, worldStep, minWorldX, minWorldY, stepOffsetWorld) || [];
-        this._contourCache = { key: contourKey, contours: roadPolys };
-      }
       try {
-        this._ctx.save();
-        this._ctx.strokeStyle = '#ff0000';
-        this._ctx.lineWidth = Math.max(1, 2 * (window.devicePixelRatio || 1));
-        const worldToScreen = (wx: number, wy: number) => {
-          if (renderModeIsometric) {
-            const isoX = isoA * wx + isoC * wy;
-            const isoY = isoB * wx + isoD * wy;
-            return { x: cx + (isoX - cameraIsoX) * zoom, y: cy + (isoY - cameraIsoY) * zoom };
-          }
-          return { x: cx + (wx - cameraX) * zoom, y: cy + (wy - cameraY) * zoom };
-        };
-        // For each polyline of the road contours, draw only edges whose midpoint
-        // is inside the intersectionMask grid.
-        for (const poly of roadPolys) {
-          if (!poly || poly.length < 2) continue;
-          for (let i = 0; i < poly.length; i++) {
-            const a = poly[i];
-            const b = poly[(i + 1) % poly.length];
-            // handle open polylines: if last point equals first, the modulus is fine,
-            // otherwise avoid connecting last->first by breaking when at final index
-            if (i === poly.length - 1 && (Math.abs(a[0] - b[0]) > 1e-9 || Math.abs(a[1] - b[1]) > 1e-9) && poly.length > 2) {
-              // this is the edge from last to first in an open polyline; skip if not equal
-              // (marching squares may produce closed loops, in which case we want the edge)
-            }
-            // midpoint in world coords
-            const mx = (a[0] + b[0]) * 0.5;
-            const my = (a[1] + b[1]) * 0.5;
-            // map midpoint to screen and then to coarse grid indices
-            const midScreen = worldToScreen(mx, my);
-            const gx = Math.floor((midScreen.x - minPx) / cellPxW);
-            const gy = Math.floor((midScreen.y - minPy) / cellPxH);
-            if (gx < 0 || gy < 0 || gx >= coarseW || gy >= coarseH) continue;
-            const inside = !!intersectionMask[gy * coarseW + gx];
-            if (!inside) continue;
-            // draw this segment
-            const pa = worldToScreen(a[0], a[1]);
-            const pb = worldToScreen(b[0], b[1]);
+        const rawContours = marchingSquaresContours(intersectionMask, coarseW, coarseH, 1, 0, 0, 0) || [];
+        if (rawContours.length > 0) {
+          this._ctx.save();
+          this._ctx.strokeStyle = '#ff0000';
+          this._ctx.lineWidth = Math.max(1, 2 * (window.devicePixelRatio || 1));
+          this._ctx.lineJoin = 'round';
+          this._ctx.lineCap = 'round';
+          const toScreen = (pt: [number, number]) => {
+            const x = minPx + pt[0] * cellPxW;
+            const y = minPy + pt[1] * cellPxH;
+            return { x, y };
+          };
+          for (const contour of rawContours) {
+            if (!contour || contour.length < 2) continue;
             this._ctx.beginPath();
-            this._ctx.moveTo(pa.x, pa.y);
-            this._ctx.lineTo(pb.x, pb.y);
+            const first = toScreen(contour[0] as [number, number]);
+            this._ctx.moveTo(first.x, first.y);
+            for (let i = 1; i < contour.length; i++) {
+              const pt = toScreen(contour[i] as [number, number]);
+              this._ctx.lineTo(pt.x, pt.y);
+            }
+            const last = contour[contour.length - 1];
+            if (last && (Math.abs(last[0] - contour[0][0]) > 1e-6 || Math.abs(last[1] - contour[0][1]) > 1e-6)) {
+              this._ctx.lineTo(first.x, first.y);
+            }
             this._ctx.stroke();
           }
+          this._ctx.restore();
         }
       } catch (e) {
-        // ignore drawing errors
-      } finally {
-        this._ctx.restore();
+        try { if ((this as any)._DEBUG) console.warn('[NoiseZoning] failed to draw contours', e); } catch (e2) {}
       }
     }
   // Store a small coarse cache so subsequent redraws can reuse the intersection mask
