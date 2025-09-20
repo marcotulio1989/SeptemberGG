@@ -355,30 +355,52 @@ const NoiseZoning: InternalNoiseZoning = {
     const requestedStep = computeSampleStep(w, h, zoom);
     const minPxSize = (this as any)._pixelSize ?? 4;
     let sampleStepPx = Math.max(requestedStep, minPxSize);
-    // Compute coarse grid size in screen-space so the number of samples is bounded
-    const regionPxW = (maxPx - minPx + 1);
-    const regionPxH = (maxPy - minPy + 1);
-    // compute initial coarse grid size
-    let coarseW = Math.max(2, Math.floor(regionPxW / sampleStepPx) + 1);
-    let coarseH = Math.max(2, Math.floor(regionPxH / sampleStepPx) + 1);
-    // Cap total cells to avoid explosion at high zoom — adaptively increase sampleStepPx
+    const rawBounds = { minPx, minPy, maxPx, maxPy };
     const MAX_CELLS = 20000; // safe upper bound for cells (tunable)
+    const recomputeGrid = () => {
+      const step = Math.max(1, sampleStepPx);
+      const alignFloor = (value: number, limit: number) => Math.max(0, Math.floor(value / step) * step);
+      const alignCeil = (value: number, limit: number) => {
+        const aligned = Math.ceil((value + 1) / step) * step - 1;
+        return Math.min(limit, aligned);
+      };
+      const alignedMinPx = alignFloor(rawBounds.minPx, w - 1);
+      const alignedMinPy = alignFloor(rawBounds.minPy, h - 1);
+      const alignedMaxPx = Math.max(alignedMinPx, alignCeil(rawBounds.maxPx, w - 1));
+      const alignedMaxPy = Math.max(alignedMinPy, alignCeil(rawBounds.maxPy, h - 1));
+      const regionPxW = Math.max(1, alignedMaxPx - alignedMinPx + 1);
+      const regionPxH = Math.max(1, alignedMaxPy - alignedMinPy + 1);
+      const coarseW = Math.max(2, Math.ceil(regionPxW / step));
+      const coarseH = Math.max(2, Math.ceil(regionPxH / step));
+      return { alignedMinPx, alignedMinPy, alignedMaxPx, alignedMaxPy, regionPxW, regionPxH, coarseW, coarseH };
+    };
+
+    let gridInfo = recomputeGrid();
+    let coarseW = gridInfo.coarseW;
+    let coarseH = gridInfo.coarseH;
     let totalCells = coarseW * coarseH;
-    if (totalCells > MAX_CELLS) {
+    let guard = 0;
+    while (totalCells > MAX_CELLS && guard < 8) {
       const scale = Math.sqrt(totalCells / MAX_CELLS);
-      // increase sample step in pixel-space to reduce sample count
-      const newStep = Math.max(sampleStepPx, Math.ceil(sampleStepPx * scale));
-      sampleStepPx = newStep;
-      coarseW = Math.max(2, Math.floor(regionPxW / sampleStepPx) + 1);
-      coarseH = Math.max(2, Math.floor(regionPxH / sampleStepPx) + 1);
+      const nextStep = Math.max(sampleStepPx + 1, Math.ceil(sampleStepPx * scale));
+      sampleStepPx = nextStep === sampleStepPx ? sampleStepPx + 1 : nextStep;
+      gridInfo = recomputeGrid();
+      coarseW = gridInfo.coarseW;
+      coarseH = gridInfo.coarseH;
       totalCells = coarseW * coarseH;
-      try { if ((this as any)._DEBUG) console.log('[NoiseZoning] capped coarse cells', totalCells, 'using stepPx', sampleStepPx); } catch (e) {}
+      guard++;
     }
+
+    minPx = gridInfo.alignedMinPx;
+    minPy = gridInfo.alignedMinPy;
+    maxPx = gridInfo.alignedMaxPx;
+    maxPy = gridInfo.alignedMaxPy;
+    const regionPxW = gridInfo.regionPxW;
+    const regionPxH = gridInfo.regionPxH;
     const coarse = new Float32Array(coarseW * coarseH);
     const coarseRoadMask = new Uint8Array(coarseW * coarseH); // 0/1 mask indicating presence of road
-    // pixel size of each coarse cell (in screen px)
-    const cellPxW = regionPxW / Math.max(1, coarseW);
-    const cellPxH = regionPxH / Math.max(1, coarseH);
+    const cellPxW = Math.max(1, sampleStepPx);
+    const cellPxH = Math.max(1, sampleStepPx);
     // helper: convert screen px -> world coords (handles isometric)
     // Precompute sample positions: sample at center of each coarse cell in screen-space, map back to world and sample noise
     const safeZoom = Math.max(zoom, 1e-6);
@@ -415,10 +437,10 @@ const NoiseZoning: InternalNoiseZoning = {
     const worldStep = sampleStepPx / safeZoom;
 
     for (let gy = 0; gy < coarseH; gy++) {
-      const sampleScreenY = minPy + (gy + 0.5) * cellPxH;
+      const sampleScreenY = Math.min(maxPy, minPy + (gy + 0.5) * cellPxH);
       for (let gx = 0; gx < coarseW; gx++) {
         const idx = gy * coarseW + gx;
-        const sampleScreenX = minPx + (gx + 0.5) * cellPxW;
+        const sampleScreenX = Math.min(maxPx, minPx + (gx + 0.5) * cellPxW);
         const { x: worldX, y: worldY } = screenToWorld(sampleScreenX, sampleScreenY);
         // Snap world coordinates to a grid. This anchors the noise pattern to the world,
         // preventing the visual "swimming" artifact when the camera moves.
@@ -541,19 +563,21 @@ const NoiseZoning: InternalNoiseZoning = {
       this._ctx.fillStyle = `rgba(0,0,0,${aNorm})`;
 
       // compute pixel size of each coarse cell
-      const cellPxW = (maxPx - minPx + 1) / Math.max(1, coarseW);
-      const cellPxH = (maxPy - minPy + 1) / Math.max(1, coarseH);
+      const cellPxW = Math.max(1, sampleStepPx);
+      const cellPxH = Math.max(1, sampleStepPx);
 
       for (let gy = 0; gy < coarseH; gy++) {
         const y0 = Math.round(minPy + gy * cellPxH);
-        const hPx = Math.max(1, Math.round((gy === coarseH - 1) ? (maxPy - minPy + 1) - Math.round(gy * cellPxH) : cellPxH));
+        const nextY = (gy === coarseH - 1) ? (maxPy + 1) : (minPy + (gy + 1) * cellPxH);
+        const hPx = Math.max(1, Math.round(nextY - y0));
         for (let gx = 0; gx < coarseW; gx++) {
           const i = gy * coarseW + gx;
           if (!coarseRoadMask[i]) continue; // skip non-road blocks
           const n = coarse[i];
           if (n <= noiseThreshold) continue;
           const x0 = Math.round(minPx + gx * cellPxW);
-          const wPx = Math.max(1, Math.round((gx === coarseW - 1) ? (maxPx - minPx + 1) - Math.round(gx * cellPxW) : cellPxW));
+          const nextX = (gx === coarseW - 1) ? (maxPx + 1) : (minPx + (gx + 1) * cellPxW);
+          const wPx = Math.max(1, Math.round(nextX - x0));
           // draw block
           this._ctx.fillRect(x0, y0, wPx, hPx);
         }
