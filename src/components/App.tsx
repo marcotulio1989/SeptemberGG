@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import * as PIXI from 'pixi.js';
 import { config, roadWidthM, highwayWidthM } from '../game_modules/config';
 import { MapActions } from '../actions/MapActions';
@@ -172,6 +172,10 @@ const App: React.FC = () => {
         return fallback;
     };
 
+    const parseNumberInput = (value: string) => {
+        return parseFloat(String(value).replace(',', '.'));
+    };
+
     useEffect(() => {
         try { (config as any).render.showNoiseDelimitations = noiseOverlayVisible; } catch (e) {}
         try {
@@ -203,20 +207,6 @@ const App: React.FC = () => {
     }, []);
 
     useEffect(() => {
-        try { (config as any).render.showCrackedRoadsOutline = crackedRoadsVisible; } catch (e) {}
-        try {
-            const current = NoiseZoning.getIntersectionOutlineEnabled?.();
-            if (typeof current === 'boolean') {
-                if (current !== crackedRoadsVisible) {
-                    NoiseZoning.setIntersectionOutlineEnabled?.(crackedRoadsVisible);
-                }
-            } else {
-                NoiseZoning.setIntersectionOutlineEnabled?.(crackedRoadsVisible);
-            }
-        } catch (e) {}
-    }, [crackedRoadsVisible]);
-
-    useEffect(() => {
         if (typeof window === 'undefined') return;
         const handler = (event: Event) => {
             const detail = (event as CustomEvent<{ outline?: boolean }>).detail;
@@ -246,6 +236,22 @@ const App: React.FC = () => {
     const [laneTexture, setLaneTexture] = useState<PIXI.Texture | null>(null);
     const [laneScale, setLaneScale] = useState<number>(() => safeLoadNumber('roadLaneScale', (config as any).render.roadLaneTextureScale || 1.0));
     const [laneAlpha, setLaneAlpha] = useState<number>(() => safeLoadNumber('roadLaneAlpha', (config as any).render.roadLaneTextureAlpha ?? 1.0));
+    const [crackConfigOpen, setCrackConfigOpen] = useState<boolean>(false);
+    const [crackColor, setCrackColor] = useState<string>(() => '#' + (((config as any).render.crackedRoadColor ?? 0x00E5FF).toString(16).padStart(6, '0')));
+    const [crackAlpha, setCrackAlpha] = useState<number>(() => (config as any).render.crackedRoadAlpha ?? 0.88);
+    const [crackStrokePx, setCrackStrokePx] = useState<number>(() => (config as any).render.crackedRoadStrokePx ?? 1.35);
+    const [crackSeedDensity, setCrackSeedDensity] = useState<number>(() => (config as any).render.crackedRoadSeedDensity ?? 0.055);
+    const [crackSampleAlong, setCrackSampleAlong] = useState<number>(() => (config as any).render.crackedRoadSampleDensityAlong ?? 1.6);
+    const [crackSampleAcross, setCrackSampleAcross] = useState<number>(() => (config as any).render.crackedRoadSampleDensityAcross ?? 1.1);
+    const [crackThreshold, setCrackThreshold] = useState<number>(() => (config as any).render.crackedRoadVoronoiThreshold ?? 0.65);
+    const [crackMinLength, setCrackMinLength] = useState<number>(() => (config as any).render.crackedRoadMinLengthM ?? 5.0);
+    const [crackMaxSeeds, setCrackMaxSeeds] = useState<number>(() => (config as any).render.crackedRoadMaxSeeds ?? 520);
+    const [crackMaxSamplesAlong, setCrackMaxSamplesAlong] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAlong ?? 240);
+    const [crackMaxSamplesAcross, setCrackMaxSamplesAcross] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAcross ?? 96);
+    const [crackProbeStep, setCrackProbeStep] = useState<number>(() => (config as any).render.crackedRoadProbeStepM ?? 1.1);
+    const broadcastCrackedRoadConfigChange = useCallback(() => {
+        try { window.dispatchEvent(new CustomEvent('cracked-roads-config-change')); } catch (e) {}
+    }, []);
 
     const handleTextureLoad = (tex: PIXI.Texture, url: string) => {
         // Destroy previous texture (if any) to avoid stale resources
@@ -300,6 +306,36 @@ const App: React.FC = () => {
         setUiTick(t => t + 1);
     };
 
+    const resetCrackConfig = () => {
+        setCrackColor('#00e5ff');
+        setCrackAlpha(0.88);
+        setCrackStrokePx(1.35);
+        setCrackSeedDensity(0.055);
+        setCrackSampleAlong(1.6);
+        setCrackSampleAcross(1.1);
+        setCrackThreshold(0.65);
+        setCrackMinLength(5.0);
+        setCrackMaxSeeds(520);
+        setCrackMaxSamplesAlong(240);
+        setCrackMaxSamplesAcross(96);
+        setCrackProbeStep(1.1);
+    };
+
+    useEffect(() => {
+        try { (config as any).render.showCrackedRoadsOutline = crackedRoadsVisible; } catch (e) {}
+        broadcastCrackedRoadConfigChange();
+        try {
+            const current = NoiseZoning.getIntersectionOutlineEnabled?.();
+            if (typeof current === 'boolean') {
+                if (current !== crackedRoadsVisible) {
+                    NoiseZoning.setIntersectionOutlineEnabled?.(crackedRoadsVisible);
+                }
+            } else {
+                NoiseZoning.setIntersectionOutlineEnabled?.(crackedRoadsVisible);
+            }
+        } catch (e) {}
+    }, [crackedRoadsVisible, broadcastCrackedRoadConfigChange]);
+
     React.useEffect(() => {
         try { (config as any).render.edgeTextureScale = edgeScale; } catch (e) {}
         try { localStorage.setItem('edgeScale', String(edgeScale)); } catch (e) {}
@@ -316,6 +352,40 @@ const App: React.FC = () => {
         try { (config as any).render.roadLaneTextureAlpha = laneAlpha; } catch (e) {}
         try { localStorage.setItem('roadLaneAlpha', String(laneAlpha)); } catch (e) {}
     }, [laneAlpha]);
+
+    useEffect(() => {
+        const renderCfg = (config as any).render || {};
+        const parsedColor = parseInt(crackColor.replace('#', ''), 16);
+        if (!Number.isNaN(parsedColor)) {
+            renderCfg.crackedRoadColor = parsedColor;
+        }
+        renderCfg.crackedRoadAlpha = Math.min(1, Math.max(0, crackAlpha));
+        renderCfg.crackedRoadStrokePx = Math.max(0.05, crackStrokePx);
+        renderCfg.crackedRoadSeedDensity = Math.max(0.001, crackSeedDensity);
+        renderCfg.crackedRoadSampleDensityAlong = Math.max(0.1, crackSampleAlong);
+        renderCfg.crackedRoadSampleDensityAcross = Math.max(0.1, crackSampleAcross);
+        renderCfg.crackedRoadVoronoiThreshold = Math.min(1, Math.max(0, crackThreshold));
+        renderCfg.crackedRoadMinLengthM = Math.max(0.5, crackMinLength);
+        renderCfg.crackedRoadMaxSeeds = Math.max(8, Math.round(crackMaxSeeds));
+        renderCfg.crackedRoadMaxSamplesAlong = Math.max(4, Math.round(crackMaxSamplesAlong));
+        renderCfg.crackedRoadMaxSamplesAcross = Math.max(4, Math.round(crackMaxSamplesAcross));
+        renderCfg.crackedRoadProbeStepM = Math.max(0.25, crackProbeStep);
+        broadcastCrackedRoadConfigChange();
+    }, [
+        crackAlpha,
+        crackColor,
+        crackMaxSamplesAcross,
+        crackMaxSamplesAlong,
+        crackMaxSeeds,
+        crackMinLength,
+        crackProbeStep,
+        crackSampleAlong,
+        crackSampleAcross,
+        crackSeedDensity,
+        crackStrokePx,
+        crackThreshold,
+        broadcastCrackedRoadConfigChange,
+    ]);
 
     React.useEffect(() => {
         try { (config as any).render.blockInteriorTextureScale = texScale; } catch (e) {}
@@ -415,6 +485,12 @@ const App: React.FC = () => {
                     }}
                     forcedState={crackedRoadsVisible}
                 />
+                <button
+                    onClick={() => setCrackConfigOpen(open => !open)}
+                    style={{ marginLeft: 6 }}
+                >
+                    {crackConfigOpen ? 'Fechar Config. Rachaduras' : 'Config. Ruas Rachadas'}
+                </button>
                 <button onClick={() => factorTargetZoom(3 / 2)}>Zoom in</button>
                 <button onClick={() => factorTargetZoom(2 / 3)}>Zoom out</button>
                 {/* Toggle Iso removido */}
@@ -727,6 +803,323 @@ const App: React.FC = () => {
                 </a>
                 {/* Controles de zonas/overlay removidos para simplificar a UI */}
             </div>
+            {crackConfigOpen && (
+                <div
+                    style={{
+                        position: 'fixed',
+                        top: controlsCollapsed ? 64 : 120,
+                        right: 24,
+                        background: 'rgba(18, 21, 24, 0.95)',
+                        color: '#ECEFF1',
+                        padding: '16px',
+                        borderRadius: 8,
+                        boxShadow: '0 16px 32px rgba(0,0,0,0.45)',
+                        width: 320,
+                        maxWidth: '90vw',
+                        zIndex: 1000,
+                        fontSize: 12,
+                        backdropFilter: 'blur(4px)',
+                    }}
+                >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                        <span style={{ fontWeight: 700, fontSize: 13 }}>Configurações das Ruas Rachadas</span>
+                        <button
+                            type="button"
+                            onClick={() => setCrackConfigOpen(false)}
+                            style={{
+                                background: 'rgba(255,255,255,0.08)',
+                                border: '1px solid rgba(255,255,255,0.2)',
+                                color: '#ECEFF1',
+                                borderRadius: 4,
+                                padding: '2px 10px',
+                                cursor: 'pointer',
+                                fontSize: 11,
+                            }}
+                        >
+                            Fechar
+                        </button>
+                    </div>
+                    <div style={{ fontSize: 11, lineHeight: 1.4, opacity: 0.8 }}>
+                        Ajuste cor, densidade e limites usados para gerar as fissuras das ruas. Ative o "Ruído Perlin" e as
+                        "Ruas Rachadas" para visualizar o resultado no mapa.
+                    </div>
+                    <div
+                        style={{
+                            marginTop: 12,
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                            gap: '10px 12px',
+                        }}
+                    >
+                        <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            <label style={{ fontSize: 11, fontWeight: 600 }}>Cor</label>
+                            <input
+                                type="color"
+                                value={crackColor}
+                                onChange={(e) => setCrackColor(e.target.value)}
+                                style={{
+                                    width: 54,
+                                    height: 32,
+                                    border: '1px solid rgba(255,255,255,0.2)',
+                                    borderRadius: 4,
+                                    background: 'transparent',
+                                    cursor: 'pointer',
+                                }}
+                            />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            <label style={{ fontSize: 11, fontWeight: 600 }}>Opacidade</label>
+                            <input
+                                type="number"
+                                min={0}
+                                max={1}
+                                step={0.05}
+                                value={crackAlpha}
+                                onChange={(e) => {
+                                    const raw = parseNumberInput(e.target.value);
+                                    const nv = Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 1) : 0.88;
+                                    setCrackAlpha(nv);
+                                }}
+                                style={{
+                                    padding: '4px 6px',
+                                    borderRadius: 4,
+                                    border: '1px solid rgba(255,255,255,0.2)',
+                                    background: 'rgba(255,255,255,0.06)',
+                                    color: '#ECEFF1',
+                                }}
+                            />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            <label style={{ fontSize: 11, fontWeight: 600 }}>Espessura (px)</label>
+                            <input
+                                type="number"
+                                min={0.05}
+                                step={0.05}
+                                value={crackStrokePx}
+                                onChange={(e) => {
+                                    const raw = parseNumberInput(e.target.value);
+                                    const nv = Number.isFinite(raw) ? Math.max(0.05, raw) : 1.35;
+                                    setCrackStrokePx(nv);
+                                }}
+                                style={{
+                                    padding: '4px 6px',
+                                    borderRadius: 4,
+                                    border: '1px solid rgba(255,255,255,0.2)',
+                                    background: 'rgba(255,255,255,0.06)',
+                                    color: '#ECEFF1',
+                                }}
+                            />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            <label style={{ fontSize: 11, fontWeight: 600 }}>Densidade Seeds</label>
+                            <input
+                                type="number"
+                                min={0.001}
+                                step={0.005}
+                                value={crackSeedDensity}
+                                onChange={(e) => {
+                                    const raw = parseNumberInput(e.target.value);
+                                    const nv = Number.isFinite(raw) ? Math.max(0.001, raw) : 0.055;
+                                    setCrackSeedDensity(nv);
+                                }}
+                                style={{
+                                    padding: '4px 6px',
+                                    borderRadius: 4,
+                                    border: '1px solid rgba(255,255,255,0.2)',
+                                    background: 'rgba(255,255,255,0.06)',
+                                    color: '#ECEFF1',
+                                }}
+                            />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            <label style={{ fontSize: 11, fontWeight: 600 }}>Amostras (comprimento)</label>
+                            <input
+                                type="number"
+                                min={0.1}
+                                step={0.1}
+                                value={crackSampleAlong}
+                                onChange={(e) => {
+                                    const raw = parseNumberInput(e.target.value);
+                                    const nv = Number.isFinite(raw) ? Math.max(0.1, raw) : 1.6;
+                                    setCrackSampleAlong(nv);
+                                }}
+                                style={{
+                                    padding: '4px 6px',
+                                    borderRadius: 4,
+                                    border: '1px solid rgba(255,255,255,0.2)',
+                                    background: 'rgba(255,255,255,0.06)',
+                                    color: '#ECEFF1',
+                                }}
+                            />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            <label style={{ fontSize: 11, fontWeight: 600 }}>Amostras (largura)</label>
+                            <input
+                                type="number"
+                                min={0.1}
+                                step={0.1}
+                                value={crackSampleAcross}
+                                onChange={(e) => {
+                                    const raw = parseNumberInput(e.target.value);
+                                    const nv = Number.isFinite(raw) ? Math.max(0.1, raw) : 1.1;
+                                    setCrackSampleAcross(nv);
+                                }}
+                                style={{
+                                    padding: '4px 6px',
+                                    borderRadius: 4,
+                                    border: '1px solid rgba(255,255,255,0.2)',
+                                    background: 'rgba(255,255,255,0.06)',
+                                    color: '#ECEFF1',
+                                }}
+                            />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            <label style={{ fontSize: 11, fontWeight: 600 }}>Threshold Voronoi</label>
+                            <input
+                                type="number"
+                                min={0}
+                                max={1}
+                                step={0.01}
+                                value={crackThreshold}
+                                onChange={(e) => {
+                                    const raw = parseNumberInput(e.target.value);
+                                    const nv = Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 1) : 0.65;
+                                    setCrackThreshold(nv);
+                                }}
+                                style={{
+                                    padding: '4px 6px',
+                                    borderRadius: 4,
+                                    border: '1px solid rgba(255,255,255,0.2)',
+                                    background: 'rgba(255,255,255,0.06)',
+                                    color: '#ECEFF1',
+                                }}
+                            />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            <label style={{ fontSize: 11, fontWeight: 600 }}>Comprimento mín. (m)</label>
+                            <input
+                                type="number"
+                                min={0.5}
+                                step={0.5}
+                                value={crackMinLength}
+                                onChange={(e) => {
+                                    const raw = parseNumberInput(e.target.value);
+                                    const nv = Number.isFinite(raw) ? Math.max(0.5, raw) : 5.0;
+                                    setCrackMinLength(nv);
+                                }}
+                                style={{
+                                    padding: '4px 6px',
+                                    borderRadius: 4,
+                                    border: '1px solid rgba(255,255,255,0.2)',
+                                    background: 'rgba(255,255,255,0.06)',
+                                    color: '#ECEFF1',
+                                }}
+                            />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            <label style={{ fontSize: 11, fontWeight: 600 }}>Máx. Seeds</label>
+                            <input
+                                type="number"
+                                min={8}
+                                step={1}
+                                value={crackMaxSeeds}
+                                onChange={(e) => {
+                                    const raw = parseNumberInput(e.target.value);
+                                    const nv = Number.isFinite(raw) ? Math.max(8, Math.round(raw)) : 520;
+                                    setCrackMaxSeeds(nv);
+                                }}
+                                style={{
+                                    padding: '4px 6px',
+                                    borderRadius: 4,
+                                    border: '1px solid rgba(255,255,255,0.2)',
+                                    background: 'rgba(255,255,255,0.06)',
+                                    color: '#ECEFF1',
+                                }}
+                            />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            <label style={{ fontSize: 11, fontWeight: 600 }}>Máx. Samples (comprimento)</label>
+                            <input
+                                type="number"
+                                min={4}
+                                step={1}
+                                value={crackMaxSamplesAlong}
+                                onChange={(e) => {
+                                    const raw = parseNumberInput(e.target.value);
+                                    const nv = Number.isFinite(raw) ? Math.max(4, Math.round(raw)) : 240;
+                                    setCrackMaxSamplesAlong(nv);
+                                }}
+                                style={{
+                                    padding: '4px 6px',
+                                    borderRadius: 4,
+                                    border: '1px solid rgba(255,255,255,0.2)',
+                                    background: 'rgba(255,255,255,0.06)',
+                                    color: '#ECEFF1',
+                                }}
+                            />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            <label style={{ fontSize: 11, fontWeight: 600 }}>Máx. Samples (largura)</label>
+                            <input
+                                type="number"
+                                min={4}
+                                step={1}
+                                value={crackMaxSamplesAcross}
+                                onChange={(e) => {
+                                    const raw = parseNumberInput(e.target.value);
+                                    const nv = Number.isFinite(raw) ? Math.max(4, Math.round(raw)) : 96;
+                                    setCrackMaxSamplesAcross(nv);
+                                }}
+                                style={{
+                                    padding: '4px 6px',
+                                    borderRadius: 4,
+                                    border: '1px solid rgba(255,255,255,0.2)',
+                                    background: 'rgba(255,255,255,0.06)',
+                                    color: '#ECEFF1',
+                                }}
+                            />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            <label style={{ fontSize: 11, fontWeight: 600 }}>Passo da sonda (m)</label>
+                            <input
+                                type="number"
+                                min={0.25}
+                                step={0.05}
+                                value={crackProbeStep}
+                                onChange={(e) => {
+                                    const raw = parseNumberInput(e.target.value);
+                                    const nv = Number.isFinite(raw) ? Math.max(0.25, raw) : 1.1;
+                                    setCrackProbeStep(nv);
+                                }}
+                                style={{
+                                    padding: '4px 6px',
+                                    borderRadius: 4,
+                                    border: '1px solid rgba(255,255,255,0.2)',
+                                    background: 'rgba(255,255,255,0.06)',
+                                    color: '#ECEFF1',
+                                }}
+                            />
+                        </div>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={resetCrackConfig}
+                        style={{
+                            marginTop: 16,
+                            width: '100%',
+                            padding: '6px 0',
+                            borderRadius: 4,
+                            border: 'none',
+                            background: '#263238',
+                            color: '#ECEFF1',
+                            cursor: 'pointer',
+                            fontWeight: 600,
+                        }}
+                    >
+                        Restaurar padrões
+                    </button>
+                </div>
+            )}
             {heatmapVisible && (
                 <div style={{
                     position: 'fixed',
