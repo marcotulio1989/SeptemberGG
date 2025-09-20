@@ -117,15 +117,16 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     const syncNoiseOverlayView = (cameraX: number, cameraY: number, zoom: number) => {
         const hasApi = !!NoiseZoning && typeof NoiseZoning.setView === 'function';
         if (!hasApi) return;
+        const worldCamera = isoToWorld({ x: cameraX, y: cameraY });
         const prev = noiseOverlayViewRef.current;
         const changed = !prev
-            || Math.abs(prev.cameraX - cameraX) > 0.5
-            || Math.abs(prev.cameraY - cameraY) > 0.5
+            || Math.abs(prev.cameraX - worldCamera.x) > 0.5
+            || Math.abs(prev.cameraY - worldCamera.y) > 0.5
             || Math.abs(prev.zoom - zoom) > 0.005;
         if (!changed) return;
         try {
-            NoiseZoning.setView?.({ cameraX, cameraY, zoom });
-            noiseOverlayViewRef.current = { cameraX, cameraY, zoom };
+            NoiseZoning.setView?.({ cameraX: worldCamera.x, cameraY: worldCamera.y, zoom });
+            noiseOverlayViewRef.current = { cameraX: worldCamera.x, cameraY: worldCamera.y, zoom };
             if (NoiseZoning.enabled && typeof NoiseZoning.redraw === 'function') {
                 NoiseZoning.redraw();
             }
