@@ -558,16 +558,34 @@ const NoiseZoning: InternalNoiseZoning = {
           const screenDy = endScreen.y - startScreen.y;
           const screenLen = Math.hypot(screenDx, screenDy);
           const steps = Math.max(1, Math.ceil(screenLen / minCellSizePx));
-          let intersectsNoise = false;
-          for (let s = 0; s <= steps; s++) {
-            const t = steps === 0 ? 0 : s / steps;
+          const sampleAt = (t: number) => {
+            const clampedT = Math.max(0, Math.min(1, t));
             const samplePt = {
-              x: startScreen.x + screenDx * t,
-              y: startScreen.y + screenDy * t,
+              x: startScreen.x + screenDx * clampedT,
+              y: startScreen.y + screenDy * clampedT,
             };
-            if (pointHitsIntersection(samplePt)) { intersectsNoise = true; break; }
+            return pointHitsIntersection(samplePt);
+          };
+
+          const intervals: Array<{ start: number; end: number }> = [];
+          let runStart: number | null = null;
+          const stepCount = Math.max(1, steps);
+          for (let s = 0; s <= stepCount; s++) {
+            const t = stepCount === 0 ? 0 : s / stepCount;
+            const inside = sampleAt(t);
+            if (inside) {
+              if (runStart == null) runStart = t;
+            } else if (runStart != null) {
+              const endT = t;
+              if (endT > runStart + 1e-4) intervals.push({ start: runStart, end: endT });
+              runStart = null;
+            }
           }
-          if (!intersectsNoise) continue;
+          if (runStart != null) {
+            intervals.push({ start: runStart, end: 1 });
+          }
+
+          if (!intervals.length) continue;
 
           const dirX = endWorld.x - startWorld.x;
           const dirY = endWorld.y - startWorld.y;
@@ -581,18 +599,36 @@ const NoiseZoning: InternalNoiseZoning = {
           const widthWorld = seg.width || 0;
           if (!(widthWorld > 0)) continue;
           const halfWidth = widthWorld * 0.5;
-          const cornersWorld = [
-            { x: startWorld.x + nx * halfWidth, y: startWorld.y + ny * halfWidth },
-            { x: endWorld.x + nx * halfWidth, y: endWorld.y + ny * halfWidth },
-            { x: endWorld.x - nx * halfWidth, y: endWorld.y - ny * halfWidth },
-            { x: startWorld.x - nx * halfWidth, y: startWorld.y - ny * halfWidth },
-          ];
-          const polygon = cornersWorld.map(pt => {
-            const scr = projectWorldToScreen(pt);
-            return [scr.x, scr.y];
-          });
-          if (polygon.some(([px, py]) => !Number.isFinite(px) || !Number.isFinite(py))) continue;
-          polygons.push(polygon);
+          const padT = Math.min(0.45, 0.5 / stepCount);
+
+          const pushIntervalPolygon = (startT: number, endT: number) => {
+            const lengthWorld = dirLen;
+            const st = Math.max(0, Math.min(1, startT));
+            const et = Math.max(0, Math.min(1, endT));
+            if (!(et > st + 1e-4)) return;
+            const sx = startWorld.x + ux * (lengthWorld * st);
+            const sy = startWorld.y + uy * (lengthWorld * st);
+            const ex = startWorld.x + ux * (lengthWorld * et);
+            const ey = startWorld.y + uy * (lengthWorld * et);
+            const cornersWorld = [
+              { x: sx + nx * halfWidth, y: sy + ny * halfWidth },
+              { x: ex + nx * halfWidth, y: ey + ny * halfWidth },
+              { x: ex - nx * halfWidth, y: ey - ny * halfWidth },
+              { x: sx - nx * halfWidth, y: sy - ny * halfWidth },
+            ];
+            const polygon = cornersWorld.map(pt => {
+              const scr = projectWorldToScreen(pt);
+              return [scr.x, scr.y];
+            });
+            if (polygon.some(([px, py]) => !Number.isFinite(px) || !Number.isFinite(py))) return;
+            polygons.push(polygon);
+          };
+
+          for (const interval of intervals) {
+            const expandedStart = interval.start - padT;
+            const expandedEnd = interval.end + padT;
+            pushIntervalPolygon(expandedStart, expandedEnd);
+          }
         }
         roadPolys = polygons;
         this._contourCache = { key: contourKey, contours: roadPolys };
