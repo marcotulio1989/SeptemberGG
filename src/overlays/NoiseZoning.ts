@@ -543,14 +543,14 @@ const NoiseZoning: InternalNoiseZoning = {
     // If requested, compute contours of intersectionMask using marching squares and draw outlines
     if ((this as any)._showIntersectionOutline) {
       // Instead of contouring the filled intersection area, we compute contours
-      // of the road mask and stroke only those segments whose midpoints fall
-      // inside the intersectionMask (i.e. road portions that are within noisy areas).
+      // of the road mask and keep only the segments whose adjacent coarse cells
+      // are marked as noisy (i.e. portions of road that pass the noise filter).
       const contourKey = `${this._seed}|intersection|${this._params.baseScale}|${this._params.octaves}|${this._params.lacunarity}|${this._params.gain}|${coarseW}x${coarseH}|${cameraX.toFixed(3)}|${cameraY.toFixed(3)}|${zoom.toFixed(3)}|${noiseThreshold.toFixed(3)}|${minPx}|${minPy}|${maxPx}|${maxPx}`;
       let roadPolys: number[][][] = [];
       if (this._contourCache && this._contourCache.key === contourKey) {
         roadPolys = this._contourCache.contours || [];
       } else {
-        roadPolys = marchingSquaresContoursScreen(intersectionMask, coarseW, coarseH, minPx, minPy, cellPxW, cellPxH) || [];
+        roadPolys = marchingSquaresContoursScreen(coarseRoadMask, coarseW, coarseH, minPx, minPy, cellPxW, cellPxH, intersectionMask) || [];
         this._contourCache = { key: contourKey, contours: roadPolys };
       }
       try {
@@ -706,7 +706,7 @@ const NoiseZoning: InternalNoiseZoning = {
 
 // marching squares: extract contours from binary grid (values 0/1)
 
-function marchingSquaresContoursScreen(grid: Uint8Array, w: number, h: number, minPx: number, minPy: number, cellPxW: number, cellPxH: number) {
+function marchingSquaresContoursScreen(grid: Uint8Array, w: number, h: number, minPx: number, minPy: number, cellPxW: number, cellPxH: number, filterMask?: Uint8Array) {
   const segments: Array<[[number, number], [number, number]]> = [];
   const get = (x: number, y: number) => (x >= 0 && y >= 0 && x < w && y < h) ? (grid[y * w + x] ? 1 : 0) : 0;
   const sx = (gx: number) => minPx + gx * cellPxW;
@@ -719,6 +719,13 @@ function marchingSquaresContoursScreen(grid: Uint8Array, w: number, h: number, m
       const bl = get(x, y + 1);
       const code = (tl << 3) | (tr << 2) | (br << 1) | bl;
       if (code === 0 || code === 15) continue;
+      if (filterMask) {
+        const noisyTl = filterMask[y * w + x] ? 1 : 0;
+        const noisyTr = filterMask[y * w + (x + 1)] ? 1 : 0;
+        const noisyBr = filterMask[(y + 1) * w + (x + 1)] ? 1 : 0;
+        const noisyBl = filterMask[(y + 1) * w + x] ? 1 : 0;
+        if (!(noisyTl || noisyTr || noisyBr || noisyBl)) continue;
+      }
       const top: [number, number] = [(sx(x) + sx(x + 1)) * 0.5, sy(y)];
       const right: [number, number] = [sx(x + 1), (sy(y) + sy(y + 1)) * 0.5];
       const bottom: [number, number] = [(sx(x) + sx(x + 1)) * 0.5, sy(y + 1)];
