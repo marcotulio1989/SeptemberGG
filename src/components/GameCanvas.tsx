@@ -8,6 +8,7 @@ import { buildingFactory, Building, BuildingType } from '../game_modules/build';
 import * as blockGeometry from '../game_modules/block_geometry';
 import { getZoneAt } from '../game_modules/mapgen';
 import { config, scale } from '../game_modules/config';
+import { CRACK_VARIANT_MAP, CrackVariant } from '../game_modules/crackVariants';
 import { Segment, MapGenerationResult } from '../game_modules/mapgen';
 import { MapActions } from '../actions/MapActions';
 import MapStore from '../stores/MapStore';
@@ -1255,10 +1256,44 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         const maxSamplesAlong: number = Math.max(4, cfg.crackedRoadMaxSamplesAlong ?? 240);
         const maxSamplesAcross: number = Math.max(4, cfg.crackedRoadMaxSamplesAcross ?? 96);
         const probeStep: number = Math.max(0.4, cfg.crackedRoadProbeStepM ?? 1.1);
+        const variantSeed: number = Number.isFinite(cfg.crackedRoadVariantSeed) ? Number(cfg.crackedRoadVariantSeed) : 0;
         const globalSeed: number = (NoiseZoning as any)?.getSeed?.call(NoiseZoning) ?? 0;
 
-        const graphics = new PIXI.Graphics();
-        graphics.lineStyle(strokePx, color, alpha, 0.5, true);
+        const assignmentsRaw = cfg.crackedRoadVariantAssignments as Record<string, string> | undefined;
+        const variantAssignments = new Map<number, string>();
+        if (assignmentsRaw) {
+            for (const [key, value] of Object.entries(assignmentsRaw)) {
+                if (typeof value !== 'string' || !value) continue;
+                const id = Number(key);
+                if (Number.isFinite(id)) {
+                    variantAssignments.set(id, value);
+                }
+            }
+        }
+
+        const defaultVariantKey = '__default__';
+        const baseStroke = Math.max(0.05, strokePx);
+        const baseAlpha = clamp(alpha, 0, 1);
+        const variantGraphics = new Map<string, { graphics: PIXI.Graphics; stroke: number; color: number; alpha: number }>();
+        const getGraphicsForVariant = (key: string, stroke: number, lineColor: number, lineAlpha: number) => {
+            const mapKey = key || defaultVariantKey;
+            const existing = variantGraphics.get(mapKey);
+            if (!existing) {
+                const g = new PIXI.Graphics();
+                g.lineStyle(stroke, lineColor, lineAlpha, 0.5, true);
+                const entry = { graphics: g, stroke, color: lineColor, alpha: lineAlpha };
+                variantGraphics.set(mapKey, entry);
+                return g;
+            }
+            if (existing.stroke !== stroke || existing.color !== lineColor || existing.alpha !== lineAlpha) {
+                existing.graphics.lineStyle(stroke, lineColor, lineAlpha, 0.5, true);
+                existing.stroke = stroke;
+                existing.color = lineColor;
+                existing.alpha = lineAlpha;
+            }
+            return existing.graphics;
+        };
+
         let drewAny = false;
 
         segments.forEach((segment, segmentIndex) => {
@@ -1293,28 +1328,57 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 intervals.push({ start: runStart, end: 1 });
             }
 
+            let variantKey = defaultVariantKey;
+            let variantDef: CrackVariant | undefined = undefined;
+            if (segment.id != null) {
+                const assigned = variantAssignments.get(segment.id);
+                if (assigned) {
+                    const def = CRACK_VARIANT_MAP[assigned];
+                    if (def) {
+                        variantKey = assigned;
+                        variantDef = def;
+                    }
+                }
+            }
+
+            const styleAlpha = clamp(baseAlpha * (variantDef?.alphaMultiplier ?? 1), 0.02, 1);
+            const styleStroke = Math.max(0.05, baseStroke * (variantDef?.strokeMultiplier ?? 1));
+            const styleColor = color;
+            const segSeedDensity = Math.max(0.005, seedDensity * (variantDef?.seedDensityMultiplier ?? 1));
+            const segSampleAlong = Math.max(0.25, sampleAlong * (variantDef?.sampleAlongMultiplier ?? 1));
+            const segSampleAcross = Math.max(0.25, sampleAcross * (variantDef?.sampleAcrossMultiplier ?? 1));
+            const segThreshold = clamp(threshold + (variantDef?.thresholdOffset ?? 0), 0, 1);
+            const segMinLength = Math.max(1, minLength * (variantDef?.minLengthMultiplier ?? 1));
+            const segMaxSeeds = Math.max(8, Math.round(maxSeeds * (variantDef?.maxSeedsMultiplier ?? 1)));
+            const segMaxSamplesAlong = Math.max(4, Math.round(maxSamplesAlong * (variantDef?.maxSamplesAlongMultiplier ?? 1)));
+            const segMaxSamplesAcross = Math.max(4, Math.round(maxSamplesAcross * (variantDef?.maxSamplesAcrossMultiplier ?? 1)));
+            const contourScale = Math.max(0.1, variantDef?.contourLengthMultiplier ?? 1);
+            const hashOffset = variantDef?.hashOffset ?? 0;
+
+            const graphics = getGraphicsForVariant(variantKey, styleStroke, styleColor, styleAlpha);
+
             intervals.forEach((interval, intervalIndex) => {
                 const startT = clamp(interval.start, 0, 1);
                 const endT = clamp(interval.end, 0, 1);
                 if (!(endT > startT + 1e-4)) return;
                 const intervalLen = segLen * (endT - startT);
-                if (intervalLen < minLength) return;
+                if (intervalLen < segMinLength) return;
                 const area = intervalLen * roadWidth;
-                let seeds = Math.max(8, Math.round(area * seedDensity));
-                seeds = Math.min(seeds, maxSeeds);
+                let seeds = Math.max(8, Math.round(area * segSeedDensity));
+                seeds = Math.min(seeds, segMaxSeeds);
                 if (seeds < 2) return;
-                let samplesU = Math.max(2, Math.round(intervalLen * sampleAlong));
-                let samplesV = Math.max(2, Math.round(roadWidth * sampleAcross));
-                samplesU = Math.min(samplesU, maxSamplesAlong);
-                samplesV = Math.min(samplesV, maxSamplesAcross);
+                let samplesU = Math.max(2, Math.round(intervalLen * segSampleAlong));
+                let samplesV = Math.max(2, Math.round(roadWidth * segSampleAcross));
+                samplesU = Math.min(samplesU, segMaxSamplesAlong);
+                samplesV = Math.min(samplesV, segMaxSamplesAcross);
                 if (samplesU < 2 || samplesV < 2) return;
-                const hash = hashNumbers(globalSeed, segmentIndex, intervalIndex, startT * 1000, endT * 1000, roadWidth);
-                const contours = generateVoronoiContours(intervalLen, roadWidth, seeds, samplesU, samplesV, threshold, hash);
+                const hash = hashNumbers(globalSeed, variantSeed, hashOffset, segmentIndex, intervalIndex, startT * 1000, endT * 1000, roadWidth);
+                const contours = generateVoronoiContours(intervalLen, roadWidth, seeds, samplesU, samplesV, segThreshold, hash);
                 if (!contours.length) return;
                 const startOffset = segLen * startT;
                 const baseX = start.x + ux * startOffset;
                 const baseY = start.y + uy * startOffset;
-                const minContourLen = Math.max(roadWidth * 0.35, 2.5);
+                const minContourLen = Math.max(roadWidth * 0.35, 2.5) * contourScale;
                 for (const contour of contours) {
                     if (!contour || contour.length < 2) continue;
                     if (polylineLength(contour) < minContourLen) continue;
@@ -1335,9 +1399,9 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
 
         container.visible = drewAny;
         if (drewAny) {
-            container.addChild(graphics);
+            variantGraphics.forEach(entry => container.addChild(entry.graphics));
         } else {
-            graphics.destroy();
+            variantGraphics.forEach(entry => entry.graphics.destroy());
         }
     };
 

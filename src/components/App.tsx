@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import * as PIXI from 'pixi.js';
+import seedrandom from 'seedrandom';
 import { config, roadWidthM, highwayWidthM } from '../game_modules/config';
+import { CRACK_VARIANTS } from '../game_modules/crackVariants';
 import { MapActions } from '../actions/MapActions';
 import GameCanvas from './GameCanvas';
 import TextureLoader from './TextureLoader';
@@ -319,7 +321,99 @@ const App: React.FC = () => {
         setCrackMaxSamplesAlong(240);
         setCrackMaxSamplesAcross(96);
         setCrackProbeStep(1.1);
+        try {
+            const renderCfg = (config as any).render || {};
+            delete renderCfg.crackedRoadVariantAssignments;
+            delete renderCfg.crackedRoadVariantSeed;
+        } catch (e) {}
+        broadcastCrackedRoadConfigChange();
     };
+
+    const randomizeCrackVariants = useCallback(() => {
+        const renderCfg = (config as any).render || {};
+        const segments = (MapStore.getSegments && MapStore.getSegments()) || [];
+        const variantKeys = CRACK_VARIANTS.map(v => v.key).filter(Boolean);
+        if (!variantKeys.length) {
+            renderCfg.crackedRoadVariantAssignments = {};
+            renderCfg.crackedRoadVariantSeed = 0;
+            broadcastCrackedRoadConfigChange();
+            setUiTick(t => t + 1);
+            return;
+        }
+
+        const createTester = (NoiseZoning as any)?.createIntersectionTester;
+        let tester: ((x: number, y: number) => boolean) | null = null;
+        try {
+            tester = typeof createTester === 'function' ? createTester.call(NoiseZoning) : null;
+        } catch (e) {
+            tester = null;
+        }
+
+        const seed = Math.floor(Math.random() * 1e9);
+        const rng = seedrandom(String(seed));
+        const shuffle = (input: string[]): string[] => {
+            const arr = input.slice();
+            for (let i = arr.length - 1; i > 0; i--) {
+                const j = Math.floor(rng() * (i + 1));
+                const tmp = arr[i];
+                arr[i] = arr[j];
+                arr[j] = tmp;
+            }
+            return arr;
+        };
+
+        let bag = shuffle(variantKeys);
+        let bagIndex = 0;
+        const nextVariantKey = (): string => {
+            if (!bag.length) {
+                bag = shuffle(variantKeys);
+                bagIndex = 0;
+            }
+            if (bagIndex >= bag.length) {
+                bag = shuffle(variantKeys);
+                bagIndex = 0;
+            }
+            const key = bag[bagIndex];
+            bagIndex += 1;
+            return key;
+        };
+
+        const assignments: Record<string, string> = {};
+        const probeStep = Math.max(0.4, renderCfg.crackedRoadProbeStepM ?? 1.1);
+        const considerAll = !tester;
+
+        for (const segment of segments) {
+            if (!segment || segment.id == null || !segment.r) continue;
+            const start = segment.r.start;
+            const end = segment.r.end;
+            const vx = end.x - start.x;
+            const vy = end.y - start.y;
+            const length = Math.hypot(vx, vy);
+            if (!(length > 1)) continue;
+
+            let inside = considerAll;
+            if (!inside && typeof tester === 'function') {
+                const steps = Math.max(3, Math.ceil(length / probeStep));
+                for (let s = 0; s <= steps; s++) {
+                    const t = steps === 0 ? 0 : s / steps;
+                    const px = start.x + vx * t;
+                    const py = start.y + vy * t;
+                    if (tester(px, py)) {
+                        inside = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!inside) continue;
+            assignments[String(segment.id)] = nextVariantKey();
+        }
+
+        renderCfg.crackedRoadVariantAssignments = assignments;
+        renderCfg.crackedRoadVariantSeed = seed;
+        broadcastCrackedRoadConfigChange();
+        setUiTick(t => t + 1);
+    }, [broadcastCrackedRoadConfigChange]);
 
     useEffect(() => {
         try { (config as any).render.showCrackedRoadsOutline = crackedRoadsVisible; } catch (e) {}
@@ -1101,23 +1195,48 @@ const App: React.FC = () => {
                             />
                         </div>
                     </div>
-                    <button
-                        type="button"
-                        onClick={resetCrackConfig}
+                    <div
                         style={{
                             marginTop: 16,
-                            width: '100%',
-                            padding: '6px 0',
-                            borderRadius: 4,
-                            border: 'none',
-                            background: '#263238',
-                            color: '#ECEFF1',
-                            cursor: 'pointer',
-                            fontWeight: 600,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 8,
                         }}
                     >
-                        Restaurar padrões
-                    </button>
+                        <button
+                            type="button"
+                            onClick={randomizeCrackVariants}
+                            style={{
+                                width: '100%',
+                                padding: '6px 0',
+                                borderRadius: 4,
+                                border: 'none',
+                                background: '#37474F',
+                                color: '#ECEFF1',
+                                cursor: 'pointer',
+                                fontWeight: 600,
+                            }}
+                            title="Gera automaticamente variações de rachadura por rua"
+                        >
+                            Random (tipos por rua)
+                        </button>
+                        <button
+                            type="button"
+                            onClick={resetCrackConfig}
+                            style={{
+                                width: '100%',
+                                padding: '6px 0',
+                                borderRadius: 4,
+                                border: 'none',
+                                background: '#263238',
+                                color: '#ECEFF1',
+                                cursor: 'pointer',
+                                fontWeight: 600,
+                            }}
+                        >
+                            Restaurar padrões
+                        </button>
+                    </div>
                 </div>
             )}
             {heatmapVisible && (
