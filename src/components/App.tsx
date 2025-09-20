@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import * as PIXI from 'pixi.js';
 import { config, roadWidthM, highwayWidthM } from '../game_modules/config';
 import { MapActions } from '../actions/MapActions';
@@ -202,6 +202,38 @@ const App: React.FC = () => {
         };
     }, []);
 
+    const [cracksPanelOpen, setCracksPanelOpen] = useState<boolean>(false);
+    const initialCrackedColor = () => '#' + (((config as any).render.crackedRoadColor ?? 0x00E5FF)).toString(16).padStart(6, '0');
+    const [crackColor, setCrackColor] = useState<string>(initialCrackedColor);
+    const [crackAlpha, setCrackAlpha] = useState<number>(() => (config as any).render.crackedRoadAlpha ?? 0.88);
+    const [crackStrokePx, setCrackStrokePx] = useState<number>(() => (config as any).render.crackedRoadStrokePx ?? 1.35);
+    const [crackSeedDensity, setCrackSeedDensity] = useState<number>(() => (config as any).render.crackedRoadSeedDensity ?? 0.055);
+    const [crackSampleAlong, setCrackSampleAlong] = useState<number>(() => (config as any).render.crackedRoadSampleDensityAlong ?? 1.6);
+    const [crackSampleAcross, setCrackSampleAcross] = useState<number>(() => (config as any).render.crackedRoadSampleDensityAcross ?? 1.1);
+    const [crackThreshold, setCrackThreshold] = useState<number>(() => (config as any).render.crackedRoadVoronoiThreshold ?? 0.65);
+    const [crackMinLength, setCrackMinLength] = useState<number>(() => (config as any).render.crackedRoadMinLengthM ?? 5.0);
+    const [crackMaxSeeds, setCrackMaxSeeds] = useState<number>(() => (config as any).render.crackedRoadMaxSeeds ?? 520);
+    const [crackMaxSamplesAlong, setCrackMaxSamplesAlong] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAlong ?? 240);
+    const [crackMaxSamplesAcross, setCrackMaxSamplesAcross] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAcross ?? 96);
+    const [crackProbeStep, setCrackProbeStep] = useState<number>(() => (config as any).render.crackedRoadProbeStepM ?? 1.1);
+
+    const emitCrackedConfigChange = useCallback(() => {
+        if (typeof window !== 'undefined') {
+            try {
+                window.dispatchEvent(new CustomEvent('cracked-roads-config-change'));
+            } catch (e) { /* ignore */ }
+        }
+    }, []);
+
+    const parseNumberInput = useCallback((raw: string, fallback: number, opts: { min?: number; max?: number; round?: boolean } = {}) => {
+        let value = parseFloat(String(raw).replace(',', '.'));
+        if (!Number.isFinite(value)) value = fallback;
+        if (opts.round) value = Math.round(value);
+        if (typeof opts.min === 'number') value = Math.max(opts.min, value);
+        if (typeof opts.max === 'number') value = Math.min(opts.max, value);
+        return value;
+    }, []);
+
     useEffect(() => {
         try { (config as any).render.showCrackedRoadsOutline = crackedRoadsVisible; } catch (e) {}
         try {
@@ -214,7 +246,8 @@ const App: React.FC = () => {
                 NoiseZoning.setIntersectionOutlineEnabled?.(crackedRoadsVisible);
             }
         } catch (e) {}
-    }, [crackedRoadsVisible]);
+        emitCrackedConfigChange();
+    }, [crackedRoadsVisible, emitCrackedConfigChange]);
 
     useEffect(() => {
         if (typeof window === 'undefined') return;
@@ -415,6 +448,13 @@ const App: React.FC = () => {
                     }}
                     forcedState={crackedRoadsVisible}
                 />
+                <button
+                    onClick={() => setCracksPanelOpen(open => !open)}
+                    style={{ fontWeight: 600 }}
+                    title="Abrir configurações avançadas das rachaduras"
+                >
+                    {cracksPanelOpen ? 'Fechar ajustes de rachaduras' : 'Ajustes de rachaduras'}
+                </button>
                 <button onClick={() => factorTargetZoom(3 / 2)}>Zoom in</button>
                 <button onClick={() => factorTargetZoom(2 / 3)}>Zoom out</button>
                 {/* Toggle Iso removido */}
@@ -727,6 +767,245 @@ const App: React.FC = () => {
                 </a>
                 {/* Controles de zonas/overlay removidos para simplificar a UI */}
             </div>
+            {cracksPanelOpen && (
+                <div
+                    style={{
+                        position: 'absolute',
+                        right: 20,
+                        top: 20,
+                        width: 320,
+                        maxWidth: '90vw',
+                        maxHeight: '70vh',
+                        overflowY: 'auto',
+                        background: 'rgba(0,0,0,0.8)',
+                        color: '#ECEFF1',
+                        padding: '12px 14px',
+                        borderRadius: 8,
+                        boxShadow: '0 6px 18px rgba(0,0,0,0.4)',
+                        zIndex: 30,
+                        backdropFilter: 'blur(4px)'
+                    }}
+                >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                        <strong>Configuração das rachaduras</strong>
+                        <button onClick={() => setCracksPanelOpen(false)} style={{ padding: '4px 8px' }}>Fechar</button>
+                    </div>
+                    <p style={{ fontSize: 12, lineHeight: 1.4, marginBottom: 12, opacity: 0.85 }}>
+                        Ajuste a aparência das rachaduras das ruas. Cada alteração dispara um redesenho imediato.
+                    </p>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+                        <label style={{ display: 'flex', flexDirection: 'column', gridColumn: 'span 2', fontSize: 12 }}>
+                            Cor
+                            <input
+                                type="color"
+                                value={crackColor}
+                                onChange={(e) => {
+                                    const value = e.target.value || initialCrackedColor();
+                                    setCrackColor(value);
+                                    try { (config as any).render.crackedRoadColor = parseInt(value.replace('#', ''), 16); } catch (err) {}
+                                    emitCrackedConfigChange();
+                                }}
+                                style={{ marginTop: 4, height: 32 }}
+                            />
+                        </label>
+                        <label style={{ display: 'flex', flexDirection: 'column', fontSize: 12 }}>
+                            Alpha
+                            <input
+                                type="number"
+                                min={0}
+                                max={1}
+                                step={0.05}
+                                value={crackAlpha}
+                                onChange={(e) => {
+                                    const next = parseNumberInput(e.target.value, crackAlpha, { min: 0, max: 1 });
+                                    setCrackAlpha(next);
+                                    try { (config as any).render.crackedRoadAlpha = next; } catch (err) {}
+                                    emitCrackedConfigChange();
+                                }}
+                                style={{ marginTop: 4 }}
+                            />
+                        </label>
+                        <label style={{ display: 'flex', flexDirection: 'column', fontSize: 12 }}>
+                            Espessura (px)
+                            <input
+                                type="number"
+                                min={0.1}
+                                max={8}
+                                step={0.05}
+                                value={crackStrokePx}
+                                onChange={(e) => {
+                                    const next = parseNumberInput(e.target.value, crackStrokePx, { min: 0.1, max: 8 });
+                                    setCrackStrokePx(next);
+                                    try { (config as any).render.crackedRoadStrokePx = next; } catch (err) {}
+                                    emitCrackedConfigChange();
+                                }}
+                                style={{ marginTop: 4 }}
+                            />
+                        </label>
+                        <label style={{ display: 'flex', flexDirection: 'column', fontSize: 12 }}>
+                            Densidade de sementes
+                            <input
+                                type="number"
+                                min={0.005}
+                                max={0.25}
+                                step={0.005}
+                                value={crackSeedDensity}
+                                onChange={(e) => {
+                                    const next = parseNumberInput(e.target.value, crackSeedDensity, { min: 0.005, max: 0.25 });
+                                    setCrackSeedDensity(next);
+                                    try { (config as any).render.crackedRoadSeedDensity = next; } catch (err) {}
+                                    emitCrackedConfigChange();
+                                }}
+                                style={{ marginTop: 4 }}
+                            />
+                        </label>
+                        <label style={{ display: 'flex', flexDirection: 'column', fontSize: 12 }}>
+                            Amostras ao longo
+                            <input
+                                type="number"
+                                min={0.25}
+                                max={4}
+                                step={0.05}
+                                value={crackSampleAlong}
+                                onChange={(e) => {
+                                    const next = parseNumberInput(e.target.value, crackSampleAlong, { min: 0.25, max: 4 });
+                                    setCrackSampleAlong(next);
+                                    try { (config as any).render.crackedRoadSampleDensityAlong = next; } catch (err) {}
+                                    emitCrackedConfigChange();
+                                }}
+                                style={{ marginTop: 4 }}
+                            />
+                        </label>
+                        <label style={{ display: 'flex', flexDirection: 'column', fontSize: 12 }}>
+                            Amostras transversais
+                            <input
+                                type="number"
+                                min={0.25}
+                                max={3}
+                                step={0.05}
+                                value={crackSampleAcross}
+                                onChange={(e) => {
+                                    const next = parseNumberInput(e.target.value, crackSampleAcross, { min: 0.25, max: 3 });
+                                    setCrackSampleAcross(next);
+                                    try { (config as any).render.crackedRoadSampleDensityAcross = next; } catch (err) {}
+                                    emitCrackedConfigChange();
+                                }}
+                                style={{ marginTop: 4 }}
+                            />
+                        </label>
+                        <label style={{ display: 'flex', flexDirection: 'column', fontSize: 12 }}>
+                            Threshold Voronoi
+                            <input
+                                type="number"
+                                min={0}
+                                max={1}
+                                step={0.01}
+                                value={crackThreshold}
+                                onChange={(e) => {
+                                    const next = parseNumberInput(e.target.value, crackThreshold, { min: 0, max: 1 });
+                                    setCrackThreshold(next);
+                                    try { (config as any).render.crackedRoadVoronoiThreshold = next; } catch (err) {}
+                                    emitCrackedConfigChange();
+                                }}
+                                style={{ marginTop: 4 }}
+                            />
+                        </label>
+                        <label style={{ display: 'flex', flexDirection: 'column', fontSize: 12 }}>
+                            Comprimento mínimo (m)
+                            <input
+                                type="number"
+                                min={1}
+                                max={80}
+                                step={0.5}
+                                value={crackMinLength}
+                                onChange={(e) => {
+                                    const next = parseNumberInput(e.target.value, crackMinLength, { min: 1, max: 80 });
+                                    setCrackMinLength(next);
+                                    try { (config as any).render.crackedRoadMinLengthM = next; } catch (err) {}
+                                    emitCrackedConfigChange();
+                                }}
+                                style={{ marginTop: 4 }}
+                            />
+                        </label>
+                        <label style={{ display: 'flex', flexDirection: 'column', fontSize: 12 }}>
+                            Máx. sementes
+                            <input
+                                type="number"
+                                min={8}
+                                max={1200}
+                                step={1}
+                                value={crackMaxSeeds}
+                                onChange={(e) => {
+                                    const next = parseNumberInput(e.target.value, crackMaxSeeds, { min: 8, max: 1200, round: true });
+                                    setCrackMaxSeeds(next);
+                                    try { (config as any).render.crackedRoadMaxSeeds = next; } catch (err) {}
+                                    emitCrackedConfigChange();
+                                }}
+                                style={{ marginTop: 4 }}
+                            />
+                        </label>
+                        <label style={{ display: 'flex', flexDirection: 'column', fontSize: 12 }}>
+                            Máx. amostras (ao longo)
+                            <input
+                                type="number"
+                                min={4}
+                                max={400}
+                                step={1}
+                                value={crackMaxSamplesAlong}
+                                onChange={(e) => {
+                                    const next = parseNumberInput(e.target.value, crackMaxSamplesAlong, { min: 4, max: 400, round: true });
+                                    setCrackMaxSamplesAlong(next);
+                                    try { (config as any).render.crackedRoadMaxSamplesAlong = next; } catch (err) {}
+                                    emitCrackedConfigChange();
+                                }}
+                                style={{ marginTop: 4 }}
+                            />
+                        </label>
+                        <label style={{ display: 'flex', flexDirection: 'column', fontSize: 12 }}>
+                            Máx. amostras (transversal)
+                            <input
+                                type="number"
+                                min={4}
+                                max={200}
+                                step={1}
+                                value={crackMaxSamplesAcross}
+                                onChange={(e) => {
+                                    const next = parseNumberInput(e.target.value, crackMaxSamplesAcross, { min: 4, max: 200, round: true });
+                                    setCrackMaxSamplesAcross(next);
+                                    try { (config as any).render.crackedRoadMaxSamplesAcross = next; } catch (err) {}
+                                    emitCrackedConfigChange();
+                                }}
+                                style={{ marginTop: 4 }}
+                            />
+                        </label>
+                        <label style={{ display: 'flex', flexDirection: 'column', fontSize: 12 }}>
+                            Passo de sondagem (m)
+                            <input
+                                type="number"
+                                min={0.4}
+                                max={5}
+                                step={0.1}
+                                value={crackProbeStep}
+                                onChange={(e) => {
+                                    const next = parseNumberInput(e.target.value, crackProbeStep, { min: 0.4, max: 5 });
+                                    setCrackProbeStep(next);
+                                    try { (config as any).render.crackedRoadProbeStepM = next; } catch (err) {}
+                                    emitCrackedConfigChange();
+                                }}
+                                style={{ marginTop: 4 }}
+                            />
+                        </label>
+                    </div>
+                    <button
+                        onClick={() => {
+                            emitCrackedConfigChange();
+                        }}
+                        style={{ marginTop: 12, width: '100%', padding: '6px 0', fontWeight: 600 }}
+                    >
+                        Redesenhar agora
+                    </button>
+                </div>
+            )}
             {heatmapVisible && (
                 <div style={{
                     position: 'fixed',

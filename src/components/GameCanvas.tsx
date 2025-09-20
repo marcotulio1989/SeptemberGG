@@ -3161,9 +3161,11 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         const onNoiseMaskUpdated = () => { scheduleCrackedRoadRedraw(); };
         const onNoiseOverlayToggle = () => { scheduleCrackedRoadRedraw(); };
         const onNoiseOutlineToggle = () => { scheduleCrackedRoadRedraw(); };
+        const onCrackedConfigChanged = () => { scheduleCrackedRoadRedraw(); };
         window.addEventListener('noise-overlay-intersection-updated', onNoiseMaskUpdated as EventListener);
         window.addEventListener('noise-overlay-change', onNoiseOverlayToggle as EventListener);
         window.addEventListener('noise-overlay-outline-change', onNoiseOutlineToggle as EventListener);
+        window.addEventListener('cracked-roads-config-change', onCrackedConfigChanged as EventListener);
 
         const handleResize = () => {
             if (!canvasContainerRef.current) return;
@@ -3518,6 +3520,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             window.removeEventListener('noise-overlay-intersection-updated', onNoiseMaskUpdated as EventListener);
             window.removeEventListener('noise-overlay-change', onNoiseOverlayToggle as EventListener);
             window.removeEventListener('noise-overlay-outline-change', onNoiseOutlineToggle as EventListener);
+            window.removeEventListener('cracked-roads-config-change', onCrackedConfigChanged as EventListener);
             if (crackedRoadsRaf.current != null && typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
                 window.cancelAnimationFrame(crackedRoadsRaf.current);
                 crackedRoadsRaf.current = null;
