@@ -287,41 +287,7 @@ export const config = {
     showBlockOutlines: true,
     // Show warped-noise delimitations (separate toggle for noise regions / buckets)
     showNoiseDelimitations: false,
-    // Default padding (px) used for crack mask bounding boxes
-    crackMaskPaddingDefault: 4,
-    // Extra padding (px) applied when heuristic triggers — fallback default 8
-    crackMaskPaddingExtra: 8,
-    // Pixel threshold to consider a polygon vertex 'touching' the bbox edge
-    crackMaskTouchEps: 1.0,
-    // Use procedural cracks baked via Voronoi preview logic by default
-    crackUseProcedural: true,
-    crackProceduralParams: {
-        divisions: 600,
-        thickness: 6,
-        dilateRadius: 2,
-        quality: 2,
-    },
-    // Use warped noise to distribute cracks instead of masking full roads
-    crackUseNoise: true,
-    // Parâmetros para geração procedural de rachaduras via campo de ruído distorcido.
-    // - baseScale: frequência base do ruído (1/meters). Valores maiores => manchas maiores.
-    // - octaves/lacunarity/gain: controlam intensidade e detalhamento da distorção.
-    // - buckets: número de regiões quantizadas no mapa de ruído.
-    // - crackBandWidth: largura da faixa em torno do centro do bucket que gera rachaduras (0.002..0.2)
-    // - maxActiveBuckets: quantos buckets são efetivamente usados para desenhar rachaduras
-    crackNoiseParams: {
-        baseScale: 1 / 480,
-        octaves: 4,
-        lacunarity: 2.0,
-        gain: 0.5,
-        buckets: 3,
-        crackBandWidth: 0.012,
-        maxActiveBuckets: 2,
-        // Escolha de quais buckets são ativados: 'smallest' (regiões menores), 'largest', 'random'
-        activeBucketStrategy: 'smallest'
-    },
-    // If true, bake cracks directly to a sprite applied to the map (no tiling sprite mask)
-    crackApplyDirect: false,
+    showCrackedRoadsOutline: false,
     // Mostrar apenas os contornos dos quarteirões (esconde ruas e preenchimento dos prédios)
     showOnlyBlockOutlines: false,
     // Mostrar apenas o interior dos quarteirões (preenchidos), escondendo ruas e demais elementos

@@ -1,23 +1,33 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
 interface ToggleButtonProps {
     onText: string;
     offText: string;
-    action: () => void;
+    action: (nextState: boolean) => void;
+    initialState?: boolean;
+    forcedState?: boolean;
 }
 
-const ToggleButton: React.FC<ToggleButtonProps> = ({ onText, offText, action }) => {
-    const [toggleState, setToggleState] = useState(false);
+const ToggleButton: React.FC<ToggleButtonProps> = ({ onText, offText, action, initialState = false, forcedState }) => {
+    const [toggleState, setToggleState] = useState(initialState);
+
+    useEffect(() => {
+        if (typeof forcedState === 'boolean') {
+            setToggleState(forcedState);
+        }
+    }, [forcedState]);
+
+    const effectiveState = typeof forcedState === 'boolean' ? forcedState : toggleState;
 
     const onButtonClick = () => {
-        const newToggleState = !toggleState;
+        const newToggleState = !effectiveState;
         setToggleState(newToggleState);
-        action();
+        action(newToggleState);
     };
 
     return (
         <button onClick={onButtonClick}>
-            {toggleState ? onText : offText}
+            {effectiveState ? onText : offText}
         </button>
     );
 };
