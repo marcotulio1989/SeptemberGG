@@ -17,16 +17,24 @@ type CrackRandomFlags = {
     alpha: boolean;
     stroke: boolean;
     seedDensity: boolean;
-    sampleAlong: boolean;
-    sampleAcross: boolean;
     threshold: boolean;
-    minLength: boolean;
-    maxSeeds: boolean;
-    maxSamplesAlong: boolean;
-    maxSamplesAcross: boolean;
-    probeStep: boolean;
     patternAssignments: boolean;
 };
+
+const CRACK_DEFAULTS = {
+    color: '#00e5ff',
+    alpha: 0.88,
+    strokePx: 1.35,
+    seedDensity: 0.055,
+    threshold: 0.65,
+    sampleAlong: 1.6,
+    sampleAcross: 1.1,
+    minLength: 5.0,
+    maxSeeds: 520,
+    maxSamplesAlong: 240,
+    maxSamplesAcross: 96,
+    probeStep: 1.1,
+} as const;
 
 const App: React.FC = () => {
     const [segmentCountLimit, setSegmentCountLimit] = useState((config as any).mapGeneration.SEGMENT_COUNT_LIMIT);
@@ -200,6 +208,13 @@ const App: React.FC = () => {
         return parseFloat(String(value).replace(',', '.'));
     };
 
+    const coerceNumber = (value: unknown, fallback: number, min?: number, max?: number) => {
+        let result = typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+        if (typeof min === 'number' && result < min) result = min;
+        if (typeof max === 'number' && result > max) result = max;
+        return result;
+    };
+
     useEffect(() => {
         try { (config as any).render.showNoiseDelimitations = noiseOverlayVisible; } catch (e) {}
         try {
@@ -262,30 +277,16 @@ const App: React.FC = () => {
     const [laneAlpha, setLaneAlpha] = useState<number>(() => safeLoadNumber('roadLaneAlpha', (config as any).render.roadLaneTextureAlpha ?? 1.0));
     const [crackConfigOpen, setCrackConfigOpen] = useState<boolean>(false);
     const [crackColor, setCrackColor] = useState<string>(() => '#' + (((config as any).render.crackedRoadColor ?? 0x00E5FF).toString(16).padStart(6, '0')));
-    const [crackAlpha, setCrackAlpha] = useState<number>(() => (config as any).render.crackedRoadAlpha ?? 0.88);
-    const [crackStrokePx, setCrackStrokePx] = useState<number>(() => (config as any).render.crackedRoadStrokePx ?? 1.35);
-    const [crackSeedDensity, setCrackSeedDensity] = useState<number>(() => (config as any).render.crackedRoadSeedDensity ?? 0.055);
-    const [crackSampleAlong, setCrackSampleAlong] = useState<number>(() => (config as any).render.crackedRoadSampleDensityAlong ?? 1.6);
-    const [crackSampleAcross, setCrackSampleAcross] = useState<number>(() => (config as any).render.crackedRoadSampleDensityAcross ?? 1.1);
-    const [crackThreshold, setCrackThreshold] = useState<number>(() => (config as any).render.crackedRoadVoronoiThreshold ?? 0.65);
-    const [crackMinLength, setCrackMinLength] = useState<number>(() => (config as any).render.crackedRoadMinLengthM ?? 5.0);
-    const [crackMaxSeeds, setCrackMaxSeeds] = useState<number>(() => (config as any).render.crackedRoadMaxSeeds ?? 520);
-    const [crackMaxSamplesAlong, setCrackMaxSamplesAlong] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAlong ?? 240);
-    const [crackMaxSamplesAcross, setCrackMaxSamplesAcross] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAcross ?? 96);
-    const [crackProbeStep, setCrackProbeStep] = useState<number>(() => (config as any).render.crackedRoadProbeStepM ?? 1.1);
+    const [crackAlpha, setCrackAlpha] = useState<number>(() => (config as any).render.crackedRoadAlpha ?? CRACK_DEFAULTS.alpha);
+    const [crackStrokePx, setCrackStrokePx] = useState<number>(() => (config as any).render.crackedRoadStrokePx ?? CRACK_DEFAULTS.strokePx);
+    const [crackSeedDensity, setCrackSeedDensity] = useState<number>(() => (config as any).render.crackedRoadSeedDensity ?? CRACK_DEFAULTS.seedDensity);
+    const [crackThreshold, setCrackThreshold] = useState<number>(() => (config as any).render.crackedRoadVoronoiThreshold ?? CRACK_DEFAULTS.threshold);
     const [crackRandomFlags, setCrackRandomFlags] = useState<CrackRandomFlags>({
         color: true,
         alpha: true,
         stroke: true,
         seedDensity: true,
-        sampleAlong: true,
-        sampleAcross: true,
         threshold: true,
-        minLength: true,
-        maxSeeds: true,
-        maxSamplesAlong: true,
-        maxSamplesAcross: true,
-        probeStep: true,
         patternAssignments: true,
     });
     const broadcastCrackedRoadConfigChange = useCallback(() => {
@@ -353,19 +354,26 @@ const App: React.FC = () => {
     };
 
     const resetCrackConfig = () => {
-        setCrackColor('#00e5ff');
-        setCrackAlpha(0.88);
-        setCrackStrokePx(1.35);
-        setCrackSeedDensity(0.055);
-        setCrackSampleAlong(1.6);
-        setCrackSampleAcross(1.1);
-        setCrackThreshold(0.65);
-        setCrackMinLength(5.0);
-        setCrackMaxSeeds(520);
-        setCrackMaxSamplesAlong(240);
-        setCrackMaxSamplesAcross(96);
-        setCrackProbeStep(1.1);
+        const renderCfg = (config as any).render || {};
+        setCrackColor(CRACK_DEFAULTS.color);
+        setCrackAlpha(CRACK_DEFAULTS.alpha);
+        setCrackStrokePx(CRACK_DEFAULTS.strokePx);
+        setCrackSeedDensity(CRACK_DEFAULTS.seedDensity);
+        setCrackThreshold(CRACK_DEFAULTS.threshold);
+        renderCfg.crackedRoadColor = parseInt(CRACK_DEFAULTS.color.slice(1), 16);
+        renderCfg.crackedRoadAlpha = CRACK_DEFAULTS.alpha;
+        renderCfg.crackedRoadStrokePx = CRACK_DEFAULTS.strokePx;
+        renderCfg.crackedRoadSeedDensity = CRACK_DEFAULTS.seedDensity;
+        renderCfg.crackedRoadVoronoiThreshold = CRACK_DEFAULTS.threshold;
+        renderCfg.crackedRoadSampleDensityAlong = CRACK_DEFAULTS.sampleAlong;
+        renderCfg.crackedRoadSampleDensityAcross = CRACK_DEFAULTS.sampleAcross;
+        renderCfg.crackedRoadMinLengthM = CRACK_DEFAULTS.minLength;
+        renderCfg.crackedRoadMaxSeeds = CRACK_DEFAULTS.maxSeeds;
+        renderCfg.crackedRoadMaxSamplesAlong = CRACK_DEFAULTS.maxSamplesAlong;
+        renderCfg.crackedRoadMaxSamplesAcross = CRACK_DEFAULTS.maxSamplesAcross;
+        renderCfg.crackedRoadProbeStepM = CRACK_DEFAULTS.probeStep;
         try { (config as any).render.crackedRoadPatternAssignments = null; } catch (e) {}
+        NoiseZoning.setNoiseThreshold?.(CRACK_DEFAULTS.threshold);
         broadcastCrackedRoadConfigChange();
         setUiTick(t => t + 1);
     };
@@ -377,10 +385,6 @@ const App: React.FC = () => {
             if (!(max > min)) return min;
             const factor = Math.pow(10, Math.max(0, decimals));
             return Math.round((min + Math.random() * (max - min)) * factor) / factor;
-        };
-        const randomInt = (min: number, max: number) => {
-            if (!(max > min)) return Math.round(min);
-            return Math.round(min + Math.random() * (max - min));
         };
         const randomColorHex = () => `#${Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0')}`;
 
@@ -399,83 +403,41 @@ const App: React.FC = () => {
             nextAlpha = randomFloat(0.45, 0.95, 2);
             setCrackAlpha(nextAlpha);
         }
-        renderCfg.crackedRoadAlpha = Math.min(1, Math.max(0, nextAlpha));
+        renderCfg.crackedRoadAlpha = coerceNumber(nextAlpha, CRACK_DEFAULTS.alpha, 0, 1);
 
         let nextStroke = crackStrokePx;
         if (flags.stroke) {
             nextStroke = randomFloat(0.6, 2.4, 2);
             setCrackStrokePx(nextStroke);
         }
-        renderCfg.crackedRoadStrokePx = Math.max(0.05, nextStroke);
+        renderCfg.crackedRoadStrokePx = coerceNumber(nextStroke, CRACK_DEFAULTS.strokePx, 0.05);
 
         let nextSeedDensity = crackSeedDensity;
         if (flags.seedDensity) {
             nextSeedDensity = randomFloat(0.02, 0.12, 3);
             setCrackSeedDensity(nextSeedDensity);
         }
-        renderCfg.crackedRoadSeedDensity = Math.max(0.001, nextSeedDensity);
-
-        let nextSampleAlong = crackSampleAlong;
-        if (flags.sampleAlong) {
-            nextSampleAlong = randomFloat(0.9, 2.4, 2);
-            setCrackSampleAlong(nextSampleAlong);
-        }
-        renderCfg.crackedRoadSampleDensityAlong = Math.max(0.1, nextSampleAlong);
-
-        let nextSampleAcross = crackSampleAcross;
-        if (flags.sampleAcross) {
-            nextSampleAcross = randomFloat(0.8, 1.8, 2);
-            setCrackSampleAcross(nextSampleAcross);
-        }
-        renderCfg.crackedRoadSampleDensityAcross = Math.max(0.1, nextSampleAcross);
+        renderCfg.crackedRoadSeedDensity = coerceNumber(nextSeedDensity, CRACK_DEFAULTS.seedDensity, 0.001);
 
         let nextThreshold = crackThreshold;
         if (flags.threshold) {
             nextThreshold = randomFloat(0.45, 0.82, 2);
             setCrackThreshold(nextThreshold);
         }
-        renderCfg.crackedRoadVoronoiThreshold = Math.min(1, Math.max(0, nextThreshold));
+        renderCfg.crackedRoadVoronoiThreshold = coerceNumber(nextThreshold, CRACK_DEFAULTS.threshold, 0, 1);
+        NoiseZoning.setNoiseThreshold?.(renderCfg.crackedRoadVoronoiThreshold);
 
-        let nextMinLength = crackMinLength;
-        if (flags.minLength) {
-            nextMinLength = randomFloat(3.0, 9.0, 1);
-            setCrackMinLength(nextMinLength);
-        }
-        renderCfg.crackedRoadMinLengthM = Math.max(0.5, nextMinLength);
-
-        let nextMaxSeeds = crackMaxSeeds;
-        if (flags.maxSeeds) {
-            nextMaxSeeds = randomInt(260, 880);
-            setCrackMaxSeeds(nextMaxSeeds);
-        }
-        renderCfg.crackedRoadMaxSeeds = Math.max(8, Math.round(nextMaxSeeds));
-
-        let nextMaxSamplesAlong = crackMaxSamplesAlong;
-        if (flags.maxSamplesAlong) {
-            nextMaxSamplesAlong = randomInt(160, 420);
-            setCrackMaxSamplesAlong(nextMaxSamplesAlong);
-        }
-        renderCfg.crackedRoadMaxSamplesAlong = Math.max(4, Math.round(nextMaxSamplesAlong));
-
-        let nextMaxSamplesAcross = crackMaxSamplesAcross;
-        if (flags.maxSamplesAcross) {
-            nextMaxSamplesAcross = randomInt(80, 220);
-            setCrackMaxSamplesAcross(nextMaxSamplesAcross);
-        }
-        renderCfg.crackedRoadMaxSamplesAcross = Math.max(4, Math.round(nextMaxSamplesAcross));
-
-        let nextProbeStep = crackProbeStep;
-        if (flags.probeStep) {
-            nextProbeStep = randomFloat(0.5, 1.6, 2);
-            setCrackProbeStep(nextProbeStep);
-        }
-        renderCfg.crackedRoadProbeStepM = Math.max(0.25, nextProbeStep);
+        renderCfg.crackedRoadSampleDensityAlong = coerceNumber(renderCfg.crackedRoadSampleDensityAlong, CRACK_DEFAULTS.sampleAlong, 0.1);
+        renderCfg.crackedRoadSampleDensityAcross = coerceNumber(renderCfg.crackedRoadSampleDensityAcross, CRACK_DEFAULTS.sampleAcross, 0.1);
+        renderCfg.crackedRoadMinLengthM = coerceNumber(renderCfg.crackedRoadMinLengthM, CRACK_DEFAULTS.minLength, 0.5);
+        renderCfg.crackedRoadMaxSeeds = Math.max(8, Math.round(coerceNumber(renderCfg.crackedRoadMaxSeeds, CRACK_DEFAULTS.maxSeeds, 8)));
+        renderCfg.crackedRoadMaxSamplesAlong = Math.max(4, Math.round(coerceNumber(renderCfg.crackedRoadMaxSamplesAlong, CRACK_DEFAULTS.maxSamplesAlong, 4)));
+        renderCfg.crackedRoadMaxSamplesAcross = Math.max(4, Math.round(coerceNumber(renderCfg.crackedRoadMaxSamplesAcross, CRACK_DEFAULTS.maxSamplesAcross, 4)));
+        renderCfg.crackedRoadProbeStepM = coerceNumber(renderCfg.crackedRoadProbeStepM, CRACK_DEFAULTS.probeStep, 0.25);
 
         if (flags.patternAssignments) {
             const patternCount = CRACK_PATTERNS.length;
-            if (!patternCount) {
-                // nothing to randomize
-            } else {
+            if (patternCount) {
                 const createTester = (NoiseZoning as any)?.createIntersectionTester;
                 if (typeof createTester !== 'function') {
                     try { console.warn('[App] Random cracks: tester unavailable'); } catch (e) {}
@@ -491,7 +453,7 @@ const App: React.FC = () => {
                                 segments: {},
                             };
                             let applied = 0;
-                            const probeStep = Math.max(0.25, nextProbeStep);
+                            const probeStep = Math.max(0.25, renderCfg.crackedRoadProbeStepM ?? CRACK_DEFAULTS.probeStep);
                             segments.forEach((segment, index) => {
                                 if (!segment || !segment.r) return;
                                 const start = segment.r.start;
@@ -596,28 +558,22 @@ const App: React.FC = () => {
         if (!Number.isNaN(parsedColor)) {
             renderCfg.crackedRoadColor = parsedColor;
         }
-        renderCfg.crackedRoadAlpha = Math.min(1, Math.max(0, crackAlpha));
-        renderCfg.crackedRoadStrokePx = Math.max(0.05, crackStrokePx);
-        renderCfg.crackedRoadSeedDensity = Math.max(0.001, crackSeedDensity);
-        renderCfg.crackedRoadSampleDensityAlong = Math.max(0.1, crackSampleAlong);
-        renderCfg.crackedRoadSampleDensityAcross = Math.max(0.1, crackSampleAcross);
-        renderCfg.crackedRoadVoronoiThreshold = Math.min(1, Math.max(0, crackThreshold));
-        renderCfg.crackedRoadMinLengthM = Math.max(0.5, crackMinLength);
-        renderCfg.crackedRoadMaxSeeds = Math.max(8, Math.round(crackMaxSeeds));
-        renderCfg.crackedRoadMaxSamplesAlong = Math.max(4, Math.round(crackMaxSamplesAlong));
-        renderCfg.crackedRoadMaxSamplesAcross = Math.max(4, Math.round(crackMaxSamplesAcross));
-        renderCfg.crackedRoadProbeStepM = Math.max(0.25, crackProbeStep);
+        renderCfg.crackedRoadAlpha = coerceNumber(crackAlpha, CRACK_DEFAULTS.alpha, 0, 1);
+        renderCfg.crackedRoadStrokePx = coerceNumber(crackStrokePx, CRACK_DEFAULTS.strokePx, 0.05);
+        renderCfg.crackedRoadSeedDensity = coerceNumber(crackSeedDensity, CRACK_DEFAULTS.seedDensity, 0.001);
+        renderCfg.crackedRoadVoronoiThreshold = coerceNumber(crackThreshold, CRACK_DEFAULTS.threshold, 0, 1);
+        renderCfg.crackedRoadSampleDensityAlong = coerceNumber(renderCfg.crackedRoadSampleDensityAlong, CRACK_DEFAULTS.sampleAlong, 0.1);
+        renderCfg.crackedRoadSampleDensityAcross = coerceNumber(renderCfg.crackedRoadSampleDensityAcross, CRACK_DEFAULTS.sampleAcross, 0.1);
+        renderCfg.crackedRoadMinLengthM = coerceNumber(renderCfg.crackedRoadMinLengthM, CRACK_DEFAULTS.minLength, 0.5);
+        renderCfg.crackedRoadMaxSeeds = Math.max(8, Math.round(coerceNumber(renderCfg.crackedRoadMaxSeeds, CRACK_DEFAULTS.maxSeeds, 8)));
+        renderCfg.crackedRoadMaxSamplesAlong = Math.max(4, Math.round(coerceNumber(renderCfg.crackedRoadMaxSamplesAlong, CRACK_DEFAULTS.maxSamplesAlong, 4)));
+        renderCfg.crackedRoadMaxSamplesAcross = Math.max(4, Math.round(coerceNumber(renderCfg.crackedRoadMaxSamplesAcross, CRACK_DEFAULTS.maxSamplesAcross, 4)));
+        renderCfg.crackedRoadProbeStepM = coerceNumber(renderCfg.crackedRoadProbeStepM, CRACK_DEFAULTS.probeStep, 0.25);
+        NoiseZoning.setNoiseThreshold?.(renderCfg.crackedRoadVoronoiThreshold);
         broadcastCrackedRoadConfigChange();
     }, [
         crackAlpha,
         crackColor,
-        crackMaxSamplesAcross,
-        crackMaxSamplesAlong,
-        crackMaxSeeds,
-        crackMinLength,
-        crackProbeStep,
-        crackSampleAlong,
-        crackSampleAcross,
         crackSeedDensity,
         crackStrokePx,
         crackThreshold,
@@ -1239,72 +1195,6 @@ const App: React.FC = () => {
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <label htmlFor="crack-sample-along" style={{ fontSize: 11, fontWeight: 600 }}>Amostras (comprimento)</label>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, opacity: 0.75 }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={crackRandomFlags.sampleAlong}
-                                        onChange={() => toggleCrackRandomFlag('sampleAlong')}
-                                        style={{ margin: 0 }}
-                                    />
-                                    Rand
-                                </label>
-                            </div>
-                            <input
-                                id="crack-sample-along"
-                                type="number"
-                                min={0.1}
-                                step={0.1}
-                                value={crackSampleAlong}
-                                onChange={(e) => {
-                                    const raw = parseNumberInput(e.target.value);
-                                    const nv = Number.isFinite(raw) ? Math.max(0.1, raw) : 1.6;
-                                    setCrackSampleAlong(nv);
-                                }}
-                                style={{
-                                    padding: '4px 6px',
-                                    borderRadius: 4,
-                                    border: '1px solid rgba(255,255,255,0.2)',
-                                    background: 'rgba(255,255,255,0.06)',
-                                    color: '#ECEFF1',
-                                }}
-                            />
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <label htmlFor="crack-sample-across" style={{ fontSize: 11, fontWeight: 600 }}>Amostras (largura)</label>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, opacity: 0.75 }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={crackRandomFlags.sampleAcross}
-                                        onChange={() => toggleCrackRandomFlag('sampleAcross')}
-                                        style={{ margin: 0 }}
-                                    />
-                                    Rand
-                                </label>
-                            </div>
-                            <input
-                                id="crack-sample-across"
-                                type="number"
-                                min={0.1}
-                                step={0.1}
-                                value={crackSampleAcross}
-                                onChange={(e) => {
-                                    const raw = parseNumberInput(e.target.value);
-                                    const nv = Number.isFinite(raw) ? Math.max(0.1, raw) : 1.1;
-                                    setCrackSampleAcross(nv);
-                                }}
-                                style={{
-                                    padding: '4px 6px',
-                                    borderRadius: 4,
-                                    border: '1px solid rgba(255,255,255,0.2)',
-                                    background: 'rgba(255,255,255,0.06)',
-                                    color: '#ECEFF1',
-                                }}
-                            />
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <label htmlFor="crack-threshold" style={{ fontSize: 11, fontWeight: 600 }}>Threshold Voronoi</label>
                                 <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, opacity: 0.75 }}>
                                     <input
@@ -1327,171 +1217,6 @@ const App: React.FC = () => {
                                     const raw = parseNumberInput(e.target.value);
                                     const nv = Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 1) : 0.65;
                                     setCrackThreshold(nv);
-                                }}
-                                style={{
-                                    padding: '4px 6px',
-                                    borderRadius: 4,
-                                    border: '1px solid rgba(255,255,255,0.2)',
-                                    background: 'rgba(255,255,255,0.06)',
-                                    color: '#ECEFF1',
-                                }}
-                            />
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <label htmlFor="crack-min-length" style={{ fontSize: 11, fontWeight: 600 }}>Comprimento mín. (m)</label>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, opacity: 0.75 }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={crackRandomFlags.minLength}
-                                        onChange={() => toggleCrackRandomFlag('minLength')}
-                                        style={{ margin: 0 }}
-                                    />
-                                    Rand
-                                </label>
-                            </div>
-                            <input
-                                id="crack-min-length"
-                                type="number"
-                                min={0.5}
-                                step={0.5}
-                                value={crackMinLength}
-                                onChange={(e) => {
-                                    const raw = parseNumberInput(e.target.value);
-                                    const nv = Number.isFinite(raw) ? Math.max(0.5, raw) : 5.0;
-                                    setCrackMinLength(nv);
-                                }}
-                                style={{
-                                    padding: '4px 6px',
-                                    borderRadius: 4,
-                                    border: '1px solid rgba(255,255,255,0.2)',
-                                    background: 'rgba(255,255,255,0.06)',
-                                    color: '#ECEFF1',
-                                }}
-                            />
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <label htmlFor="crack-max-seeds" style={{ fontSize: 11, fontWeight: 600 }}>Máx. Seeds</label>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, opacity: 0.75 }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={crackRandomFlags.maxSeeds}
-                                        onChange={() => toggleCrackRandomFlag('maxSeeds')}
-                                        style={{ margin: 0 }}
-                                    />
-                                    Rand
-                                </label>
-                            </div>
-                            <input
-                                id="crack-max-seeds"
-                                type="number"
-                                min={8}
-                                step={1}
-                                value={crackMaxSeeds}
-                                onChange={(e) => {
-                                    const raw = parseNumberInput(e.target.value);
-                                    const nv = Number.isFinite(raw) ? Math.max(8, Math.round(raw)) : 520;
-                                    setCrackMaxSeeds(nv);
-                                }}
-                                style={{
-                                    padding: '4px 6px',
-                                    borderRadius: 4,
-                                    border: '1px solid rgba(255,255,255,0.2)',
-                                    background: 'rgba(255,255,255,0.06)',
-                                    color: '#ECEFF1',
-                                }}
-                            />
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <label htmlFor="crack-max-samples-along" style={{ fontSize: 11, fontWeight: 600 }}>Máx. Samples (comprimento)</label>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, opacity: 0.75 }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={crackRandomFlags.maxSamplesAlong}
-                                        onChange={() => toggleCrackRandomFlag('maxSamplesAlong')}
-                                        style={{ margin: 0 }}
-                                    />
-                                    Rand
-                                </label>
-                            </div>
-                            <input
-                                id="crack-max-samples-along"
-                                type="number"
-                                min={4}
-                                step={1}
-                                value={crackMaxSamplesAlong}
-                                onChange={(e) => {
-                                    const raw = parseNumberInput(e.target.value);
-                                    const nv = Number.isFinite(raw) ? Math.max(4, Math.round(raw)) : 240;
-                                    setCrackMaxSamplesAlong(nv);
-                                }}
-                                style={{
-                                    padding: '4px 6px',
-                                    borderRadius: 4,
-                                    border: '1px solid rgba(255,255,255,0.2)',
-                                    background: 'rgba(255,255,255,0.06)',
-                                    color: '#ECEFF1',
-                                }}
-                            />
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <label htmlFor="crack-max-samples-across" style={{ fontSize: 11, fontWeight: 600 }}>Máx. Samples (largura)</label>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, opacity: 0.75 }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={crackRandomFlags.maxSamplesAcross}
-                                        onChange={() => toggleCrackRandomFlag('maxSamplesAcross')}
-                                        style={{ margin: 0 }}
-                                    />
-                                    Rand
-                                </label>
-                            </div>
-                            <input
-                                id="crack-max-samples-across"
-                                type="number"
-                                min={4}
-                                step={1}
-                                value={crackMaxSamplesAcross}
-                                onChange={(e) => {
-                                    const raw = parseNumberInput(e.target.value);
-                                    const nv = Number.isFinite(raw) ? Math.max(4, Math.round(raw)) : 96;
-                                    setCrackMaxSamplesAcross(nv);
-                                }}
-                                style={{
-                                    padding: '4px 6px',
-                                    borderRadius: 4,
-                                    border: '1px solid rgba(255,255,255,0.2)',
-                                    background: 'rgba(255,255,255,0.06)',
-                                    color: '#ECEFF1',
-                                }}
-                            />
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <label htmlFor="crack-probe-step" style={{ fontSize: 11, fontWeight: 600 }}>Passo da sonda (m)</label>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, opacity: 0.75 }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={crackRandomFlags.probeStep}
-                                        onChange={() => toggleCrackRandomFlag('probeStep')}
-                                        style={{ margin: 0 }}
-                                    />
-                                    Rand
-                                </label>
-                            </div>
-                            <input
-                                id="crack-probe-step"
-                                type="number"
-                                min={0.25}
-                                step={0.05}
-                                value={crackProbeStep}
-                                onChange={(e) => {
-                                    const raw = parseNumberInput(e.target.value);
-                                    const nv = Number.isFinite(raw) ? Math.max(0.25, raw) : 1.1;
-                                    setCrackProbeStep(nv);
                                 }}
                                 style={{
                                     padding: '4px 6px',

@@ -4,8 +4,9 @@
  * Modifications:
  * - Restrict rendering to road areas only by building a coarse road mask using the MapStore quadtree
  *   and distance-to-segment checks. This prevents the noise overlay from showing on non-road areas.
- * - Pixelate the noise by sampling at a coarse grid and using nearest-neighbor lookup when writing
- *   pixels. This gives a blocky/pixelated look instead of smooth organic interpolation.
+ * - Sample the noise on a coarse grid but render it using jittered curved strokes that connect
+ *   active cells. This preserves performance while replacing the previous blocky pixels with a
+ *   hand-drawn aesthetic that feels less digital.
  * API: attach(canvas), toggle(), reseed(), redraw()
  * Independent of roads/buildings
  */
@@ -309,10 +310,35 @@ const NoiseZoning: InternalNoiseZoning = {
     const zoneColors = config.render.zoneColors;
     // Escala do ruído em coordenadas de cena (ajuste conforme necessário)
     const { baseScale, octaves, lacunarity, gain, thresholds } = this._params;
+    const renderCfg: any = (config as any)?.render || {};
+    const rawColor = renderCfg.crackedRoadColor;
+    let strokeColorInt: number = 0x111111;
+    if (typeof rawColor === 'number' && Number.isFinite(rawColor)) {
+      strokeColorInt = rawColor >>> 0;
+    } else if (typeof rawColor === 'string') {
+      const parsed = parseInt(String(rawColor).replace('#', ''), 16);
+      if (!Number.isNaN(parsed)) strokeColorInt = parsed >>> 0;
+    }
+    const strokeColor = `#${strokeColorInt.toString(16).padStart(6, '0')}`;
+    const baseAlphaCfg = typeof renderCfg.crackedRoadAlpha === 'number' && Number.isFinite(renderCfg.crackedRoadAlpha)
+      ? Math.min(1, Math.max(0, renderCfg.crackedRoadAlpha))
+      : 0.88;
+    const strokeScaleCfg = typeof renderCfg.crackedRoadStrokePx === 'number' && Number.isFinite(renderCfg.crackedRoadStrokePx)
+      ? Math.max(0.2, renderCfg.crackedRoadStrokePx)
+      : 1.35;
+    const seedDensityCfg = typeof renderCfg.crackedRoadSeedDensity === 'number' && Number.isFinite(renderCfg.crackedRoadSeedDensity)
+      ? Math.max(0.001, renderCfg.crackedRoadSeedDensity)
+      : 0.055;
+    const densityFactor = Math.max(0.35, Math.min(1.75, seedDensityCfg / 0.055));
+    const keepChance = Math.min(1, Math.max(0.2, densityFactor));
+    const intensityScale = Math.max(0.5, Math.min(1.8, densityFactor * 0.95));
+    const widthScale = Math.max(0.75, Math.min(2.2, Math.sqrt(Math.max(1, densityFactor))));
+    const thresholdOverride = typeof renderCfg.crackedRoadVoronoiThreshold === 'number' && Number.isFinite(renderCfg.crackedRoadVoronoiThreshold)
+      ? Math.min(1, Math.max(0, renderCfg.crackedRoadVoronoiThreshold))
+      : null;
     const cx = w / 2, cy = h / 2;
     const cameraX = this._view.cameraX, cameraY = this._view.cameraY, zoom = this._view.zoom || 1;
     // Cache de pixels: se view for igual, reutiliza
-    const alpha = this.enabled ? Math.floor((config.render.zoneOverlayAlpha ?? 0.12) * 255) : 0;
     // Calcular bounding box em pixels da área que contém ruas (projetada para tela)
     const roadSegments = MapStore.getSegments();
     const renderModeIsometric = (config.render as any).mode === 'isometric';
@@ -581,45 +607,136 @@ const NoiseZoning: InternalNoiseZoning = {
     }
 
     // build intersection mask at coarse resolution: 1 where road mask AND noise > threshold
-    const noiseThreshold = (this as any)._noiseThreshold ?? 0.5;
+    let noiseThreshold = (this as any)._noiseThreshold ?? 0.5;
+    if (typeof thresholdOverride === 'number') {
+      noiseThreshold = thresholdOverride;
+      (this as any)._noiseThreshold = noiseThreshold;
+    }
     const intersectionMask = new Uint8Array(coarseW * coarseH);
     for (let i = 0; i < coarse.length; i++) {
       intersectionMask[i] = (coarse[i] > noiseThreshold && coarseRoadMask[i]) ? 1 : 0;
     }
-    // Pixelated rendering: draw one rect per coarse cell using nearest-neighbor.
-    // This avoids allocating a full ImageData buffer and reduces memory churn.
+    const handmadeCentersX = new Float32Array(coarseW * coarseH);
+    const handmadeCentersY = new Float32Array(coarseW * coarseH);
+    const handmadeStroke = new Float32Array(coarseW * coarseH);
+    const activeCells: number[] = [];
+
+    const baseSeed = Math.floor((this as any)._handSeed ?? this._seed ?? 0);
+    (this as any)._handSeed = baseSeed;
+    const jitterBase = Math.max(0.35, pixelSizePx * 0.45) * (0.9 + Math.max(0, strokeScaleCfg - 1) * 0.15);
+    const strokeBase = Math.max(0.65, pixelSizePx * 0.6) * strokeScaleCfg;
+
+    const jitterFor = (gridX: number, gridY: number, variant: number) => {
+      const s = Math.sin((gridX * 127.1 + gridY * 311.7 + (baseSeed + variant) * 74.7) * 12.9898) * 43758.5453;
+      return s - Math.floor(s);
+    };
+
+    for (let gy = 0; gy < coarseH; gy++) {
+      const gridY = gridMinY + gy;
+      for (let gx = 0; gx < coarseW; gx++) {
+        const idx = gy * coarseW + gx;
+        if (!coarseRoadMask[idx]) {
+          handmadeCentersX[idx] = Number.NaN;
+          handmadeCentersY[idx] = Number.NaN;
+          handmadeStroke[idx] = 0;
+          continue;
+        }
+        const noiseValue = coarse[idx];
+        if (noiseValue <= noiseThreshold) {
+          handmadeCentersX[idx] = Number.NaN;
+          handmadeCentersY[idx] = Number.NaN;
+          handmadeStroke[idx] = 0;
+          continue;
+        }
+        const centerX = coarseCenters[idx * 2];
+        const centerY = coarseCenters[idx * 2 + 1];
+        if (!Number.isFinite(centerX) || !Number.isFinite(centerY)) {
+          handmadeCentersX[idx] = Number.NaN;
+          handmadeCentersY[idx] = Number.NaN;
+          handmadeStroke[idx] = 0;
+          continue;
+        }
+        const gridX = gridMinX + gx;
+        if (keepChance < 0.999 && jitterFor(gridX, gridY, 211) > keepChance) {
+          handmadeCentersX[idx] = Number.NaN;
+          handmadeCentersY[idx] = Number.NaN;
+          handmadeStroke[idx] = 0;
+          continue;
+        }
+        const jitterRadius = jitterBase * (0.65 + 0.35 * jitterFor(gridX, gridY, 19));
+        const jitterX = (jitterFor(gridX, gridY, 37) - 0.5) * jitterRadius;
+        const jitterY = (jitterFor(gridX, gridY, 71) - 0.5) * jitterRadius;
+        handmadeCentersX[idx] = centerX + jitterX;
+        handmadeCentersY[idx] = centerY + jitterY;
+        handmadeStroke[idx] = Math.max(0.35, Math.min(1.4, 0.55 + (noiseValue - noiseThreshold) * 1.8));
+        activeCells.push(idx);
+      }
+    }
+
     try {
-      // Clear overlay
       this._ctx.clearRect(0, 0, w, h);
       this._ctx.save();
-      // black fill style with desired alpha
-      const aNorm = (alpha / 255) || 0;
-      this._ctx.fillStyle = `rgba(0,0,0,${aNorm})`;
+      this._ctx.lineCap = 'round';
+      this._ctx.lineJoin = 'round';
+      this._ctx.strokeStyle = strokeColor;
 
-      const drawW = Math.max(1, Math.ceil(pixelSizePx));
-      const drawH = Math.max(1, Math.ceil(pixelSizePx));
-      const halfW = drawW * 0.5;
-      const halfH = drawH * 0.5;
+      const offsets = [
+        { dx: 1, dy: 0, weight: 1 },
+        { dx: 0, dy: 1, weight: 1 },
+        { dx: 1, dy: 1, weight: 0.7 },
+        { dx: -1, dy: 1, weight: 0.6 },
+      ];
 
-      for (let gy = 0; gy < coarseH; gy++) {
-        for (let gx = 0; gx < coarseW; gx++) {
-          const i = gy * coarseW + gx;
-          if (!coarseRoadMask[i]) continue; // skip non-road blocks
-          const n = coarse[i];
-          if (n <= noiseThreshold) continue;
-          const centerX = coarseCenters[i * 2];
-          const centerY = coarseCenters[i * 2 + 1];
-          if (!Number.isFinite(centerX) || !Number.isFinite(centerY)) continue;
-          if (centerX + halfW < minPx || centerX - halfW > maxPx || centerY + halfH < minPy || centerY - halfH > maxPy) continue;
-          const x0 = Math.round(centerX - halfW);
-          const y0 = Math.round(centerY - halfH);
-          this._ctx.fillRect(x0, y0, drawW, drawH);
+      for (const idx of activeCells) {
+        const gx = idx % coarseW;
+        const gy = Math.floor(idx / coarseW);
+        const originX = handmadeCentersX[idx];
+        const originY = handmadeCentersY[idx];
+        if (!Number.isFinite(originX) || !Number.isFinite(originY)) continue;
+        const originStrength = handmadeStroke[idx];
+
+        for (const offset of offsets) {
+          const ngx = gx + offset.dx;
+          const ngy = gy + offset.dy;
+          if (ngx < 0 || ngy < 0 || ngx >= coarseW || ngy >= coarseH) continue;
+          const nIdx = ngy * coarseW + ngx;
+          if (nIdx <= idx) continue;
+          const targetX = handmadeCentersX[nIdx];
+          const targetY = handmadeCentersY[nIdx];
+          if (!Number.isFinite(targetX) || !Number.isFinite(targetY)) continue;
+
+          const strokeStrength = (originStrength + handmadeStroke[nIdx]) * 0.5;
+          const width = strokeBase * strokeStrength * offset.weight * widthScale;
+          const noiseMix = Math.max(noiseThreshold, (coarse[idx] + coarse[nIdx]) * 0.5);
+          const intensity = Math.max(0.1, Math.min(1, (noiseMix - noiseThreshold) * 2.2 * intensityScale));
+
+          this._ctx.lineWidth = Math.max(0.45, width);
+          const alphaBlend = Math.max(0.05, Math.min(1, baseAlphaCfg * 0.6 + intensity * 0.55));
+          this._ctx.globalAlpha = Math.min(1, alphaBlend * Math.min(1.35, densityFactor));
+
+          const dx = targetX - originX;
+          const dy = targetY - originY;
+          const dist = Math.hypot(dx, dy);
+          this._ctx.beginPath();
+          this._ctx.moveTo(originX, originY);
+          if (dist > 1e-3) {
+            const invDist = 1 / dist;
+            const perpX = -dy * invDist;
+            const perpY = dx * invDist;
+            const curveNoise = (jitterFor(gridMinX + gx + ngx, gridMinY + gy + ngy, 113) - 0.5) * jitterBase * 0.8 * offset.weight;
+            const ctrlX = (originX + targetX) * 0.5 + perpX * curveNoise;
+            const ctrlY = (originY + targetY) * 0.5 + perpY * curveNoise;
+            this._ctx.quadraticCurveTo(ctrlX, ctrlY, targetX, targetY);
+          } else {
+            this._ctx.lineTo(targetX, targetY);
+          }
+          this._ctx.stroke();
         }
       }
 
+      this._ctx.globalAlpha = 1;
       this._ctx.restore();
     } catch (e) {
-      // If rect drawing fails, clear canvas as a safe fallback
       try { this._ctx.clearRect(0, 0, w, h); } catch (e2) {}
     }
     // If requested, draw outlines around the road geometry intersecting noisy areas
