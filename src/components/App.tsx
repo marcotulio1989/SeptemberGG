@@ -271,6 +271,8 @@ const App: React.FC = () => {
     const [crackMaxSamplesAlong, setCrackMaxSamplesAlong] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAlong ?? 240);
     const [crackMaxSamplesAcross, setCrackMaxSamplesAcross] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAcross ?? 96);
     const [crackProbeStep, setCrackProbeStep] = useState<number>(() => (config as any).render.crackedRoadProbeStepM ?? 1.1);
+    const [crackStrokePx, setCrackStrokePx] = useState<number>(() => (config as any).render.crackedRoadStrokePx ?? 1.1);
+    const [crackResolutionMultiplier, setCrackResolutionMultiplier] = useState<number>(() => (config as any).render.crackedRoadResolutionMultiplier ?? 4);
     const [crackRandomFlags, setCrackRandomFlags] = useState<CrackRandomFlags>({
         color: true,
         alpha: true,
@@ -361,6 +363,8 @@ const App: React.FC = () => {
         setCrackMaxSamplesAlong(240);
         setCrackMaxSamplesAcross(96);
         setCrackProbeStep(1.1);
+        setCrackStrokePx(1.1);
+        setCrackResolutionMultiplier(4);
         try { (config as any).render.crackedRoadPatternAssignments = null; } catch (e) {}
         broadcastCrackedRoadConfigChange();
         setUiTick(t => t + 1);
@@ -595,6 +599,8 @@ const App: React.FC = () => {
         renderCfg.crackedRoadMaxSamplesAlong = Math.max(4, Math.round(crackMaxSamplesAlong));
         renderCfg.crackedRoadMaxSamplesAcross = Math.max(4, Math.round(crackMaxSamplesAcross));
         renderCfg.crackedRoadProbeStepM = Math.max(0.25, crackProbeStep);
+        renderCfg.crackedRoadStrokePx = Math.max(0.2, crackStrokePx);
+        renderCfg.crackedRoadResolutionMultiplier = Math.max(1, Math.min(8, crackResolutionMultiplier));
         broadcastCrackedRoadConfigChange();
     }, [
         crackAlpha,
@@ -604,9 +610,11 @@ const App: React.FC = () => {
         crackMaxSeeds,
         crackMinLength,
         crackProbeStep,
+        crackResolutionMultiplier,
         crackSampleAlong,
         crackSampleAcross,
         crackSeedDensity,
+        crackStrokePx,
         crackThreshold,
         broadcastCrackedRoadConfigChange,
     ]);
@@ -1157,6 +1165,47 @@ const App: React.FC = () => {
                                     color: '#ECEFF1',
                                 }}
                             />
+                        </div>
+                        <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <label htmlFor="crack-stroke" style={{ fontSize: 11, fontWeight: 600 }}>Espessura das rachaduras</label>
+                                <span style={{ fontSize: 10, opacity: 0.75 }}>{crackStrokePx.toFixed(2)} px</span>
+                            </div>
+                            <input
+                                id="crack-stroke"
+                                type="range"
+                                min={0.2}
+                                max={4}
+                                step={0.05}
+                                value={crackStrokePx}
+                                onChange={(e) => {
+                                    const raw = parseFloat(e.target.value);
+                                    setCrackStrokePx(Number.isFinite(raw) ? raw : 1.1);
+                                }}
+                                style={{ width: '100%' }}
+                            />
+                        </div>
+                        <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <label htmlFor="crack-resolution" style={{ fontSize: 11, fontWeight: 600 }}>Qualidade / anti-serrilhado</label>
+                                <span style={{ fontSize: 10, opacity: 0.75 }}>{crackResolutionMultiplier.toFixed(1)}x</span>
+                            </div>
+                            <input
+                                id="crack-resolution"
+                                type="range"
+                                min={1}
+                                max={6}
+                                step={0.5}
+                                value={crackResolutionMultiplier}
+                                onChange={(e) => {
+                                    const raw = parseFloat(e.target.value);
+                                    setCrackResolutionMultiplier(Number.isFinite(raw) ? raw : 4);
+                                }}
+                                style={{ width: '100%' }}
+                            />
+                            <span style={{ fontSize: 10, opacity: 0.6 }}>
+                                Valores maiores deixam as rachaduras mais suaves, mas podem aumentar o custo de processamento.
+                            </span>
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
