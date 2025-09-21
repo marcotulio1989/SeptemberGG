@@ -140,7 +140,11 @@ const generateRoadCrackSprite = ({
     const isoOriginX = expandedMinX;
     const isoOriginY = expandedMinY;
 
-    const supersample = Math.max(1, Math.min(8, Number.isFinite(resolutionMultiplier) ? resolutionMultiplier : 1));
+    const devicePixelRatio = (typeof window !== 'undefined' && Number.isFinite(window.devicePixelRatio)
+        ? Math.max(1, Math.min(4, window.devicePixelRatio))
+        : 1);
+    const baseSupersample = Number.isFinite(resolutionMultiplier) ? resolutionMultiplier : 1;
+    const supersample = Math.max(1, Math.min(8, baseSupersample * devicePixelRatio));
     const baseCols = Math.min(maxSamplesAlong, Math.max(2, samplesAlong));
     const baseRows = Math.min(maxSamplesAcross, Math.max(2, samplesAcross));
     const pixelCols = Math.max(16, Math.min(4096, Math.round(baseCols * 4 * supersample)));
@@ -1443,8 +1447,8 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                     });
                     try { (baseTexture as any).mipmap = PIXI.MIPMAP_MODES.ON; } catch (e) {}
                     const aniso = (baseTexture as any).anisotropicLevel;
-                    if (typeof aniso === 'number' && aniso < 4) {
-                        (baseTexture as any).anisotropicLevel = 4;
+                    if (typeof aniso !== 'number' || aniso < 8) {
+                        (baseTexture as any).anisotropicLevel = 8;
                     }
                     const texture = new PIXI.Texture(baseTexture);
                     const sprite = new PIXI.Sprite(texture);

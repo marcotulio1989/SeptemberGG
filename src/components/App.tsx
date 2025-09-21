@@ -24,6 +24,7 @@ type CrackRandomFlags = {
     maxSamplesAlong: boolean;
     maxSamplesAcross: boolean;
     probeStep: boolean;
+    strokePx: boolean;
     patternAssignments: boolean;
 };
 
@@ -271,6 +272,7 @@ const App: React.FC = () => {
     const [crackMaxSamplesAlong, setCrackMaxSamplesAlong] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAlong ?? 240);
     const [crackMaxSamplesAcross, setCrackMaxSamplesAcross] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAcross ?? 96);
     const [crackProbeStep, setCrackProbeStep] = useState<number>(() => (config as any).render.crackedRoadProbeStepM ?? 1.1);
+    const [crackStrokePx, setCrackStrokePx] = useState<number>(() => (config as any).render.crackedRoadStrokePx ?? 1.35);
     const [crackRandomFlags, setCrackRandomFlags] = useState<CrackRandomFlags>({
         color: true,
         alpha: true,
@@ -283,6 +285,7 @@ const App: React.FC = () => {
         maxSamplesAlong: true,
         maxSamplesAcross: true,
         probeStep: true,
+        strokePx: true,
         patternAssignments: true,
     });
     const broadcastCrackedRoadConfigChange = useCallback(() => {
@@ -361,6 +364,7 @@ const App: React.FC = () => {
         setCrackMaxSamplesAlong(240);
         setCrackMaxSamplesAcross(96);
         setCrackProbeStep(1.1);
+        setCrackStrokePx(1.35);
         try { (config as any).render.crackedRoadPatternAssignments = null; } catch (e) {}
         broadcastCrackedRoadConfigChange();
         setUiTick(t => t + 1);
@@ -459,6 +463,13 @@ const App: React.FC = () => {
             setCrackProbeStep(nextProbeStep);
         }
         renderCfg.crackedRoadProbeStepM = Math.max(0.25, nextProbeStep);
+
+        let nextStrokePx = crackStrokePx;
+        if (flags.strokePx) {
+            nextStrokePx = randomFloat(0.45, 1.75, 2);
+            setCrackStrokePx(nextStrokePx);
+        }
+        renderCfg.crackedRoadStrokePx = Math.max(0.3, nextStrokePx);
 
         if (flags.patternAssignments) {
             const patternCount = CRACK_PATTERNS.length;
@@ -595,6 +606,7 @@ const App: React.FC = () => {
         renderCfg.crackedRoadMaxSamplesAlong = Math.max(4, Math.round(crackMaxSamplesAlong));
         renderCfg.crackedRoadMaxSamplesAcross = Math.max(4, Math.round(crackMaxSamplesAcross));
         renderCfg.crackedRoadProbeStepM = Math.max(0.25, crackProbeStep);
+        renderCfg.crackedRoadStrokePx = Math.max(0.3, crackStrokePx);
         broadcastCrackedRoadConfigChange();
     }, [
         crackAlpha,
@@ -604,6 +616,7 @@ const App: React.FC = () => {
         crackMaxSeeds,
         crackMinLength,
         crackProbeStep,
+        crackStrokePx,
         crackSampleAlong,
         crackSampleAcross,
         crackSeedDensity,
@@ -1157,6 +1170,39 @@ const App: React.FC = () => {
                                     color: '#ECEFF1',
                                 }}
                             />
+                        </div>
+                        <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <label htmlFor="crack-stroke" style={{ fontSize: 11, fontWeight: 600 }}>Espessura (px)</label>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, opacity: 0.75 }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={crackRandomFlags.strokePx}
+                                        onChange={() => toggleCrackRandomFlag('strokePx')}
+                                        style={{ margin: 0 }}
+                                    />
+                                    Rand
+                                </label>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                <input
+                                    id="crack-stroke"
+                                    type="range"
+                                    min={0.3}
+                                    max={2.5}
+                                    step={0.05}
+                                    value={crackStrokePx}
+                                    onChange={(e) => {
+                                        const raw = parseFloat(e.target.value);
+                                        const nv = Number.isFinite(raw) ? Math.max(0.3, Math.min(2.5, raw)) : 1.35;
+                                        setCrackStrokePx(nv);
+                                    }}
+                                    style={{ flex: 1 }}
+                                />
+                                <span style={{ minWidth: 48, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                    {crackStrokePx.toFixed(2)}px
+                                </span>
+                            </div>
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
