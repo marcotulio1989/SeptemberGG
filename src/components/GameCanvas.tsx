@@ -21,8 +21,154 @@ import { CrackPatternAssignments, getCrackPatternById } from '../lib/crackPatter
 const ClipperLib: any = require('clipper-lib');
 
 type LocalPoint = [number, number];
+type IsoPoint = { x: number; y: number };
+type OffsetPoint = { x: number; y: number };
+type LocalToWorldFn = (along: number, lateral: number) => Point;
 
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+
+const clampByte = (value: number) => Math.min(255, Math.max(0, Math.round(value)));
+
+const colorToRgb = (color: number): [number, number, number] => [
+    (color >> 16) & 0xff,
+    (color >> 8) & 0xff,
+    color & 0xff,
+];
+
+const rgbToColor = (r: number, g: number, b: number): number => {
+    const cr = clampByte(r);
+    const cg = clampByte(g);
+    const cb = clampByte(b);
+    return (cr << 16) | (cg << 8) | cb;
+};
+
+const blendColor = (color: number, target: number, amount: number): number => {
+    const t = clamp(amount, 0, 1);
+    const [r1, g1, b1] = colorToRgb(color);
+    const [r2, g2, b2] = colorToRgb(target);
+    return rgbToColor(
+        r1 + (r2 - r1) * t,
+        g1 + (g2 - g1) * t,
+        b1 + (b2 - b1) * t,
+    );
+};
+
+const lightenColor = (color: number, amount: number) => blendColor(color, 0xffffff, amount);
+const darkenColor = (color: number, amount: number) => blendColor(color, 0x000000, amount);
+
+const createOffsetArray = (length: number, magnitude: number, rng: () => number): OffsetPoint[] => {
+    const mag = Math.max(0, magnitude);
+    const offsets: OffsetPoint[] = new Array(length);
+    for (let i = 0; i < length; i++) {
+        const dx = (rng() - 0.5) * mag;
+        const dy = (rng() - 0.5) * mag;
+        offsets[i] = { x: dx, y: dy };
+    }
+    return offsets;
+};
+
+const drawSegmentedLine = (
+    graphics: PIXI.Graphics,
+    points: IsoPoint[],
+    color: number,
+    alpha: number,
+    widthMin: number,
+    widthMax: number,
+    rng: () => number,
+    offsets?: OffsetPoint[],
+) => {
+    if (points.length < 2) return;
+    const clampedAlpha = clamp(alpha, 0, 1);
+    if (clampedAlpha <= 0) return;
+    const minWidth = Math.max(0.02, widthMin);
+    const maxWidth = Math.max(minWidth, widthMax);
+    for (let i = 1; i < points.length; i++) {
+        const p0 = points[i - 1];
+        const p1 = points[i];
+        const off0 = offsets ? offsets[i - 1] : undefined;
+        const off1 = offsets ? offsets[i] : undefined;
+        const x0 = p0.x + (off0?.x ?? 0);
+        const y0 = p0.y + (off0?.y ?? 0);
+        const x1 = p1.x + (off1?.x ?? 0);
+        const y1 = p1.y + (off1?.y ?? 0);
+        const width = maxWidth === minWidth ? minWidth : (minWidth + (maxWidth - minWidth) * rng());
+        graphics.lineStyle(width, color, clampedAlpha, 0.5, true);
+        graphics.moveTo(x0, y0);
+        graphics.lineTo(x1, y1);
+    }
+};
+
+interface StylizedPolyline {
+    iso: IsoPoint[];
+    locals: LocalPoint[];
+}
+
+const buildStylizedIsoPolyline = (
+    contour: LocalPoint[],
+    localToWorld: LocalToWorldFn,
+    worldToIsoFn: (p: Point) => Point,
+    roadWidth: number,
+    rng: () => number,
+): StylizedPolyline => {
+    const isoPoints: IsoPoint[] = [];
+    const locals: LocalPoint[] = [];
+    if (!contour.length) return { iso: isoPoints, locals };
+    const safeWidth = Math.max(roadWidth, 1);
+    const alongJitter = Math.max(0.6, safeWidth * 0.05);
+    const lateralJitter = Math.max(0.45, safeWidth * 0.12);
+    const maxLateral = safeWidth * 0.6;
+    const targetSpacing = Math.max(1.5, safeWidth * 0.25);
+    const pushPoint = (along: number, lateral: number) => {
+        const worldPt = localToWorld(along, lateral);
+        const iso = worldToIsoFn(worldPt);
+        isoPoints.push({ x: iso.x, y: iso.y });
+        locals.push([along, lateral]);
+    };
+    let prev = contour[0];
+    pushPoint(prev[0], prev[1]);
+    for (let i = 1; i < contour.length; i++) {
+        const cur = contour[i];
+        const deltaAlong = cur[0] - prev[0];
+        const deltaLateral = cur[1] - prev[1];
+        const segLen = Math.hypot(deltaAlong, deltaLateral);
+        const subdivisions = Math.max(1, Math.ceil(segLen / targetSpacing));
+        for (let s = 1; s <= subdivisions; s++) {
+            const t = s / subdivisions;
+            let along = prev[0] + deltaAlong * t;
+            let lateral = prev[1] + deltaLateral * t;
+            along += (rng() - 0.5) * alongJitter;
+            lateral += (rng() - 0.5) * lateralJitter;
+            lateral = clamp(lateral, -maxLateral, maxLateral);
+            pushPoint(along, lateral);
+        }
+        prev = cur;
+    }
+    if (isoPoints.length > 4) {
+        const windowSize = Math.max(1, Math.round(isoPoints.length * 0.06));
+        const baseIsoX = isoPoints.map(pt => pt.x);
+        const baseIsoY = isoPoints.map(pt => pt.y);
+        const baseLocals = locals.map(pt => [pt[0], pt[1]] as LocalPoint);
+        for (let i = 1; i < isoPoints.length - 1; i++) {
+            const start = Math.max(0, i - windowSize);
+            const end = Math.min(isoPoints.length - 1, i + windowSize);
+            const count = end - start + 1;
+            let sumX = 0;
+            let sumY = 0;
+            let sumAlong = 0;
+            let sumLateral = 0;
+            for (let j = start; j <= end; j++) {
+                sumX += baseIsoX[j];
+                sumY += baseIsoY[j];
+                sumAlong += baseLocals[j][0];
+                sumLateral += baseLocals[j][1];
+            }
+            isoPoints[i].x = sumX / count;
+            isoPoints[i].y = sumY / count;
+            locals[i] = [sumAlong / count, sumLateral / count];
+        }
+    }
+    return { iso: isoPoints, locals };
+};
 
 const toUint32 = (value: number) => {
     if (!Number.isFinite(value)) return 0;
@@ -1332,22 +1478,59 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 const startOffset = segLen * startT;
                 const baseX = start.x + ux * startOffset;
                 const baseY = start.y + uy * startOffset;
+                const localToWorld: LocalToWorldFn = (along, lateral) => ({
+                    x: baseX + ux * along + nx * lateral,
+                    y: baseY + uy * along + ny * lateral,
+                });
                 const minContourLen = Math.max(roadWidth * 0.35, 2.5);
-                for (const contour of contours) {
+                for (let contourIndex = 0; contourIndex < contours.length; contourIndex++) {
+                    const contour = contours[contourIndex];
                     if (!contour || contour.length < 2) continue;
                     if (polylineLength(contour) < minContourLen) continue;
-                    graphics.lineStyle(segStrokePx, segColor, segAlpha, 0.5, true);
-                    contour.forEach((pt, idx) => {
-                        const along = pt[0];
-                        const lateral = pt[1];
-                        const worldPt = {
-                            x: baseX + ux * along + nx * lateral,
-                            y: baseY + uy * along + ny * lateral,
-                        };
-                        const iso = worldToIso(worldPt);
-                        if (idx === 0) graphics.moveTo(iso.x, iso.y); else graphics.lineTo(iso.x, iso.y);
-                    });
+                    const contourSeed = hashNumbers(hash, contourIndex, contour.length, Math.round(intervalLen * 17));
+                    const pathRng = createPRNG(contourSeed ^ 0x45d1a1);
+                    const stylized = buildStylizedIsoPolyline(contour, localToWorld, worldToIso, roadWidth, pathRng);
+                    const isoPath = stylized.iso;
+                    const localPath = stylized.locals;
+                    if (isoPath.length < 2) continue;
+                    const shadowColor = darkenColor(segColor, 0.65);
+                    const coreColor = lightenColor(segColor, 0.08);
+                    const highlightColor = lightenColor(segColor, 0.45);
+                    const branchColor = darkenColor(segColor, 0.3);
+                    const outerOffsets = createOffsetArray(isoPath.length, Math.max(segStrokePx * 1.6, roadWidth * 0.25), createPRNG(contourSeed ^ 0x9e3779b9));
+                    const coreOffsets = createOffsetArray(isoPath.length, Math.max(segStrokePx * 0.25, roadWidth * 0.05), createPRNG(contourSeed ^ 0x6a5d39));
+                    const highlightOffsets = createOffsetArray(isoPath.length, Math.max(segStrokePx * 0.3, roadWidth * 0.05), createPRNG(contourSeed ^ 0x1234abcd));
+                    drawSegmentedLine(graphics, isoPath, shadowColor, segAlpha * 0.3, segStrokePx * 2.0, segStrokePx * 2.6, createPRNG(contourSeed ^ 0x42d7c9), outerOffsets);
+                    drawSegmentedLine(graphics, isoPath, coreColor, segAlpha, segStrokePx * 0.85, segStrokePx * 1.35, createPRNG(contourSeed ^ 0x6d8fbb), coreOffsets);
+                    drawSegmentedLine(graphics, isoPath, highlightColor, segAlpha * 0.6, segStrokePx * 0.4, segStrokePx * 0.65, createPRNG(contourSeed ^ 0x88c0ff), highlightOffsets);
                     drewAny = true;
+                    if (localPath.length > 1) {
+                        const branchBudget = Math.min(6, Math.round(intervalLen / Math.max(roadWidth * 1.6, 22)));
+                        if (branchBudget > 0) {
+                            const branchRng = createPRNG(contourSeed ^ 0x5bf03635);
+                            for (let b = 0; b < branchBudget; b++) {
+                                const t = clamp((b + branchRng()) / (branchBudget + 1), 0.05, 0.95);
+                                const idx = Math.min(localPath.length - 1, Math.max(1, Math.round(t * (localPath.length - 1))));
+                                const baseLocal = localPath[idx];
+                                const sign = branchRng() < 0.5 ? -1 : 1;
+                                const branchLength = Math.max(roadWidth * 0.4, roadWidth * (0.45 + branchRng() * 0.6));
+                                const alongShift = (branchRng() - 0.5) * roadWidth * 0.4;
+                                const elbowShift = alongShift * 0.35;
+                                const branchLocals: LocalPoint[] = [
+                                    [baseLocal[0], baseLocal[1]],
+                                    [baseLocal[0] + elbowShift, baseLocal[1] + sign * branchLength * 0.55],
+                                    [baseLocal[0] + alongShift, baseLocal[1] + sign * branchLength],
+                                ];
+                                const branchIso = branchLocals.map(lp => {
+                                    const worldPt = localToWorld(lp[0], lp[1]);
+                                    const isoPt = worldToIso(worldPt);
+                                    return { x: isoPt.x, y: isoPt.y } as IsoPoint;
+                                });
+                                const branchOffsets = createOffsetArray(branchIso.length, Math.max(segStrokePx * 0.4, roadWidth * 0.06), branchRng);
+                                drawSegmentedLine(graphics, branchIso, branchColor, segAlpha * 0.75, segStrokePx * 0.35, segStrokePx * 0.65, branchRng, branchOffsets);
+                            }
+                        }
+                    }
                 }
             });
         });
