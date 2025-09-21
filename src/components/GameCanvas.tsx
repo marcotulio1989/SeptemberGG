@@ -160,31 +160,96 @@ const generateVoronoiContours = (
     samplesV: number,
     threshold: number,
     seed: number,
+    options?: {
+        inside?: (along: number, lateral: number) => boolean;
+        isoCoord?: (along: number, lateral: number) => { x: number; y: number };
+        metricCoord?: (along: number, lateral: number) => { x: number; y: number };
+    },
 ): LocalPoint[][] => {
     if (!(length > 0) || !(width > 0)) return [];
     if (seedCount < 2 || samplesU < 2 || samplesV < 2) return [];
     const halfW = width * 0.5;
     const rng = createPRNG(seed);
-    const pts = new Float32Array(seedCount * 2);
-    for (let i = 0; i < seedCount; i++) {
-        pts[2 * i] = rng() * length;
-        pts[2 * i + 1] = (rng() - 0.5) * width;
+    const inside = options?.inside;
+    const isoCoordFn = options?.isoCoord;
+    const metricCoordFn = options?.metricCoord;
+    const seedCoords: number[] = [];
+    const maxAttempts = seedCount * 6;
+    let attempts = 0;
+    while (seedCoords.length < seedCount * 2 && attempts < maxAttempts) {
+        attempts++;
+        const u = rng() * length;
+        const v = (rng() - 0.5) * width;
+        if (!inside || inside(u, v)) {
+            seedCoords.push(u, v);
+        }
     }
-    const gridX = Math.max(4, Math.round(Math.sqrt(seedCount)));
-    const gridY = Math.max(4, Math.round(Math.sqrt(seedCount)));
-    const cellU = Math.max(length / gridX, 1e-6);
-    const cellV = Math.max(width / gridY, 1e-6);
+    const pts = new Float32Array(seedCoords);
+    const actualSeeds = pts.length / 2;
+    if (actualSeeds < 2) return [];
+
+    const isoPts = new Float32Array(pts.length);
+    const metricPts = new Float32Array(pts.length);
+    let isoMinX = Infinity;
+    let isoMaxX = -Infinity;
+    let isoMinY = Infinity;
+    let isoMaxY = -Infinity;
+    for (let i = 0; i < actualSeeds; i++) {
+        const u = pts[2 * i];
+        const v = pts[2 * i + 1];
+        let isoX = u;
+        let isoY = v;
+        if (isoCoordFn) {
+            const iso = isoCoordFn(u, v);
+            if (iso && Number.isFinite(iso.x) && Number.isFinite(iso.y)) {
+                isoX = iso.x;
+                isoY = iso.y;
+            }
+        }
+        isoPts[2 * i] = isoX;
+        isoPts[2 * i + 1] = isoY;
+        if (isoX < isoMinX) isoMinX = isoX;
+        if (isoX > isoMaxX) isoMaxX = isoX;
+        if (isoY < isoMinY) isoMinY = isoY;
+        if (isoY > isoMaxY) isoMaxY = isoY;
+
+        let metricX = u;
+        let metricY = v;
+        if (metricCoordFn) {
+            const metric = metricCoordFn(u, v);
+            if (metric && Number.isFinite(metric.x) && Number.isFinite(metric.y)) {
+                metricX = metric.x;
+                metricY = metric.y;
+            }
+        }
+        metricPts[2 * i] = metricX;
+        metricPts[2 * i + 1] = metricY;
+    }
+    if (!Number.isFinite(isoMinX) || !Number.isFinite(isoMaxX) || isoMinX === Infinity || isoMaxX === -Infinity) {
+        isoMinX = 0;
+        isoMaxX = length;
+    }
+    if (!Number.isFinite(isoMinY) || !Number.isFinite(isoMaxY) || isoMinY === Infinity || isoMaxY === -Infinity) {
+        isoMinY = -halfW;
+        isoMaxY = halfW;
+    }
+    const isoSpanX = Math.max(isoMaxX - isoMinX, 1e-6);
+    const isoSpanY = Math.max(isoMaxY - isoMinY, 1e-6);
+    const gridX = Math.max(4, Math.round(Math.sqrt(actualSeeds)));
+    const gridY = Math.max(4, Math.round(Math.sqrt(actualSeeds)));
+    const cellIsoX = Math.max(isoSpanX / gridX, 1e-6);
+    const cellIsoY = Math.max(isoSpanY / gridY, 1e-6);
     const grid: number[][] = new Array(gridX * gridY);
     for (let i = 0; i < grid.length; i++) grid[i] = [];
-    for (let i = 0; i < seedCount; i++) {
-        const u = pts[2 * i];
-        const v = pts[2 * i + 1] + halfW;
-        const gx = clamp(Math.floor(u / cellU), 0, gridX - 1);
-        const gy = clamp(Math.floor(v / cellV), 0, gridY - 1);
+    for (let i = 0; i < actualSeeds; i++) {
+        const isoX = isoPts[2 * i];
+        const isoY = isoPts[2 * i + 1];
+        const gx = clamp(Math.floor((isoX - isoMinX) / cellIsoX), 0, gridX - 1);
+        const gy = clamp(Math.floor((isoY - isoMinY) / cellIsoY), 0, gridY - 1);
         grid[gy * gridX + gx].push(i);
     }
-    const allIndices = new Array<number>(seedCount);
-    for (let i = 0; i < seedCount; i++) allIndices[i] = i;
+    const allIndices = new Array<number>(actualSeeds);
+    for (let i = 0; i < actualSeeds; i++) allIndices[i] = i;
     const candidateBuf: number[] = [];
     const stepU = length / (samplesU - 1);
     const stepV = width / (samplesV - 1);
@@ -193,9 +258,41 @@ const generateVoronoiContours = (
         const sy = -halfW + jy * stepV;
         for (let ix = 0; ix < samplesU; ix++) {
             const sx = ix * stepU;
-            candidateBuf.length = 0;
-            const gx = clamp(Math.floor(sx / cellU), 0, gridX - 1);
-            const gy = clamp(Math.floor((sy + halfW) / cellV), 0, gridY - 1);
+            if (inside && !inside(sx, sy)) {
+                mask[jy * samplesU + ix] = 0;
+                continue;
+            }
+
+            let isoSampleX = sx;
+            let isoSampleY = sy;
+            if (isoCoordFn) {
+                const iso = isoCoordFn(sx, sy);
+                if (iso && Number.isFinite(iso.x) && Number.isFinite(iso.y)) {
+                    isoSampleX = iso.x;
+                    isoSampleY = iso.y;
+                }
+            }
+            if (!Number.isFinite(isoSampleX) || !Number.isFinite(isoSampleY)) {
+                mask[jy * samplesU + ix] = 0;
+                continue;
+            }
+
+            let metricSampleX = sx;
+            let metricSampleY = sy;
+            if (metricCoordFn) {
+                const metric = metricCoordFn(sx, sy);
+                if (metric && Number.isFinite(metric.x) && Number.isFinite(metric.y)) {
+                    metricSampleX = metric.x;
+                    metricSampleY = metric.y;
+                }
+            }
+            if (!Number.isFinite(metricSampleX) || !Number.isFinite(metricSampleY)) {
+                mask[jy * samplesU + ix] = 0;
+                continue;
+            }
+
+            const gx = clamp(Math.floor((isoSampleX - isoMinX) / cellIsoX), 0, gridX - 1);
+            const gy = clamp(Math.floor((isoSampleY - isoMinY) / cellIsoY), 0, gridY - 1);
             for (let r = 1; r <= 2; r++) {
                 candidateBuf.length = 0;
                 for (let yy = gy - r; yy <= gy + r; yy++) {
@@ -209,12 +306,16 @@ const generateVoronoiContours = (
                 if (candidateBuf.length || r === 2) break;
             }
             const source = candidateBuf.length ? candidateBuf : allIndices;
+            if (!source.length) {
+                mask[jy * samplesU + ix] = 0;
+                continue;
+            }
             let best1 = Infinity;
             let best2 = Infinity;
             for (let k = 0; k < source.length; k++) {
                 const idx = source[k];
-                const dx = sx - pts[2 * idx];
-                const dy = sy - pts[2 * idx + 1];
+                const dx = metricSampleX - metricPts[2 * idx];
+                const dy = metricSampleY - metricPts[2 * idx + 1];
                 const dist2 = dx * dx + dy * dy;
                 if (dist2 < best1) {
                     best2 = best1;
@@ -1250,7 +1351,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         const baseSeedDensity: number = Math.max(0.005, cfg.crackedRoadSeedDensity ?? 0.055);
         const baseSampleAlong: number = Math.max(0.25, cfg.crackedRoadSampleDensityAlong ?? 1.6);
         const baseSampleAcross: number = Math.max(0.25, cfg.crackedRoadSampleDensityAcross ?? 1.1);
-        const baseThreshold: number = clamp(cfg.crackedRoadVoronoiThreshold ?? 0.65, 0, 1);
+        const baseEpsilon: number = Math.max(0.01, cfg.crackedRoadVoronoiThreshold ?? 0.65);
         const baseMinLength: number = Math.max(1, cfg.crackedRoadMinLengthM ?? 5.0);
         const baseMaxSeeds: number = Math.max(8, cfg.crackedRoadMaxSeeds ?? 520);
         const baseMaxSamplesAlong: number = Math.max(4, cfg.crackedRoadMaxSamplesAlong ?? 240);
@@ -1282,7 +1383,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             const segSeedDensity = Math.max(0.005, baseSeedDensity * (mult.seedDensity ?? 1));
             const segSampleAlong = Math.max(0.25, baseSampleAlong * (mult.sampleAlong ?? 1));
             const segSampleAcross = Math.max(0.25, baseSampleAcross * (mult.sampleAcross ?? 1));
-            const segThreshold = clamp(baseThreshold + (pattern?.thresholdOffset ?? 0), 0, 1);
+            const segRawEpsilon = Math.max(0.005, baseEpsilon + (pattern?.thresholdOffset ?? 0));
             const segMinLength = Math.max(0.5, baseMinLength * (mult.minLength ?? 1));
             const segMaxSeeds = Math.max(8, Math.round(baseMaxSeeds * (mult.maxSeeds ?? 1)));
             const segMaxSamplesAlong = Math.max(4, Math.round(baseMaxSamplesAlong * (mult.maxSamplesAlong ?? 1)));
@@ -1327,11 +1428,43 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 samplesV = Math.min(samplesV, segMaxSamplesAcross);
                 if (samplesU < 2 || samplesV < 2) return;
                 const hash = hashNumbers(globalSeed, segmentIndex, intervalIndex, startT * 1000, endT * 1000, roadWidth, segSeedOffset);
-                const contours = generateVoronoiContours(intervalLen, roadWidth, seeds, samplesU, samplesV, segThreshold, hash);
-                if (!contours.length) return;
                 const startOffset = segLen * startT;
                 const baseX = start.x + ux * startOffset;
                 const baseY = start.y + uy * startOffset;
+                const localInside = (along: number, lateral: number) => {
+                    const wx = baseX + ux * along + nx * lateral;
+                    const wy = baseY + uy * along + ny * lateral;
+                    return tester(wx, wy);
+                };
+                const isoFromLocal = (along: number, lateral: number) => {
+                    const worldPt = {
+                        x: baseX + ux * along + nx * lateral,
+                        y: baseY + uy * along + ny * lateral,
+                    };
+                    return worldToIso(worldPt);
+                };
+                const safeLen = Math.max(intervalLen, 1e-3);
+                const safeWidth = Math.max(roadWidth, 1e-3);
+                const halfWidth = roadWidth * 0.5;
+                const metricFromLocal = (along: number, lateral: number) => ({
+                    x: along / safeLen,
+                    y: (lateral + halfWidth) / safeWidth,
+                });
+                const contours = generateVoronoiContours(
+                    intervalLen,
+                    roadWidth,
+                    seeds,
+                    samplesU,
+                    samplesV,
+                    segRawEpsilon,
+                    hash,
+                    {
+                        inside: localInside,
+                        isoCoord: isoFromLocal,
+                        metricCoord: metricFromLocal,
+                    },
+                );
+                if (!contours.length) return;
                 const minContourLen = Math.max(roadWidth * 0.35, 2.5);
                 for (const contour of contours) {
                     if (!contour || contour.length < 2) continue;
