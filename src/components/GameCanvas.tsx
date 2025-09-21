@@ -136,8 +136,9 @@ const generateRoadCrackSprite = ({
     const isoOriginX = expandedMinX;
     const isoOriginY = expandedMinY;
 
-    const pixelCols = Math.max(16, Math.min(2048, Math.round(Math.min(maxSamplesAlong, Math.max(2, samplesAlong)) * 4)));
-    const pixelRows = Math.max(16, Math.min(2048, Math.round(Math.min(maxSamplesAcross, Math.max(2, samplesAcross)) * 4)));
+    const pixelDensity = 6;
+    const pixelCols = Math.max(16, Math.min(2048, Math.round(Math.min(maxSamplesAlong, Math.max(2, samplesAlong)) * pixelDensity)));
+    const pixelRows = Math.max(16, Math.min(2048, Math.round(Math.min(maxSamplesAcross, Math.max(2, samplesAcross)) * pixelDensity)));
     if (!(pixelCols > 1) || !(pixelRows > 1)) return null;
 
     const spanScaleX = expandedSpanX / pixelCols;
@@ -145,6 +146,7 @@ const generateRoadCrackSprite = ({
     if (!(spanScaleX > 0) || !(spanScaleY > 0)) return null;
 
     const epsilonWorld = Math.max(1e-6, epsilonPx);
+    const softnessWorld = epsilonWorld * 2.5;
 
     const targetSeeds = Math.max(2, Math.min(4096, Math.floor(seedCount)));
     const worldSeeds: number[] = [];
@@ -237,14 +239,25 @@ const generateRoadCrackSprite = ({
             if (!Number.isFinite(best1) || !Number.isFinite(best2) || best2 === Infinity) continue;
 
             const delta = Math.sqrt(best2) - Math.sqrt(best1);
-            if (delta < epsilonWorld) {
-                const baseIdx = (py * pixelCols + px) * 4;
-                buffer[baseIdx] = 255;
-                buffer[baseIdx + 1] = 255;
-                buffer[baseIdx + 2] = 255;
-                buffer[baseIdx + 3] = 255;
-                hits++;
-            }
+            const smoothFactor = clamp(1 - (delta - epsilonWorld) / Math.max(softnessWorld, 1e-6), 0, 1);
+            if (smoothFactor <= 0) continue;
+
+            const baseIdx = (py * pixelCols + px) * 4;
+            const jitterSeed = hashNumbers(px + 17, py + 131, seed);
+            const wobble = 0.7 + ((jitterSeed & 0xffff) / 0xffff) * 0.45;
+            const organic = Math.pow(smoothFactor, 0.85) * wobble;
+            const alpha = clamp(Math.round(organic * 255), 0, 255);
+            if (alpha <= 0) continue;
+
+            const grainSeed = hashNumbers(px + 53, py + 97, seed ^ 0x9e3779b9);
+            const grain = ((grainSeed >>> 16) & 0xff) / 255;
+            const brightness = clamp(Math.round(230 + grain * 22), 0, 255);
+
+            buffer[baseIdx] = brightness;
+            buffer[baseIdx + 1] = brightness;
+            buffer[baseIdx + 2] = brightness;
+            buffer[baseIdx + 3] = alpha;
+            hits++;
         }
     }
 
@@ -1382,7 +1395,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 if (!spriteData) return;
                 try {
                     const baseTexture = PIXI.BaseTexture.fromBuffer(spriteData.buffer, spriteData.width, spriteData.height, {
-                        scaleMode: PIXI.SCALE_MODES.NEAREST,
+                        scaleMode: PIXI.SCALE_MODES.LINEAR,
                     });
                     const texture = new PIXI.Texture(baseTexture);
                     const sprite = new PIXI.Sprite(texture);
@@ -1392,7 +1405,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                     sprite.height = spriteData.spriteHeight;
                     sprite.tint = segColor;
                     sprite.alpha = segAlpha;
-                    sprite.roundPixels = true;
+                    sprite.roundPixels = false;
                     container.addChild(sprite);
                     drewAny = true;
                 } catch (err) {
