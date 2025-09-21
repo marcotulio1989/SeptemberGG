@@ -101,6 +101,9 @@ const generateRoadCrackSprite = ({
     if (!(length > 0) || !(width > 0)) return null;
     const halfWidth = width * 0.5;
     const rng = createPRNG(seed);
+    const isoBase = worldToIso({ x: baseX, y: baseY });
+    const isoAlongEnd = worldToIso({ x: baseX + ux * length, y: baseY + uy * length });
+    const isoWidthEnd = worldToIso({ x: baseX + nx * width, y: baseY + ny * width });
     const isoCorners = [
         worldToIso({ x: baseX + nx * -halfWidth, y: baseY + ny * -halfWidth }),
         worldToIso({ x: baseX + ux * length + nx * -halfWidth, y: baseY + uy * length + ny * -halfWidth }),
@@ -136,8 +139,23 @@ const generateRoadCrackSprite = ({
     const isoOriginX = expandedMinX;
     const isoOriginY = expandedMinY;
 
-    const pixelCols = Math.max(16, Math.min(2048, Math.round(Math.min(maxSamplesAlong, Math.max(2, samplesAlong)) * 4)));
-    const pixelRows = Math.max(16, Math.min(2048, Math.round(Math.min(maxSamplesAcross, Math.max(2, samplesAcross)) * 4)));
+    const isoLengthPx = Number.isFinite(isoBase.x) && Number.isFinite(isoBase.y) && Number.isFinite(isoAlongEnd.x) && Number.isFinite(isoAlongEnd.y)
+        ? Math.hypot(isoAlongEnd.x - isoBase.x, isoAlongEnd.y - isoBase.y)
+        : 0;
+    const isoWidthPx = Number.isFinite(isoBase.x) && Number.isFinite(isoBase.y) && Number.isFinite(isoWidthEnd.x) && Number.isFinite(isoWidthEnd.y)
+        ? Math.hypot(isoWidthEnd.x - isoBase.x, isoWidthEnd.y - isoBase.y)
+        : 0;
+    const deviceRatio = (typeof window !== 'undefined' && typeof window.devicePixelRatio === 'number' && isFinite(window.devicePixelRatio))
+        ? Math.max(1, window.devicePixelRatio)
+        : 1;
+    const oversample = Math.max(1.5, deviceRatio * 1.5);
+    const minResolution = Math.max(32, Math.round(24 * deviceRatio));
+    const baseCols = Math.round(Math.min(maxSamplesAlong, Math.max(2, samplesAlong)) * 4);
+    const baseRows = Math.round(Math.min(maxSamplesAcross, Math.max(2, samplesAcross)) * 4);
+    const isoColsTarget = Number.isFinite(isoLengthPx) && isoLengthPx > 0 ? Math.round(isoLengthPx * oversample) : 0;
+    const isoRowsTarget = Number.isFinite(isoWidthPx) && isoWidthPx > 0 ? Math.round(isoWidthPx * oversample) : 0;
+    const pixelCols = Math.max(minResolution, Math.min(4096, Math.max(baseCols, isoColsTarget)));
+    const pixelRows = Math.max(minResolution, Math.min(4096, Math.max(baseRows, isoRowsTarget)));
     if (!(pixelCols > 1) || !(pixelRows > 1)) return null;
 
     const spanScaleX = expandedSpanX / pixelCols;
