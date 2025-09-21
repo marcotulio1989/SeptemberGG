@@ -301,6 +301,9 @@ export const config = {
     crackedRoadMaxSamplesAcross: 96,
     crackedRoadProbeStepM: 1.1,
     crackedRoadPatternAssignments: null as null | { version: number; segments: Record<string, string> },
+    crackedRoadHandmadeCellPx: 4,
+    crackedRoadHandmadeNoiseThreshold: 0.52,
+    crackedRoadHandmadeJitter: 1.0,
     // Mostrar apenas os contornos dos quarteirões (esconde ruas e preenchimento dos prédios)
     showOnlyBlockOutlines: false,
     // Mostrar apenas o interior dos quarteirões (preenchidos), escondendo ruas e demais elementos
