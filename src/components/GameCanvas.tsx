@@ -59,6 +59,132 @@ const polylineLength = (poly: LocalPoint[]) => {
     return total;
 };
 
+type CrackStrokeKind = 'core' | 'glow';
+
+const crackStrokeTextureCache: Partial<Record<CrackStrokeKind, PIXI.Texture>> = {};
+
+const getCrackStrokeTexture = (kind: CrackStrokeKind): PIXI.Texture | null => {
+    const cached = crackStrokeTextureCache[kind];
+    if (cached && !cached.destroyed) return cached;
+    if (typeof document === 'undefined') return null;
+    const canvas = document.createElement('canvas');
+    const width = 48;
+    const height = 96;
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    const gradient = ctx.createLinearGradient(0, 0, 0, height);
+    if (kind === 'glow') {
+        gradient.addColorStop(0, 'rgba(255,255,255,0)');
+        gradient.addColorStop(0.32, 'rgba(255,255,255,0.06)');
+        gradient.addColorStop(0.5, 'rgba(255,255,255,0.22)');
+        gradient.addColorStop(0.68, 'rgba(255,255,255,0.06)');
+        gradient.addColorStop(1, 'rgba(255,255,255,0)');
+    } else {
+        gradient.addColorStop(0, 'rgba(255,255,255,0)');
+        gradient.addColorStop(0.22, 'rgba(255,255,255,0.45)');
+        gradient.addColorStop(0.5, 'rgba(255,255,255,1)');
+        gradient.addColorStop(0.78, 'rgba(255,255,255,0.45)');
+        gradient.addColorStop(1, 'rgba(255,255,255,0)');
+    }
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
+    const texture = PIXI.Texture.from(canvas);
+    try {
+        texture.baseTexture.wrapMode = PIXI.WRAP_MODES.REPEAT;
+    } catch (err) { /* noop */ }
+    crackStrokeTextureCache[kind] = texture;
+    return texture;
+};
+
+const lightenColor = (color: number, amount: number) => {
+    const t = clamp(amount, 0, 1);
+    const r = (color >> 16) & 0xff;
+    const g = (color >> 8) & 0xff;
+    const b = color & 0xff;
+    const nr = Math.round(r + (255 - r) * t) & 0xff;
+    const ng = Math.round(g + (255 - g) * t) & 0xff;
+    const nb = Math.round(b + (255 - b) * t) & 0xff;
+    return (nr << 16) | (ng << 8) | nb;
+};
+
+const chaikinSmooth = (points: LocalPoint[], iterations: number): LocalPoint[] => {
+    let result = points.slice();
+    for (let iter = 0; iter < iterations; iter++) {
+        if (result.length < 3) break;
+        const next: LocalPoint[] = [result[0]];
+        for (let i = 0; i < result.length - 1; i++) {
+            const p0 = result[i];
+            const p1 = result[i + 1];
+            const q: LocalPoint = [
+                p0[0] * 0.75 + p1[0] * 0.25,
+                p0[1] * 0.75 + p1[1] * 0.25,
+            ];
+            const r: LocalPoint = [
+                p0[0] * 0.25 + p1[0] * 0.75,
+                p0[1] * 0.25 + p1[1] * 0.75,
+            ];
+            next.push(q, r);
+        }
+        next.push(result[result.length - 1]);
+        result = next;
+    }
+    return result;
+};
+
+const jitterContour = (
+    points: LocalPoint[],
+    rng: () => number,
+    lateralAmp: number,
+    alongAmp: number,
+): LocalPoint[] => {
+    if (points.length < 3 || (!lateralAmp && !alongAmp)) return points.slice();
+    const res: LocalPoint[] = new Array(points.length);
+    res[0] = points[0].slice() as LocalPoint;
+    for (let i = 1; i < points.length - 1; i++) {
+        const p = points[i];
+        const lat = lateralAmp ? (rng() - 0.5) * 2 * lateralAmp : 0;
+        const along = alongAmp ? (rng() - 0.5) * 2 * alongAmp : 0;
+        res[i] = [p[0] + along, p[1] + lat];
+    }
+    res[points.length - 1] = points[points.length - 1].slice() as LocalPoint;
+    return res;
+};
+
+const applyStrokeStyle = (
+    g: PIXI.Graphics,
+    options: {
+        width: number;
+        color: number;
+        alpha: number;
+        texture?: PIXI.Texture | null;
+    },
+) => {
+    const { width, color, alpha, texture } = options;
+    const base = {
+        width,
+        color,
+        alpha,
+        alignment: 0.5,
+        cap: PIXI.LINE_CAP.ROUND,
+        join: PIXI.LINE_JOIN.ROUND,
+    } as const;
+    if (texture && typeof (g as any).lineTextureStyle === 'function') {
+        (g as any).lineTextureStyle({ ...base, texture });
+    } else {
+        g.lineStyle(base);
+    }
+};
+
+const drawPolyline = (g: PIXI.Graphics, pts: Array<PIXI.IPointData>) => {
+    if (pts.length < 2) return;
+    g.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) {
+        g.lineTo(pts[i].x, pts[i].y);
+    }
+};
+
 const marchingSquaresContoursLocal = (
     grid: Uint8Array,
     w: number,
@@ -1259,8 +1385,16 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         const assignments = ((cfg.crackedRoadPatternAssignments as CrackPatternAssignments | undefined)?.segments) ?? null;
         const globalSeed: number = (NoiseZoning as any)?.getSeed?.call(NoiseZoning) ?? 0;
 
-        const graphics = new PIXI.Graphics();
-        let drewAny = false;
+        const baseTexture = getCrackStrokeTexture('core');
+        const glowTexture = getCrackStrokeTexture('glow');
+        const mainGraphics = new PIXI.Graphics();
+        const highlightGraphics = new PIXI.Graphics();
+        const glowGraphics = new PIXI.Graphics();
+        highlightGraphics.blendMode = PIXI.BLEND_MODES.SCREEN;
+        glowGraphics.blendMode = PIXI.BLEND_MODES.ADD;
+        let mainDrawn = false;
+        let highlightDrawn = false;
+        let glowDrawn = false;
 
         segments.forEach((segment, segmentIndex) => {
             if (!segment || !segment.r) return;
@@ -1333,11 +1467,24 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 const baseX = start.x + ux * startOffset;
                 const baseY = start.y + uy * startOffset;
                 const minContourLen = Math.max(roadWidth * 0.35, 2.5);
+                let contourSerial = 0;
                 for (const contour of contours) {
                     if (!contour || contour.length < 2) continue;
                     if (polylineLength(contour) < minContourLen) continue;
-                    graphics.lineStyle(segStrokePx, segColor, segAlpha, 0.5, true);
-                    contour.forEach((pt, idx) => {
+                    const contourSeed = hashNumbers(hash, contourSerial++);
+                    const contourRng = createPRNG(contourSeed);
+                    let localContour = contour.map(pt => [pt[0], pt[1]] as LocalPoint);
+                    if (localContour.length >= 3) {
+                        localContour = chaikinSmooth(localContour, 1);
+                    }
+                    const lateralJitter = Math.min(roadWidth * 0.18, 1.2) * (0.35 + contourRng() * 0.9);
+                    const alongJitter = Math.min(intervalLen * 0.035, 0.9) * (0.25 + contourRng() * 0.75);
+                    if (lateralJitter > 0 || alongJitter > 0) {
+                        localContour = jitterContour(localContour, contourRng, lateralJitter, alongJitter);
+                    }
+                    const isoPoints: Array<PIXI.IPointData> = [];
+                    for (let idx = 0; idx < localContour.length; idx++) {
+                        const pt = localContour[idx];
                         const along = pt[0];
                         const lateral = pt[1];
                         const worldPt = {
@@ -1345,18 +1492,59 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                             y: baseY + uy * along + ny * lateral,
                         };
                         const iso = worldToIso(worldPt);
-                        if (idx === 0) graphics.moveTo(iso.x, iso.y); else graphics.lineTo(iso.x, iso.y);
+                        isoPoints.push(new PIXI.Point(iso.x, iso.y));
+                    }
+                    if (isoPoints.length < 2) continue;
+                    const screenJitter = segStrokePx * 0.2 * (0.3 + contourRng() * 0.8);
+                    if (screenJitter > 0.01) {
+                        for (let i = 1; i < isoPoints.length - 1; i++) {
+                            isoPoints[i].x += (contourRng() - 0.5) * 2 * screenJitter;
+                            isoPoints[i].y += (contourRng() - 0.5) * 2 * screenJitter;
+                        }
+                    }
+                    const widthFactor = 0.85 + contourRng() * 0.55;
+                    const baseWidth = Math.max(0.35, segStrokePx * widthFactor);
+                    const alphaFactor = 0.75 + contourRng() * 0.35;
+                    const baseAlphaScaled = Math.min(1, segAlpha * alphaFactor);
+                    applyStrokeStyle(mainGraphics, { width: baseWidth, color: segColor, alpha: baseAlphaScaled, texture: baseTexture });
+                    drawPolyline(mainGraphics, isoPoints);
+                    mainDrawn = true;
+                    const highlightWidth = Math.max(0.18, baseWidth * (0.35 + contourRng() * 0.25));
+                    const highlightAlpha = Math.min(1, segAlpha * (0.45 + contourRng() * 0.4));
+                    applyStrokeStyle(highlightGraphics, {
+                        width: highlightWidth,
+                        color: lightenColor(segColor, 0.55),
+                        alpha: highlightAlpha,
+                        texture: baseTexture,
                     });
-                    drewAny = true;
+                    drawPolyline(highlightGraphics, isoPoints);
+                    highlightDrawn = true;
+                    const glowWidth = Math.max(baseWidth * (1.5 + contourRng() * 0.7), highlightWidth + 0.15);
+                    const glowAlpha = Math.min(1, segAlpha * 0.25 * (0.6 + contourRng() * 0.7));
+                    if (glowAlpha > 0.01) {
+                        applyStrokeStyle(glowGraphics, {
+                            width: glowWidth,
+                            color: segColor,
+                            alpha: glowAlpha,
+                            texture: glowTexture ?? baseTexture ?? null,
+                        });
+                        drawPolyline(glowGraphics, isoPoints);
+                        glowDrawn = true;
+                    }
                 }
             });
         });
 
+        const drewAny = mainDrawn || highlightDrawn || glowDrawn;
         container.visible = drewAny;
         if (drewAny) {
-            container.addChild(graphics);
+            if (glowDrawn) container.addChild(glowGraphics); else glowGraphics.destroy();
+            if (mainDrawn) container.addChild(mainGraphics); else mainGraphics.destroy();
+            if (highlightDrawn) container.addChild(highlightGraphics); else highlightGraphics.destroy();
         } else {
-            graphics.destroy();
+            glowGraphics.destroy();
+            mainGraphics.destroy();
+            highlightGraphics.destroy();
         }
     };
 
