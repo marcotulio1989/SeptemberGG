@@ -9,6 +9,7 @@ export interface CrackPatternMultipliers {
     probeStep?: number;
     strokePx?: number;
     alpha?: number;
+    supersample?: number;
 }
 
 export interface CrackPattern {

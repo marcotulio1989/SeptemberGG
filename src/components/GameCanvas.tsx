@@ -67,6 +67,7 @@ interface RoadCrackParams {
     maxSamplesAcross: number;
     epsilonPx: number;
     seed: number;
+    supersample: number;
     tester: (x: number, y: number) => boolean;
     baseX: number;
     baseY: number;
@@ -88,6 +89,7 @@ const generateRoadCrackSprite = ({
     maxSamplesAcross,
     epsilonPx,
     seed,
+    supersample,
     tester,
     baseX,
     baseY,
@@ -136,8 +138,11 @@ const generateRoadCrackSprite = ({
     const isoOriginX = expandedMinX;
     const isoOriginY = expandedMinY;
 
-    const pixelCols = Math.max(16, Math.min(2048, Math.round(Math.min(maxSamplesAlong, Math.max(2, samplesAlong)) * 4)));
-    const pixelRows = Math.max(16, Math.min(2048, Math.round(Math.min(maxSamplesAcross, Math.max(2, samplesAcross)) * 4)));
+    const sampleBoost = Math.max(1, Math.min(8, Number.isFinite(supersample) ? supersample : 1));
+    const baseCols = Math.min(maxSamplesAlong, Math.max(2, samplesAlong));
+    const baseRows = Math.min(maxSamplesAcross, Math.max(2, samplesAcross));
+    const pixelCols = Math.max(16, Math.min(4096, Math.round(baseCols * 4 * sampleBoost)));
+    const pixelRows = Math.max(16, Math.min(4096, Math.round(baseRows * 4 * sampleBoost)));
     if (!(pixelCols > 1) || !(pixelRows > 1)) return null;
 
     const spanScaleX = expandedSpanX / pixelCols;
@@ -1287,6 +1292,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         const baseMaxSamplesAlong: number = Math.max(4, cfg.crackedRoadMaxSamplesAlong ?? 240);
         const baseMaxSamplesAcross: number = Math.max(4, cfg.crackedRoadMaxSamplesAcross ?? 96);
         const baseProbeStep: number = Math.max(0.4, cfg.crackedRoadProbeStepM ?? 1.1);
+        const baseSupersample: number = Math.max(1, cfg.crackedRoadSupersample ?? 1);
         const assignments = ((cfg.crackedRoadPatternAssignments as CrackPatternAssignments | undefined)?.segments) ?? null;
         const globalSeed: number = (NoiseZoning as any)?.getSeed?.call(NoiseZoning) ?? 0;
 
@@ -1320,6 +1326,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             const segProbeStep = Math.max(0.25, baseProbeStep * (mult.probeStep ?? 1));
             const segAlpha = Math.max(0.05, Math.min(1, baseAlpha * (mult.alpha ?? 1)));
             const segColor = pattern?.color ?? baseColor;
+            const segSupersample = Math.max(1, baseSupersample * (mult.supersample ?? 1));
             const segSeedOffset = pattern?.seedOffset ?? 0;
             const steps = Math.max(4, Math.ceil(segLen / segProbeStep));
             const intervals: Array<{ start: number; end: number }> = [];
@@ -1369,6 +1376,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                     maxSamplesAcross: segMaxSamplesAcross,
                     epsilonPx: segRawEpsilon,
                     seed: hash,
+                    supersample: segSupersample,
                     tester,
                     baseX,
                     baseY,
@@ -1382,8 +1390,9 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 if (!spriteData) return;
                 try {
                     const baseTexture = PIXI.BaseTexture.fromBuffer(spriteData.buffer, spriteData.width, spriteData.height, {
-                        scaleMode: PIXI.SCALE_MODES.NEAREST,
+                        scaleMode: PIXI.SCALE_MODES.LINEAR,
                     });
+                    try { baseTexture.mipmap = PIXI.MIPMAP_MODES.ON; } catch (e) {}
                     const texture = new PIXI.Texture(baseTexture);
                     const sprite = new PIXI.Sprite(texture);
                     sprite.x = spriteData.spriteX;
