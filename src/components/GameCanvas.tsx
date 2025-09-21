@@ -66,6 +66,8 @@ interface RoadCrackParams {
     maxSamplesAlong: number;
     maxSamplesAcross: number;
     epsilonPx: number;
+    strokePx: number;
+    resolutionMultiplier: number;
     seed: number;
     tester: (x: number, y: number) => boolean;
     baseX: number;
@@ -87,6 +89,8 @@ const generateRoadCrackSprite = ({
     maxSamplesAlong,
     maxSamplesAcross,
     epsilonPx,
+    strokePx,
+    resolutionMultiplier,
     seed,
     tester,
     baseX,
@@ -136,13 +140,27 @@ const generateRoadCrackSprite = ({
     const isoOriginX = expandedMinX;
     const isoOriginY = expandedMinY;
 
-    const pixelCols = Math.max(16, Math.min(2048, Math.round(Math.min(maxSamplesAlong, Math.max(2, samplesAlong)) * 4)));
-    const pixelRows = Math.max(16, Math.min(2048, Math.round(Math.min(maxSamplesAcross, Math.max(2, samplesAcross)) * 4)));
+    const supersample = Math.max(1, Math.min(8, Number.isFinite(resolutionMultiplier) ? resolutionMultiplier : 1));
+    const baseCols = Math.min(maxSamplesAlong, Math.max(2, samplesAlong));
+    const baseRows = Math.min(maxSamplesAcross, Math.max(2, samplesAcross));
+    const pixelCols = Math.max(16, Math.min(4096, Math.round(baseCols * 4 * supersample)));
+    const pixelRows = Math.max(16, Math.min(4096, Math.round(baseRows * 4 * supersample)));
     if (!(pixelCols > 1) || !(pixelRows > 1)) return null;
 
     const spanScaleX = expandedSpanX / pixelCols;
     const spanScaleY = expandedSpanY / pixelRows;
     if (!(spanScaleX > 0) || !(spanScaleY > 0)) return null;
+
+    const spanScaleXAbs = Math.max(Math.abs(spanScaleX), 1e-4);
+    const spanScaleYAbs = Math.max(Math.abs(spanScaleY), 1e-4);
+    const strokeWidthPx = Math.max(0.35, Number.isFinite(strokePx) ? strokePx : 1);
+    const isoRadiusX = Math.max(spanScaleXAbs * strokeWidthPx * 0.5, spanScaleXAbs * 0.5);
+    const isoRadiusY = Math.max(spanScaleYAbs * strokeWidthPx * 0.5, spanScaleYAbs * 0.5);
+    const invIsoRadiusXSq = isoRadiusX > 1e-6 ? 1 / (isoRadiusX * isoRadiusX) : 0;
+    const invIsoRadiusYSq = isoRadiusY > 1e-6 ? 1 / (isoRadiusY * isoRadiusY) : 0;
+    const pxRadius = Math.max(1, Math.ceil(strokeWidthPx * supersample * 0.5 + 1));
+    const softEdgeNorm = Math.min(0.65, Math.max(0.18, 0.9 / (strokeWidthPx * supersample + 1e-3)));
+    const edgeEpsilon = 0.12;
 
     const epsilonWorld = Math.max(1e-6, epsilonPx);
 
@@ -187,6 +205,40 @@ const generateRoadCrackSprite = ({
     const buffer = new Uint8Array(pixelCols * pixelRows * 4);
     const candidateBuf: number[] = [];
     let hits = 0;
+
+    const paintDisc = (cx: number, cy: number) => {
+        const minY = Math.max(0, Math.floor(cy - pxRadius));
+        const maxY = Math.min(pixelRows - 1, Math.ceil(cy + pxRadius));
+        const minX = Math.max(0, Math.floor(cx - pxRadius));
+        const maxX = Math.min(pixelCols - 1, Math.ceil(cx + pxRadius));
+        const falloffStart = 1 - softEdgeNorm;
+        const falloffEnd = 1 + edgeEpsilon;
+        const denom = Math.max(1e-4, falloffEnd - falloffStart);
+        for (let yy = minY; yy <= maxY; yy++) {
+            const dy = yy - cy;
+            for (let xx = minX; xx <= maxX; xx++) {
+                const dx = xx - cx;
+                const dxIso = dx * spanScaleX;
+                const dyIso = dy * spanScaleY;
+                let norm = 0;
+                if (invIsoRadiusXSq > 0) norm += dxIso * dxIso * invIsoRadiusXSq;
+                if (invIsoRadiusYSq > 0) norm += dyIso * dyIso * invIsoRadiusYSq;
+                const distNorm = Math.sqrt(Math.max(0, norm));
+                if (distNorm >= falloffEnd) continue;
+                let weight = 1;
+                if (distNorm > falloffStart) {
+                    weight = Math.max(0, Math.min(1, (falloffEnd - distNorm) / denom));
+                }
+                if (weight <= 0) continue;
+                const idx = (yy * pixelCols + xx) * 4;
+                const alphaByte = Math.max(buffer[idx + 3], Math.round(weight * 255));
+                buffer[idx] = 255;
+                buffer[idx + 1] = 255;
+                buffer[idx + 2] = 255;
+                buffer[idx + 3] = alphaByte;
+            }
+        }
+    };
 
     for (let py = 0; py < pixelRows; py++) {
         const isoY = isoOriginY + (py + 0.5) * spanScaleY;
@@ -238,11 +290,7 @@ const generateRoadCrackSprite = ({
 
             const delta = Math.sqrt(best2) - Math.sqrt(best1);
             if (delta < epsilonWorld) {
-                const baseIdx = (py * pixelCols + px) * 4;
-                buffer[baseIdx] = 255;
-                buffer[baseIdx + 1] = 255;
-                buffer[baseIdx + 2] = 255;
-                buffer[baseIdx + 3] = 255;
+                paintDisc(px, py);
                 hits++;
             }
         }
@@ -1287,6 +1335,8 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         const baseMaxSamplesAlong: number = Math.max(4, cfg.crackedRoadMaxSamplesAlong ?? 240);
         const baseMaxSamplesAcross: number = Math.max(4, cfg.crackedRoadMaxSamplesAcross ?? 96);
         const baseProbeStep: number = Math.max(0.4, cfg.crackedRoadProbeStepM ?? 1.1);
+        const baseStrokePx: number = Math.max(0.35, cfg.crackedRoadStrokePx ?? 1.35);
+        const baseResolutionMultiplier: number = Math.max(1, cfg.crackedRoadResolutionMultiplier ?? 3);
         const assignments = ((cfg.crackedRoadPatternAssignments as CrackPatternAssignments | undefined)?.segments) ?? null;
         const globalSeed: number = (NoiseZoning as any)?.getSeed?.call(NoiseZoning) ?? 0;
 
@@ -1320,6 +1370,10 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             const segProbeStep = Math.max(0.25, baseProbeStep * (mult.probeStep ?? 1));
             const segAlpha = Math.max(0.05, Math.min(1, baseAlpha * (mult.alpha ?? 1)));
             const segColor = pattern?.color ?? baseColor;
+            const segStrokePxRaw = baseStrokePx * (mult.strokePx ?? 1);
+            const segStrokePx = Math.max(0.3, Number.isFinite(segStrokePxRaw) ? segStrokePxRaw : baseStrokePx);
+            const segResolutionMultiplierRaw = baseResolutionMultiplier * (mult.resolutionMultiplier ?? 1);
+            const segResolutionMultiplier = Math.max(1, Math.min(8, Number.isFinite(segResolutionMultiplierRaw) ? segResolutionMultiplierRaw : baseResolutionMultiplier));
             const segSeedOffset = pattern?.seedOffset ?? 0;
             const steps = Math.max(4, Math.ceil(segLen / segProbeStep));
             const intervals: Array<{ start: number; end: number }> = [];
@@ -1368,6 +1422,8 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                     maxSamplesAlong: segMaxSamplesAlong,
                     maxSamplesAcross: segMaxSamplesAcross,
                     epsilonPx: segRawEpsilon,
+                    strokePx: segStrokePx,
+                    resolutionMultiplier: segResolutionMultiplier,
                     seed: hash,
                     tester,
                     baseX,
@@ -1382,8 +1438,14 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 if (!spriteData) return;
                 try {
                     const baseTexture = PIXI.BaseTexture.fromBuffer(spriteData.buffer, spriteData.width, spriteData.height, {
-                        scaleMode: PIXI.SCALE_MODES.NEAREST,
+                        scaleMode: PIXI.SCALE_MODES.LINEAR,
+                        mipmap: PIXI.MIPMAP_MODES.ON,
                     });
+                    try { (baseTexture as any).mipmap = PIXI.MIPMAP_MODES.ON; } catch (e) {}
+                    const aniso = (baseTexture as any).anisotropicLevel;
+                    if (typeof aniso === 'number' && aniso < 4) {
+                        (baseTexture as any).anisotropicLevel = 4;
+                    }
                     const texture = new PIXI.Texture(baseTexture);
                     const sprite = new PIXI.Sprite(texture);
                     sprite.x = spriteData.spriteX;
@@ -1392,7 +1454,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                     sprite.height = spriteData.spriteHeight;
                     sprite.tint = segColor;
                     sprite.alpha = segAlpha;
-                    sprite.roundPixels = true;
+                    sprite.roundPixels = false;
                     container.addChild(sprite);
                     drewAny = true;
                 } catch (err) {
