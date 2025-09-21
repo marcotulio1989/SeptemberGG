@@ -49,173 +49,147 @@ const createPRNG = (seed: number) => {
     };
 };
 
-const polylineLength = (poly: LocalPoint[]) => {
-    let total = 0;
-    for (let i = 1; i < poly.length; i++) {
-        const dx = poly[i][0] - poly[i - 1][0];
-        const dy = poly[i][1] - poly[i - 1][1];
-        total += Math.hypot(dx, dy);
-    }
-    return total;
-};
+interface RoadCrackParams {
+    length: number;
+    width: number;
+    seedCount: number;
+    samplesAlong: number;
+    samplesAcross: number;
+    maxSamplesAlong: number;
+    maxSamplesAcross: number;
+    epsilonPx: number;
+    seed: number;
+    tester: (x: number, y: number) => boolean;
+    baseX: number;
+    baseY: number;
+    ux: number;
+    uy: number;
+    nx: number;
+    ny: number;
+    worldToIso: (p: Point) => Point;
+}
 
-const marchingSquaresContoursLocal = (
-    grid: Uint8Array,
-    w: number,
-    h: number,
-    stepX: number,
-    stepY: number,
-    originX: number,
-    originY: number,
-): LocalPoint[][] => {
-    if (w < 2 || h < 2) return [];
-    const get = (x: number, y: number) => (x >= 0 && y >= 0 && x < w && y < h ? (grid[y * w + x] ? 1 : 0) : 0);
-    const sx = (gx: number) => originX + gx * stepX;
-    const sy = (gy: number) => originY + gy * stepY;
-    const segments: Array<[LocalPoint, LocalPoint]> = [];
-    for (let y = 0; y < h - 1; y++) {
-        for (let x = 0; x < w - 1; x++) {
-            const tl = get(x, y);
-            const tr = get(x + 1, y);
-            const br = get(x + 1, y + 1);
-            const bl = get(x, y + 1);
-            const code = (tl << 3) | (tr << 2) | (br << 1) | bl;
-            if (code === 0 || code === 15) continue;
-            const top: LocalPoint = [sx(x) + stepX * 0.5, sy(y)];
-            const right: LocalPoint = [sx(x + 1), sy(y) + stepY * 0.5];
-            const bottom: LocalPoint = [sx(x) + stepX * 0.5, sy(y + 1)];
-            const left: LocalPoint = [sx(x), sy(y) + stepY * 0.5];
-            switch (code) {
-                case 1: segments.push([bottom, left]); break;
-                case 2: segments.push([right, bottom]); break;
-                case 3: segments.push([right, left]); break;
-                case 4: segments.push([top, right]); break;
-                case 5: segments.push([top, left]); segments.push([right, bottom]); break;
-                case 6: segments.push([top, bottom]); break;
-                case 7: segments.push([top, left]); break;
-                case 8: segments.push([left, top]); break;
-                case 9: segments.push([bottom, top]); break;
-                case 10: segments.push([left, right]); segments.push([top, bottom]); break;
-                case 11: segments.push([right, top]); break;
-                case 12: segments.push([left, right]); break;
-                case 13: segments.push([bottom, right]); break;
-                case 14: segments.push([left, bottom]); break;
-                default: break;
-            }
-        }
-    }
-    if (!segments.length) return [];
-    const key = (p: LocalPoint) => `${p[0].toFixed(3)}:${p[1].toFixed(3)}`;
-    const nextMap = new Map<string, string[]>();
-    const pointMap = new Map<string, LocalPoint>();
-    segments.forEach(([a, b]) => {
-        const ka = key(a);
-        const kb = key(b);
-        pointMap.set(ka, a);
-        pointMap.set(kb, b);
-        if (!nextMap.has(ka)) nextMap.set(ka, []);
-        if (!nextMap.has(kb)) nextMap.set(kb, []);
-        nextMap.get(ka)!.push(kb);
-        nextMap.get(kb)!.push(ka);
-    });
-    const visited = new Set<string>();
-    const contours: LocalPoint[][] = [];
-    for (const startKey of nextMap.keys()) {
-        const neighbors = nextMap.get(startKey) || [];
-        for (const neighbor of neighbors) {
-            const edgeId = `${startKey}->${neighbor}`;
-            if (visited.has(edgeId)) continue;
-            const poly: LocalPoint[] = [];
-            let cur = startKey;
-            let next = neighbor;
-            poly.push(pointMap.get(cur)!);
-            while (true) {
-                const id = `${cur}->${next}`;
-                if (visited.has(id)) break;
-                visited.add(id);
-                const nextPt = pointMap.get(next);
-                if (!nextPt) break;
-                poly.push(nextPt);
-                const nbs = nextMap.get(next) || [];
-                let chosen: string | null = null;
-                for (const nb of nbs) {
-                    if (nb === cur) continue;
-                    if (!visited.has(`${next}->${nb}`)) { chosen = nb; break; }
-                }
-                if (!chosen) break;
-                cur = next;
-                next = chosen;
-            }
-            if (poly.length >= 2) contours.push(poly);
-        }
-    }
-    return contours;
-};
+type IsoSegment = [LocalPoint, LocalPoint];
 
-const generateVoronoiContours = (
-    length: number,
-    width: number,
-    seedCount: number,
-    samplesU: number,
-    samplesV: number,
-    threshold: number,
-    seed: number,
-): LocalPoint[][] => {
+const generateRoadCrackSegments = ({
+    length,
+    width,
+    seedCount,
+    samplesAlong,
+    samplesAcross,
+    maxSamplesAlong,
+    maxSamplesAcross,
+    epsilonPx,
+    seed,
+    tester,
+    baseX,
+    baseY,
+    ux,
+    uy,
+    nx,
+    ny,
+    worldToIso,
+}: RoadCrackParams): IsoSegment[] => {
     if (!(length > 0) || !(width > 0)) return [];
-    if (seedCount < 2 || samplesU < 2 || samplesV < 2) return [];
-    const halfW = width * 0.5;
+    const halfWidth = width * 0.5;
     const rng = createPRNG(seed);
-    const pts = new Float32Array(seedCount * 2);
-    for (let i = 0; i < seedCount; i++) {
-        pts[2 * i] = rng() * length;
-        pts[2 * i + 1] = (rng() - 0.5) * width;
+
+    const targetSeeds = Math.max(2, Math.min(2048, Math.floor(seedCount)));
+    if (targetSeeds < 2) return [];
+
+    const normalizedSeeds: number[] = [];
+    const maxAttempts = Math.max(500, targetSeeds * 80);
+    let attempts = 0;
+    while (normalizedSeeds.length < targetSeeds * 2 && attempts < maxAttempts) {
+        attempts++;
+        const along = rng() * length;
+        const lateral = (rng() - 0.5) * width;
+        const wx = baseX + ux * along + nx * lateral;
+        const wy = baseY + uy * along + ny * lateral;
+        if (!Number.isFinite(wx) || !Number.isFinite(wy)) continue;
+        if (!tester(wx, wy)) continue;
+        const uNorm = length > 0 ? along / length : 0;
+        const vNorm = width > 0 ? (lateral + halfWidth) / width : 0.5;
+        normalizedSeeds.push(clamp(uNorm, 0, 1), clamp(vNorm, 0, 1));
     }
-    const gridX = Math.max(4, Math.round(Math.sqrt(seedCount)));
-    const gridY = Math.max(4, Math.round(Math.sqrt(seedCount)));
-    const cellU = Math.max(length / gridX, 1e-6);
-    const cellV = Math.max(width / gridY, 1e-6);
-    const grid: number[][] = new Array(gridX * gridY);
-    for (let i = 0; i < grid.length; i++) grid[i] = [];
-    for (let i = 0; i < seedCount; i++) {
-        const u = pts[2 * i];
-        const v = pts[2 * i + 1] + halfW;
-        const gx = clamp(Math.floor(u / cellU), 0, gridX - 1);
-        const gy = clamp(Math.floor(v / cellV), 0, gridY - 1);
-        grid[gy * gridX + gx].push(i);
+
+    const actualSeeds = normalizedSeeds.length / 2;
+    if (actualSeeds < 2) return [];
+
+    const gridW = Math.max(2, Math.min(maxSamplesAlong, Math.round(samplesAlong)));
+    const gridH = Math.max(2, Math.min(maxSamplesAcross, Math.round(samplesAcross)));
+    if (gridW < 2 || gridH < 2) return [];
+
+    const bucketCols = Math.max(4, Math.round(Math.sqrt(actualSeeds)));
+    const bucketRows = Math.max(4, Math.round(Math.sqrt(actualSeeds)));
+    const buckets: number[][] = new Array(bucketCols * bucketRows);
+    for (let i = 0; i < buckets.length; i++) buckets[i] = [];
+    for (let i = 0; i < actualSeeds; i++) {
+        const u = normalizedSeeds[2 * i];
+        const v = normalizedSeeds[2 * i + 1];
+        if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+        const gx = Math.min(bucketCols - 1, Math.max(0, Math.floor(u * bucketCols)));
+        const gy = Math.min(bucketRows - 1, Math.max(0, Math.floor(v * bucketRows)));
+        buckets[gy * bucketCols + gx].push(i);
     }
-    const allIndices = new Array<number>(seedCount);
-    for (let i = 0; i < seedCount; i++) allIndices[i] = i;
+
+    const fallbackIndices = Array.from({ length: actualSeeds }, (_, i) => i);
+    const mask = new Uint8Array(gridW * gridH);
+    const isoCenters = new Float32Array(gridW * gridH * 2);
     const candidateBuf: number[] = [];
-    const stepU = length / (samplesU - 1);
-    const stepV = width / (samplesV - 1);
-    const mask = new Uint8Array(samplesU * samplesV);
-    for (let jy = 0; jy < samplesV; jy++) {
-        const sy = -halfW + jy * stepV;
-        for (let ix = 0; ix < samplesU; ix++) {
-            const sx = ix * stepU;
-            candidateBuf.length = 0;
-            const gx = clamp(Math.floor(sx / cellU), 0, gridX - 1);
-            const gy = clamp(Math.floor((sy + halfW) / cellV), 0, gridY - 1);
+    const pixelDiag = Math.hypot(1 / gridW, 1 / gridH);
+    const scaledEpsilon = Math.max(1e-6, epsilonPx * pixelDiag);
+
+    for (let jy = 0; jy < gridH; jy++) {
+        const vNorm = gridH <= 1 ? 0.5 : jy / (gridH - 1);
+        const lateral = (vNorm - 0.5) * width;
+        for (let ix = 0; ix < gridW; ix++) {
+            const index = jy * gridW + ix;
+            const uNorm = gridW <= 1 ? 0 : ix / (gridW - 1);
+            const along = uNorm * length;
+            const wx = baseX + ux * along + nx * lateral;
+            const wy = baseY + uy * along + ny * lateral;
+            if (!Number.isFinite(wx) || !Number.isFinite(wy)) continue;
+            const iso = worldToIso({ x: wx, y: wy });
+            if (!iso || !Number.isFinite(iso.x) || !Number.isFinite(iso.y)) continue;
+            isoCenters[index * 2] = iso.x;
+            isoCenters[index * 2 + 1] = iso.y;
+
+            const relX = wx - baseX;
+            const relY = wy - baseY;
+            const alongCheck = relX * ux + relY * uy;
+            const lateralCheck = relX * nx + relY * ny;
+            if (alongCheck < -1e-3 || alongCheck > length + 1e-3 || Math.abs(lateralCheck) > halfWidth + 1e-3) continue;
+            if (!tester(wx, wy)) continue;
+
+            const gx = Math.min(bucketCols - 1, Math.max(0, Math.floor(uNorm * bucketCols)));
+            const gy = Math.min(bucketRows - 1, Math.max(0, Math.floor(vNorm * bucketRows)));
+            let haveCandidates = false;
             for (let r = 1; r <= 2; r++) {
                 candidateBuf.length = 0;
-                for (let yy = gy - r; yy <= gy + r; yy++) {
-                    if (yy < 0 || yy >= gridY) continue;
-                    for (let xx = gx - r; xx <= gx + r; xx++) {
-                        if (xx < 0 || xx >= gridX) continue;
-                        const arr = grid[yy * gridX + xx];
+                for (let by = gy - r; by <= gy + r; by++) {
+                    if (by < 0 || by >= bucketRows) continue;
+                    for (let bx = gx - r; bx <= gx + r; bx++) {
+                        if (bx < 0 || bx >= bucketCols) continue;
+                        const arr = buckets[by * bucketCols + bx];
                         if (arr && arr.length) candidateBuf.push(...arr);
                     }
                 }
-                if (candidateBuf.length || r === 2) break;
+                if (candidateBuf.length || r === 2) {
+                    haveCandidates = true;
+                    break;
+                }
             }
-            const source = candidateBuf.length ? candidateBuf : allIndices;
+            const source = candidateBuf.length ? candidateBuf : fallbackIndices;
+            if (!haveCandidates || !source.length) continue;
+
             let best1 = Infinity;
             let best2 = Infinity;
             for (let k = 0; k < source.length; k++) {
                 const idx = source[k];
-                const dx = sx - pts[2 * idx];
-                const dy = sy - pts[2 * idx + 1];
-                const dist2 = dx * dx + dy * dy;
+                const du = uNorm - normalizedSeeds[2 * idx];
+                const dv = vNorm - normalizedSeeds[2 * idx + 1];
+                const dist2 = du * du + dv * dv;
                 if (dist2 < best1) {
                     best2 = best1;
                     best1 = dist2;
@@ -223,15 +197,65 @@ const generateVoronoiContours = (
                     best2 = dist2;
                 }
             }
-            if (!Number.isFinite(best1) || !Number.isFinite(best2) || best2 === Infinity) {
-                mask[jy * samplesU + ix] = 0;
-                continue;
-            }
+            if (!Number.isFinite(best1) || !Number.isFinite(best2) || best2 === Infinity) continue;
             const delta = Math.sqrt(best2) - Math.sqrt(best1);
-            mask[jy * samplesU + ix] = delta < threshold ? 1 : 0;
+            if (delta < scaledEpsilon) {
+                mask[index] = 1;
+            }
         }
     }
-    return marchingSquaresContoursLocal(mask, samplesU, samplesV, stepU, stepV, 0, -halfW);
+
+    const isoSegments: IsoSegment[] = [];
+    const addSegment = (ax: number, ay: number, bx: number, by: number) => {
+        if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(bx) || !Number.isFinite(by)) return;
+        if (ax === bx && ay === by) return;
+        isoSegments.push([[ax, ay], [bx, by]]);
+    };
+
+    for (let jy = 0; jy < gridH; jy++) {
+        for (let ix = 0; ix < gridW; ix++) {
+            const idx = jy * gridW + ix;
+            if (!mask[idx]) continue;
+            const baseIndex = idx * 2;
+            const ax = isoCenters[baseIndex];
+            const ay = isoCenters[baseIndex + 1];
+            if (!Number.isFinite(ax) || !Number.isFinite(ay)) continue;
+
+            if (ix + 1 < gridW) {
+                const rightIdx = jy * gridW + (ix + 1);
+                if (mask[rightIdx]) {
+                    const ri = rightIdx * 2;
+                    addSegment(ax, ay, isoCenters[ri], isoCenters[ri + 1]);
+                }
+            }
+
+            if (jy + 1 < gridH) {
+                const downIdx = (jy + 1) * gridW + ix;
+                if (mask[downIdx]) {
+                    const di = downIdx * 2;
+                    addSegment(ax, ay, isoCenters[di], isoCenters[di + 1]);
+                }
+            }
+
+            if (ix + 1 < gridW && jy + 1 < gridH) {
+                const diagIdx = (jy + 1) * gridW + (ix + 1);
+                if (mask[diagIdx] && (mask[jy * gridW + (ix + 1)] || mask[(jy + 1) * gridW + ix])) {
+                    const di = diagIdx * 2;
+                    addSegment(ax, ay, isoCenters[di], isoCenters[di + 1]);
+                }
+            }
+
+            if (ix > 0 && jy + 1 < gridH) {
+                const diagIdx = (jy + 1) * gridW + (ix - 1);
+                if (mask[diagIdx] && (mask[(jy + 1) * gridW + ix] || mask[jy * gridW + (ix - 1)])) {
+                    const di = diagIdx * 2;
+                    addSegment(ax, ay, isoCenters[di], isoCenters[di + 1]);
+                }
+            }
+        }
+    }
+
+    return isoSegments;
 };
 
 interface GameCanvasProps {
@@ -1250,7 +1274,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         const baseSeedDensity: number = Math.max(0.005, cfg.crackedRoadSeedDensity ?? 0.055);
         const baseSampleAlong: number = Math.max(0.25, cfg.crackedRoadSampleDensityAlong ?? 1.6);
         const baseSampleAcross: number = Math.max(0.25, cfg.crackedRoadSampleDensityAcross ?? 1.1);
-        const baseThreshold: number = clamp(cfg.crackedRoadVoronoiThreshold ?? 0.65, 0, 1);
+        const baseEpsilon: number = Math.max(0.01, cfg.crackedRoadVoronoiThreshold ?? 0.65);
         const baseMinLength: number = Math.max(1, cfg.crackedRoadMinLengthM ?? 5.0);
         const baseMaxSeeds: number = Math.max(8, cfg.crackedRoadMaxSeeds ?? 520);
         const baseMaxSamplesAlong: number = Math.max(4, cfg.crackedRoadMaxSamplesAlong ?? 240);
@@ -1282,7 +1306,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             const segSeedDensity = Math.max(0.005, baseSeedDensity * (mult.seedDensity ?? 1));
             const segSampleAlong = Math.max(0.25, baseSampleAlong * (mult.sampleAlong ?? 1));
             const segSampleAcross = Math.max(0.25, baseSampleAcross * (mult.sampleAcross ?? 1));
-            const segThreshold = clamp(baseThreshold + (pattern?.thresholdOffset ?? 0), 0, 1);
+            const segRawEpsilon = Math.max(0.005, baseEpsilon + (pattern?.thresholdOffset ?? 0));
             const segMinLength = Math.max(0.5, baseMinLength * (mult.minLength ?? 1));
             const segMaxSeeds = Math.max(8, Math.round(baseMaxSeeds * (mult.maxSeeds ?? 1)));
             const segMaxSamplesAlong = Math.max(4, Math.round(baseMaxSamplesAlong * (mult.maxSamplesAlong ?? 1)));
@@ -1327,26 +1351,35 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 samplesV = Math.min(samplesV, segMaxSamplesAcross);
                 if (samplesU < 2 || samplesV < 2) return;
                 const hash = hashNumbers(globalSeed, segmentIndex, intervalIndex, startT * 1000, endT * 1000, roadWidth, segSeedOffset);
-                const contours = generateVoronoiContours(intervalLen, roadWidth, seeds, samplesU, samplesV, segThreshold, hash);
-                if (!contours.length) return;
                 const startOffset = segLen * startT;
                 const baseX = start.x + ux * startOffset;
                 const baseY = start.y + uy * startOffset;
-                const minContourLen = Math.max(roadWidth * 0.35, 2.5);
-                for (const contour of contours) {
-                    if (!contour || contour.length < 2) continue;
-                    if (polylineLength(contour) < minContourLen) continue;
-                    graphics.lineStyle(segStrokePx, segColor, segAlpha, 0.5, true);
-                    contour.forEach((pt, idx) => {
-                        const along = pt[0];
-                        const lateral = pt[1];
-                        const worldPt = {
-                            x: baseX + ux * along + nx * lateral,
-                            y: baseY + uy * along + ny * lateral,
-                        };
-                        const iso = worldToIso(worldPt);
-                        if (idx === 0) graphics.moveTo(iso.x, iso.y); else graphics.lineTo(iso.x, iso.y);
-                    });
+                const isoSegments = generateRoadCrackSegments({
+                    length: intervalLen,
+                    width: roadWidth,
+                    seedCount: seeds,
+                    samplesAlong: samplesU,
+                    samplesAcross: samplesV,
+                    maxSamplesAlong: segMaxSamplesAlong,
+                    maxSamplesAcross: segMaxSamplesAcross,
+                    epsilonPx: segRawEpsilon,
+                    seed: hash,
+                    tester,
+                    baseX,
+                    baseY,
+                    ux,
+                    uy,
+                    nx,
+                    ny,
+                    worldToIso,
+                });
+                if (!isoSegments.length) return;
+                graphics.lineStyle(segStrokePx, segColor, segAlpha, 0.5, true);
+                for (const segment of isoSegments) {
+                    const [a, b] = segment;
+                    if (!a || !b) continue;
+                    graphics.moveTo(a[0], a[1]);
+                    graphics.lineTo(b[0], b[1]);
                     drewAny = true;
                 }
             });
