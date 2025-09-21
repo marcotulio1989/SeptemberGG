@@ -294,7 +294,7 @@ export const config = {
     crackedRoadSeedDensity: 0.055,
     crackedRoadSampleDensityAlong: 1.6,
     crackedRoadSampleDensityAcross: 1.1,
-    crackedRoadVoronoiThreshold: 0.65,
+    crackedRoadVoronoiThickness: 0.6,
     crackedRoadMinLengthM: 5.0,
     crackedRoadMaxSeeds: 520,
     crackedRoadMaxSamplesAlong: 240,
