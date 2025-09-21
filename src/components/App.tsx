@@ -271,6 +271,8 @@ const App: React.FC = () => {
     const [crackMaxSamplesAlong, setCrackMaxSamplesAlong] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAlong ?? 240);
     const [crackMaxSamplesAcross, setCrackMaxSamplesAcross] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAcross ?? 96);
     const [crackProbeStep, setCrackProbeStep] = useState<number>(() => (config as any).render.crackedRoadProbeStepM ?? 1.1);
+    const [crackStrokePx, setCrackStrokePx] = useState<number>(() => (config as any).render.crackedRoadStrokePx ?? 0.85);
+    const [crackResolutionMultiplier, setCrackResolutionMultiplier] = useState<number>(() => (config as any).render.crackedRoadResolutionMultiplier ?? 4.0);
     const [crackRandomFlags, setCrackRandomFlags] = useState<CrackRandomFlags>({
         color: true,
         alpha: true,
@@ -361,6 +363,8 @@ const App: React.FC = () => {
         setCrackMaxSamplesAlong(240);
         setCrackMaxSamplesAcross(96);
         setCrackProbeStep(1.1);
+        setCrackStrokePx(0.85);
+        setCrackResolutionMultiplier(4.0);
         try { (config as any).render.crackedRoadPatternAssignments = null; } catch (e) {}
         broadcastCrackedRoadConfigChange();
         setUiTick(t => t + 1);
@@ -459,6 +463,8 @@ const App: React.FC = () => {
             setCrackProbeStep(nextProbeStep);
         }
         renderCfg.crackedRoadProbeStepM = Math.max(0.25, nextProbeStep);
+        renderCfg.crackedRoadStrokePx = Math.max(0.35, crackStrokePx);
+        renderCfg.crackedRoadResolutionMultiplier = Math.max(1, crackResolutionMultiplier);
 
         if (flags.patternAssignments) {
             const patternCount = CRACK_PATTERNS.length;
@@ -595,6 +601,8 @@ const App: React.FC = () => {
         renderCfg.crackedRoadMaxSamplesAlong = Math.max(4, Math.round(crackMaxSamplesAlong));
         renderCfg.crackedRoadMaxSamplesAcross = Math.max(4, Math.round(crackMaxSamplesAcross));
         renderCfg.crackedRoadProbeStepM = Math.max(0.25, crackProbeStep);
+        renderCfg.crackedRoadStrokePx = Math.max(0.35, crackStrokePx);
+        renderCfg.crackedRoadResolutionMultiplier = Math.max(1, crackResolutionMultiplier);
         broadcastCrackedRoadConfigChange();
     }, [
         crackAlpha,
@@ -603,10 +611,12 @@ const App: React.FC = () => {
         crackMaxSamplesAlong,
         crackMaxSeeds,
         crackMinLength,
+        crackResolutionMultiplier,
         crackProbeStep,
         crackSampleAlong,
         crackSampleAcross,
         crackSeedDensity,
+        crackStrokePx,
         crackThreshold,
         broadcastCrackedRoadConfigChange,
     ]);
@@ -1123,6 +1133,93 @@ const App: React.FC = () => {
                                     cursor: 'pointer',
                                 }}
                             />
+                        </div>
+                        <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <label htmlFor="crack-stroke" style={{ fontSize: 11, fontWeight: 600 }}>Espessura (px)</label>
+                                <span style={{ fontSize: 10, opacity: 0.75 }}>{crackStrokePx.toFixed(2)} px</span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <input
+                                    id="crack-stroke"
+                                    type="range"
+                                    min={0.35}
+                                    max={3}
+                                    step={0.05}
+                                    value={crackStrokePx}
+                                    onChange={(e) => {
+                                        const next = parseFloat(e.target.value);
+                                        if (!Number.isNaN(next)) {
+                                            setCrackStrokePx(Math.min(Math.max(next, 0.35), 3));
+                                        }
+                                    }}
+                                    style={{ flex: 1 }}
+                                />
+                                <input
+                                    type="number"
+                                    min={0.35}
+                                    max={3}
+                                    step={0.05}
+                                    value={crackStrokePx}
+                                    onChange={(e) => {
+                                        const raw = parseNumberInput(e.target.value);
+                                        const nv = Number.isFinite(raw) ? Math.min(Math.max(raw, 0.35), 3) : 0.85;
+                                        setCrackStrokePx(nv);
+                                    }}
+                                    style={{
+                                        width: 64,
+                                        padding: '4px 6px',
+                                        borderRadius: 4,
+                                        border: '1px solid rgba(255,255,255,0.2)',
+                                        background: 'rgba(255,255,255,0.06)',
+                                        color: '#ECEFF1',
+                                    }}
+                                />
+                            </div>
+                        </div>
+                        <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <label htmlFor="crack-resolution" style={{ fontSize: 11, fontWeight: 600 }}>Suavização</label>
+                                <span style={{ fontSize: 10, opacity: 0.75 }}>{crackResolutionMultiplier.toFixed(1)}x</span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <input
+                                    id="crack-resolution"
+                                    type="range"
+                                    min={1}
+                                    max={8}
+                                    step={0.5}
+                                    value={crackResolutionMultiplier}
+                                    onChange={(e) => {
+                                        const next = parseFloat(e.target.value);
+                                        if (!Number.isNaN(next)) {
+                                            setCrackResolutionMultiplier(Math.min(Math.max(next, 1), 8));
+                                        }
+                                    }}
+                                    style={{ flex: 1 }}
+                                />
+                                <input
+                                    type="number"
+                                    min={1}
+                                    max={8}
+                                    step={0.5}
+                                    value={crackResolutionMultiplier}
+                                    onChange={(e) => {
+                                        const raw = parseNumberInput(e.target.value);
+                                        const nv = Number.isFinite(raw) ? Math.min(Math.max(raw, 1), 8) : 4.0;
+                                        setCrackResolutionMultiplier(nv);
+                                    }}
+                                    style={{
+                                        width: 64,
+                                        padding: '4px 6px',
+                                        borderRadius: 4,
+                                        border: '1px solid rgba(255,255,255,0.2)',
+                                        background: 'rgba(255,255,255,0.06)',
+                                        color: '#ECEFF1',
+                                    }}
+                                />
+                            </div>
+                            <span style={{ fontSize: 10, opacity: 0.6 }}>Valores maiores deixam as rachaduras mais suaves (pode ficar mais lento).</span>
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

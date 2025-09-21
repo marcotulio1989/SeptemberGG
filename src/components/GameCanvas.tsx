@@ -140,7 +140,13 @@ const generateRoadCrackSprite = ({
     const isoOriginX = expandedMinX;
     const isoOriginY = expandedMinY;
 
-    const supersample = Math.max(1, Math.min(8, Number.isFinite(resolutionMultiplier) ? resolutionMultiplier : 1));
+    const devicePixelRatio = typeof window !== 'undefined' && Number.isFinite(window.devicePixelRatio)
+        ? Math.max(1, window.devicePixelRatio)
+        : 1;
+    const supersampleTarget = Number.isFinite(resolutionMultiplier)
+        ? resolutionMultiplier * devicePixelRatio
+        : devicePixelRatio;
+    const supersample = Math.max(1, Math.min(8, supersampleTarget));
     const baseCols = Math.min(maxSamplesAlong, Math.max(2, samplesAlong));
     const baseRows = Math.min(maxSamplesAcross, Math.max(2, samplesAcross));
     const pixelCols = Math.max(16, Math.min(4096, Math.round(baseCols * 4 * supersample)));
@@ -159,8 +165,8 @@ const generateRoadCrackSprite = ({
     const invIsoRadiusXSq = isoRadiusX > 1e-6 ? 1 / (isoRadiusX * isoRadiusX) : 0;
     const invIsoRadiusYSq = isoRadiusY > 1e-6 ? 1 / (isoRadiusY * isoRadiusY) : 0;
     const pxRadius = Math.max(1, Math.ceil(strokeWidthPx * supersample * 0.5 + 1));
-    const softEdgeNorm = Math.min(0.65, Math.max(0.18, 0.9 / (strokeWidthPx * supersample + 1e-3)));
-    const edgeEpsilon = 0.12;
+    const softEdgeNorm = Math.min(0.8, Math.max(0.22, 1.1 / (strokeWidthPx * supersample + 1e-3)));
+    const edgeEpsilon = 0.1;
 
     const epsilonWorld = Math.max(1e-6, epsilonPx);
 
