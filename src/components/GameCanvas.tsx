@@ -153,14 +153,14 @@ const generateRoadCrackSprite = ({
 
     const spanScaleXAbs = Math.max(Math.abs(spanScaleX), 1e-4);
     const spanScaleYAbs = Math.max(Math.abs(spanScaleY), 1e-4);
-    const strokeWidthPx = Math.max(0.35, Number.isFinite(strokePx) ? strokePx : 1);
+    const strokeWidthPx = Math.max(0.2, Number.isFinite(strokePx) ? strokePx : 1);
     const isoRadiusX = Math.max(spanScaleXAbs * strokeWidthPx * 0.5, spanScaleXAbs * 0.5);
     const isoRadiusY = Math.max(spanScaleYAbs * strokeWidthPx * 0.5, spanScaleYAbs * 0.5);
     const invIsoRadiusXSq = isoRadiusX > 1e-6 ? 1 / (isoRadiusX * isoRadiusX) : 0;
     const invIsoRadiusYSq = isoRadiusY > 1e-6 ? 1 / (isoRadiusY * isoRadiusY) : 0;
-    const pxRadius = Math.max(1, Math.ceil(strokeWidthPx * supersample * 0.5 + 1));
-    const softEdgeNorm = Math.min(0.65, Math.max(0.18, 0.9 / (strokeWidthPx * supersample + 1e-3)));
-    const edgeEpsilon = 0.12;
+    const pxRadius = Math.max(1, Math.ceil(strokeWidthPx * supersample * 0.55 + 1));
+    const softEdgeNorm = Math.min(0.78, Math.max(0.22, 1.05 / (strokeWidthPx * supersample + 0.2)));
+    const edgeEpsilon = 0.18;
 
     const epsilonWorld = Math.max(1e-6, epsilonPx);
 
@@ -1335,8 +1335,8 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         const baseMaxSamplesAlong: number = Math.max(4, cfg.crackedRoadMaxSamplesAlong ?? 240);
         const baseMaxSamplesAcross: number = Math.max(4, cfg.crackedRoadMaxSamplesAcross ?? 96);
         const baseProbeStep: number = Math.max(0.4, cfg.crackedRoadProbeStepM ?? 1.1);
-        const baseStrokePx: number = Math.max(0.35, cfg.crackedRoadStrokePx ?? 1.35);
-        const baseResolutionMultiplier: number = Math.max(1, cfg.crackedRoadResolutionMultiplier ?? 3);
+        const baseStrokePx: number = Math.max(0.2, cfg.crackedRoadStrokePx ?? 1.1);
+        const baseResolutionMultiplier: number = Math.max(1, cfg.crackedRoadResolutionMultiplier ?? 4);
         const assignments = ((cfg.crackedRoadPatternAssignments as CrackPatternAssignments | undefined)?.segments) ?? null;
         const globalSeed: number = (NoiseZoning as any)?.getSeed?.call(NoiseZoning) ?? 0;
 
@@ -1371,7 +1371,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             const segAlpha = Math.max(0.05, Math.min(1, baseAlpha * (mult.alpha ?? 1)));
             const segColor = pattern?.color ?? baseColor;
             const segStrokePxRaw = baseStrokePx * (mult.strokePx ?? 1);
-            const segStrokePx = Math.max(0.3, Number.isFinite(segStrokePxRaw) ? segStrokePxRaw : baseStrokePx);
+            const segStrokePx = Math.max(0.2, Number.isFinite(segStrokePxRaw) ? segStrokePxRaw : baseStrokePx);
             const segResolutionMultiplierRaw = baseResolutionMultiplier * (mult.resolutionMultiplier ?? 1);
             const segResolutionMultiplier = Math.max(1, Math.min(8, Number.isFinite(segResolutionMultiplierRaw) ? segResolutionMultiplierRaw : baseResolutionMultiplier));
             const segSeedOffset = pattern?.seedOffset ?? 0;
@@ -1443,8 +1443,10 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                     });
                     try { (baseTexture as any).mipmap = PIXI.MIPMAP_MODES.ON; } catch (e) {}
                     const aniso = (baseTexture as any).anisotropicLevel;
-                    if (typeof aniso === 'number' && aniso < 4) {
-                        (baseTexture as any).anisotropicLevel = 4;
+                    if (typeof aniso === 'number') {
+                        if (aniso < 8) (baseTexture as any).anisotropicLevel = 8;
+                    } else {
+                        (baseTexture as any).anisotropicLevel = 8;
                     }
                     const texture = new PIXI.Texture(baseTexture);
                     const sprite = new PIXI.Sprite(texture);
