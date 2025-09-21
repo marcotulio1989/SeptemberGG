@@ -8,6 +8,7 @@ export interface CrackPatternMultipliers {
     maxSamplesAcross?: number;
     probeStep?: number;
     strokePx?: number;
+    resolutionMultiplier?: number;
     alpha?: number;
 }
 
