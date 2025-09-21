@@ -60,46 +60,89 @@ const polylineLength = (poly: LocalPoint[]) => {
 };
 
 const marchingSquaresContoursLocal = (
-    grid: Uint8Array,
+    grid: Float32Array,
     w: number,
     h: number,
     stepX: number,
     stepY: number,
     originX: number,
     originY: number,
+    isoValue: number,
 ): LocalPoint[][] => {
     if (w < 2 || h < 2) return [];
-    const get = (x: number, y: number) => (x >= 0 && y >= 0 && x < w && y < h ? (grid[y * w + x] ? 1 : 0) : 0);
     const sx = (gx: number) => originX + gx * stepX;
     const sy = (gy: number) => originY + gy * stepY;
     const segments: Array<[LocalPoint, LocalPoint]> = [];
     for (let y = 0; y < h - 1; y++) {
         for (let x = 0; x < w - 1; x++) {
-            const tl = get(x, y);
-            const tr = get(x + 1, y);
-            const br = get(x + 1, y + 1);
-            const bl = get(x, y + 1);
-            const code = (tl << 3) | (tr << 2) | (br << 1) | bl;
+            const idx = y * w + x;
+            const tl = grid[idx];
+            const tr = grid[idx + 1];
+            const bl = grid[idx + w];
+            const br = grid[idx + w + 1];
+            const code = ((tl < isoValue ? 1 : 0) << 3)
+                | ((tr < isoValue ? 1 : 0) << 2)
+                | ((br < isoValue ? 1 : 0) << 1)
+                | (bl < isoValue ? 1 : 0);
             if (code === 0 || code === 15) continue;
-            const top: LocalPoint = [sx(x) + stepX * 0.5, sy(y)];
-            const right: LocalPoint = [sx(x + 1), sy(y) + stepY * 0.5];
-            const bottom: LocalPoint = [sx(x) + stepX * 0.5, sy(y + 1)];
-            const left: LocalPoint = [sx(x), sy(y) + stepY * 0.5];
+            const x0 = sx(x);
+            const x1 = sx(x + 1);
+            const y0 = sy(y);
+            const y1 = sy(y + 1);
+            const interpolate = (
+                vA: number,
+                vB: number,
+                ax: number,
+                ay: number,
+                bx: number,
+                by: number,
+            ): LocalPoint => {
+                const denom = vB - vA;
+                let t = denom === 0 ? 0.5 : (isoValue - vA) / denom;
+                if (!Number.isFinite(t)) t = 0.5;
+                t = clamp(t, 0, 1);
+                return [ax + (bx - ax) * t, ay + (by - ay) * t];
+            };
+            const edgePoints: Array<LocalPoint | null> = [null, null, null, null];
+            const getEdgePoint = (edge: number): LocalPoint => {
+                const cached = edgePoints[edge];
+                if (cached) return cached;
+                let pt: LocalPoint;
+                switch (edge) {
+                    case 0: pt = interpolate(tl, tr, x0, y0, x1, y0); break; // top
+                    case 1: pt = interpolate(tr, br, x1, y0, x1, y1); break; // right
+                    case 2: pt = interpolate(bl, br, x0, y1, x1, y1); break; // bottom
+                    case 3: pt = interpolate(tl, bl, x0, y0, x0, y1); break; // left
+                    default: pt = [x0, y0]; break;
+                }
+                edgePoints[edge] = pt;
+                return pt;
+            };
+            const top = () => getEdgePoint(0);
+            const right = () => getEdgePoint(1);
+            const bottom = () => getEdgePoint(2);
+            const left = () => getEdgePoint(3);
             switch (code) {
-                case 1: segments.push([bottom, left]); break;
-                case 2: segments.push([right, bottom]); break;
-                case 3: segments.push([right, left]); break;
-                case 4: segments.push([top, right]); break;
-                case 5: segments.push([top, left]); segments.push([right, bottom]); break;
-                case 6: segments.push([top, bottom]); break;
-                case 7: segments.push([top, left]); break;
-                case 8: segments.push([left, top]); break;
-                case 9: segments.push([bottom, top]); break;
-                case 10: segments.push([left, right]); segments.push([top, bottom]); break;
-                case 11: segments.push([right, top]); break;
-                case 12: segments.push([left, right]); break;
-                case 13: segments.push([bottom, right]); break;
-                case 14: segments.push([left, bottom]); break;
+                case 1: segments.push([bottom(), left()]); break;
+                case 2: segments.push([right(), bottom()]); break;
+                case 3: segments.push([right(), left()]); break;
+                case 4: segments.push([top(), right()]); break;
+                case 5:
+                    segments.push([top(), left()]);
+                    segments.push([right(), bottom()]);
+                    break;
+                case 6: segments.push([top(), bottom()]); break;
+                case 7: segments.push([top(), left()]); break;
+                case 8: segments.push([left(), top()]); break;
+                case 9: segments.push([bottom(), top()]); break;
+                case 10:
+                    segments.push([left(), right()]);
+                    segments.push([top(), bottom()]);
+                    break;
+                case 11: segments.push([right(), top()]); break;
+                case 12: segments.push([left(), right()]); break;
+                case 13: segments.push([bottom(), right()]); break;
+                case 14: segments.push([left(), bottom()]); break;
                 default: break;
             }
         }
@@ -188,7 +231,8 @@ const generateVoronoiContours = (
     const candidateBuf: number[] = [];
     const stepU = length / (samplesU - 1);
     const stepV = width / (samplesV - 1);
-    const mask = new Uint8Array(samplesU * samplesV);
+    const isoValue = Math.max(1e-6, threshold);
+    const field = new Float32Array(samplesU * samplesV);
     for (let jy = 0; jy < samplesV; jy++) {
         const sy = -halfW + jy * stepV;
         for (let ix = 0; ix < samplesU; ix++) {
@@ -224,14 +268,14 @@ const generateVoronoiContours = (
                 }
             }
             if (!Number.isFinite(best1) || !Number.isFinite(best2) || best2 === Infinity) {
-                mask[jy * samplesU + ix] = 0;
+                field[jy * samplesU + ix] = isoValue + 1;
                 continue;
             }
             const delta = Math.sqrt(best2) - Math.sqrt(best1);
-            mask[jy * samplesU + ix] = delta < threshold ? 1 : 0;
+            field[jy * samplesU + ix] = Number.isFinite(delta) ? delta : isoValue + 1;
         }
     }
-    return marchingSquaresContoursLocal(mask, samplesU, samplesV, stepU, stepV, 0, -halfW);
+    return marchingSquaresContoursLocal(field, samplesU, samplesV, stepU, stepV, 0, -halfW, isoValue);
 };
 
 interface GameCanvasProps {
