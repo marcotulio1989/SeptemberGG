@@ -290,7 +290,6 @@ export const config = {
     showCrackedRoadsOutline: true,
     crackedRoadColor: 0x00E5FF,
     crackedRoadAlpha: 0.88,
-    crackedRoadStrokePx: 1.35,
     crackedRoadSeedDensity: 0.055,
     crackedRoadSampleDensityAlong: 1.6,
     crackedRoadSampleDensityAcross: 1.1,

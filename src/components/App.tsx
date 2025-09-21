@@ -15,7 +15,6 @@ import { CRACK_PATTERNS, CrackPatternAssignments } from '../lib/crackPatterns';
 type CrackRandomFlags = {
     color: boolean;
     alpha: boolean;
-    stroke: boolean;
     seedDensity: boolean;
     sampleAlong: boolean;
     sampleAcross: boolean;
@@ -263,7 +262,6 @@ const App: React.FC = () => {
     const [crackConfigOpen, setCrackConfigOpen] = useState<boolean>(false);
     const [crackColor, setCrackColor] = useState<string>(() => '#' + (((config as any).render.crackedRoadColor ?? 0x00E5FF).toString(16).padStart(6, '0')));
     const [crackAlpha, setCrackAlpha] = useState<number>(() => (config as any).render.crackedRoadAlpha ?? 0.88);
-    const [crackStrokePx, setCrackStrokePx] = useState<number>(() => (config as any).render.crackedRoadStrokePx ?? 1.35);
     const [crackSeedDensity, setCrackSeedDensity] = useState<number>(() => (config as any).render.crackedRoadSeedDensity ?? 0.055);
     const [crackSampleAlong, setCrackSampleAlong] = useState<number>(() => (config as any).render.crackedRoadSampleDensityAlong ?? 1.6);
     const [crackSampleAcross, setCrackSampleAcross] = useState<number>(() => (config as any).render.crackedRoadSampleDensityAcross ?? 1.1);
@@ -276,7 +274,6 @@ const App: React.FC = () => {
     const [crackRandomFlags, setCrackRandomFlags] = useState<CrackRandomFlags>({
         color: true,
         alpha: true,
-        stroke: true,
         seedDensity: true,
         sampleAlong: true,
         sampleAcross: true,
@@ -355,7 +352,6 @@ const App: React.FC = () => {
     const resetCrackConfig = () => {
         setCrackColor('#00e5ff');
         setCrackAlpha(0.88);
-        setCrackStrokePx(1.35);
         setCrackSeedDensity(0.055);
         setCrackSampleAlong(1.6);
         setCrackSampleAcross(1.1);
@@ -400,13 +396,6 @@ const App: React.FC = () => {
             setCrackAlpha(nextAlpha);
         }
         renderCfg.crackedRoadAlpha = Math.min(1, Math.max(0, nextAlpha));
-
-        let nextStroke = crackStrokePx;
-        if (flags.stroke) {
-            nextStroke = randomFloat(0.6, 2.4, 2);
-            setCrackStrokePx(nextStroke);
-        }
-        renderCfg.crackedRoadStrokePx = Math.max(0.05, nextStroke);
 
         let nextSeedDensity = crackSeedDensity;
         if (flags.seedDensity) {
@@ -597,7 +586,6 @@ const App: React.FC = () => {
             renderCfg.crackedRoadColor = parsedColor;
         }
         renderCfg.crackedRoadAlpha = Math.min(1, Math.max(0, crackAlpha));
-        renderCfg.crackedRoadStrokePx = Math.max(0.05, crackStrokePx);
         renderCfg.crackedRoadSeedDensity = Math.max(0.001, crackSeedDensity);
         renderCfg.crackedRoadSampleDensityAlong = Math.max(0.1, crackSampleAlong);
         renderCfg.crackedRoadSampleDensityAcross = Math.max(0.1, crackSampleAcross);
@@ -619,7 +607,6 @@ const App: React.FC = () => {
         crackSampleAlong,
         crackSampleAcross,
         crackSeedDensity,
-        crackStrokePx,
         crackThreshold,
         broadcastCrackedRoadConfigChange,
     ]);
@@ -1161,39 +1148,6 @@ const App: React.FC = () => {
                                     const raw = parseNumberInput(e.target.value);
                                     const nv = Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 1) : 0.88;
                                     setCrackAlpha(nv);
-                                }}
-                                style={{
-                                    padding: '4px 6px',
-                                    borderRadius: 4,
-                                    border: '1px solid rgba(255,255,255,0.2)',
-                                    background: 'rgba(255,255,255,0.06)',
-                                    color: '#ECEFF1',
-                                }}
-                            />
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <label htmlFor="crack-stroke" style={{ fontSize: 11, fontWeight: 600 }}>Espessura (px)</label>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, opacity: 0.75 }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={crackRandomFlags.stroke}
-                                        onChange={() => toggleCrackRandomFlag('stroke')}
-                                        style={{ margin: 0 }}
-                                    />
-                                    Rand
-                                </label>
-                            </div>
-                            <input
-                                id="crack-stroke"
-                                type="number"
-                                min={0.05}
-                                step={0.05}
-                                value={crackStrokePx}
-                                onChange={(e) => {
-                                    const raw = parseNumberInput(e.target.value);
-                                    const nv = Number.isFinite(raw) ? Math.max(0.05, raw) : 1.35;
-                                    setCrackStrokePx(nv);
                                 }}
                                 style={{
                                     padding: '4px 6px',
