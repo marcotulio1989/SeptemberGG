@@ -1,104 +1,353 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="UTF-8">
-  <title>Ruas — Bordas (Cinza Escuro)</title>
-  <style>
-    body {
-      background: #202020;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      margin: 0;
-      gap: 10px;
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      color: #ddd;
-    }
-    canvas { border: 2px solid #111; image-rendering: pixelated; }
-    .legend { color:#ddd; font-size:13px; }
-    .sw { width:12px; height:12px; display:inline-block; border-radius:3px; margin-right:6px; box-shadow:0 0 0 1px rgba(0,0,0,.25) inset; }
-    .controls { display:flex; gap:12px; align-items:center; }
-    input[type=range] { width:240px; }
-  </style>
+  <meta charset="UTF-8" />
+  <title>Rachaduras (Voronoi) — Isométrico 30 Graus</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root{ --bg:#2b2b2b; --panel:#353535; --ink:#eaeaea; --muted:#bdbdbd; }
+    html,body{height:100%}
+    body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Arial}
+    .wrap{max-width:980px;margin:24px auto;padding:0 16px;display:grid;grid-template-columns:340px 1fr;gap:16px}
+    @media (max-width:900px){.wrap{grid-template-columns:1fr}}
+    .panel{background:var(--panel);border:1px solid #0004;border-radius:12px;padding:14px;box-shadow:0 8px 20px #0006}
+    h1{margin:0 0 8px;font-size:18px}
+    .hint{color:var(--muted);font-size:12px;margin-bottom:8px}
+    .controls{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .controls label{display:flex;flex-direction:column;gap:6px}
+    input[type="range"]{width:100%}
+    input[type="number"], input[type="text"], input[type="color"]{
+      width:100%;padding:6px 8px;border-radius:8px;border:1px solid #0006;background:#2a2a2a;color:var(--ink);box-sizing:border-box
+    }
+    .row{display:flex;gap:10px;align-items:center;margin-top:10px}
+    button{flex:1;padding:8px 10px;border:0;border-radius:10px;background:#4a4a4a;color:#fff;cursor:pointer}
+    button:hover{background:#5a5a5a}
+    canvas{display:block;max-width:100%;background:#111;border-radius:12px;border:1px solid #0007}
+    .mini{font-size:12px;color:var(--muted)}
+    .check{display:flex;gap:8px;align-items:center}
+    .ok{color:#9be28b}
+    .fail{color:#ff7b7b}
+  </style>
 </head>
 <body>
-  <canvas id="canvas" width="512" height="512"></canvas>
-  <div class="controls">
-    <div class="legend"><i class="sw" style="background:#3a3a3a"></i>Ruas (cinza escuro)</div>
-    <label style="font-size:13px">Largura: <span id="thVal">1.6</span></label>
-    <input id="th" type="range" min="0.2" max="6" step="0.1" value="1.6">
-    <button id="regenerate">Regenerar</button>
-  </div>
+  <div class="wrap">
+    <section class="panel">
+      <h1>Rachaduras (Voronoi) — Canvas</h1>
+      <div class="hint">As rachaduras são as arestas do diagrama de Voronoi. A vista isométrica está corrigida para um ângulo de 30 graus.</div>
+      <div class="controls">
+        <label>Largura (px)
+          <input id="w" type="number" min="64" max="2048" step="2" value="512">
+        </label>
+        <label>Altura (px)
+          <input id="h" type="number" min="64" max="2048" step="2" value="512">
+        </label>
 
-  <script>
-    const N = 512;
-    const numPoints = 80;
-    const EDGE_COLOR = [58,58,58]; // cinza escuro
+        <label>Sementes
+          <input id="num" type="range" min="50" max="3000" value="800">
+          <span class="mini" id="numv">800</span>
+        </label>
+        <label>Espessura (ε)
+          <input id="eps" type="range" min="1" max="30" value="6">
+          <span class="mini" id="epsv">0.6</span>
+        </label>
 
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
+        <label>Cor da rachadura
+          <input id="color" type="color" value="#00e5ff">
+        </label>
+        <label>Seed aleatória
+          <input id="seed" type="number" min="0" step="1" value="123456">
+        </label>
+        <label class="check" style="grid-column:1/-1"><input id="iso" type="checkbox" checked> Vista isométrica (30 graus)</label>
+      </div>
 
-    let pts = generatePoints();
+      <div class="row">
+        <button id="regen">Gerar / Atualizar</button>
+        <button id="reroll">Re-sortear seed</button>
+        <button id="save">Exportar PNG</button>
+      </div>
+      <div class="mini" id="info">—</div>
+    </section>
 
-    function generatePoints(){
-      return Array.from({length: numPoints}, () => [Math.random()*N, Math.random()*N]);
-    }
+    <section class="panel">
+      <canvas id="c" width="512" height="512"></canvas>
+    </section>
+  </div>
 
-    function setPixel(data, idx, r, g, b, a=255){
-      data[idx] = r; data[idx+1] = g; data[idx+2] = b; data[idx+3] = a;
-    }
+  <script>
+    // ---------- Util ----------
+    function PRNG(seed){ let s=(seed>>>0)||123456789; return ()=>((s=(s*1664525+1013904223)>>>0),(s/4294967296)); }
+    function hexToRGB(hex){
+      hex=hex.trim();
+      if(/^#?[0-9a-f]{3}$/i.test(hex)){ const h=hex.replace('#',''); hex='#'+h[0]+h[0]+h[1]+h[1]+h[2]+h[2]; }
+      const m=hex.match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+      return m ? [parseInt(m[1],16),parseInt(m[2],16),parseInt(m[3],16)] : [0,229,255];
+    }
+    function insideDiamond(x,y,diamW,diamH){ // Usado apenas para testes, não para renderização ISO
+      const cx=diamW*0.5, cy=diamH*0.5;
+      const u=Math.abs((x-cx)/(diamW*0.5));
+      const v=Math.abs((y-cy)/(diamH*0.5));
+      return (u+v) <= 1;
+    }
 
-    function drawEdgesOnly(threshold) {
-      const imageData = ctx.createImageData(N, N);
-      const data = imageData.data;
+    // ---------- Estado ----------
+    const cvs = document.getElementById('c');
+    const ctx = cvs.getContext('2d', { willReadFrequently: true });
+    const wEl = document.getElementById('w');
+    const hEl = document.getElementById('h');
+    const numEl = document.getElementById('num');
+    const epsEl = document.getElementById('eps');
+    const colorEl = document.getElementById('color');
+    const seedEl = document.getElementById('seed');
+    const infoEl = document.getElementById('info');
+    const numv = document.getElementById('numv');
+    const epsv = document.getElementById('epsv');
+    const regenBtn = document.getElementById('regen');
+    const rerollBtn = document.getElementById('reroll');
+    const saveBtn = document.getElementById('save');
+    const isoEl = document.getElementById('iso');
 
-      for (let y=0; y<N; y++) {
-        for (let x=0; x<N; x++) {
-          const p = (y*N + x) * 4;
+    let canvasWidth = +wEl.value|0;
+    let canvasHeight = +hEl.value|0;
+    let NUM = +numEl.value|0;
+    let EPS = (+epsEl.value)/10;
+    let EDGE = [...hexToRGB(colorEl.value), 255];
+    let SEED = +seedEl.value|0;
+    let ISO = !!isoEl.checked;
 
-          // compute squared distances to all points to find nearest and second nearest
-          let nearest = -1, d1 = Infinity, second = -1, d2 = Infinity;
-          for (let i=0;i<pts.length;i++){
-            const dx = x-pts[i][0]; const dy = y-pts[i][1];
-            const d = dx*dx + dy*dy;
-            if (d < d1) { d2 = d1; second = nearest; d1 = d; nearest = i; }
-            else if (d < d2) { d2 = d; second = i; }
+    let pts = null;       // Coordenadas de tela (sx, sy) para a grade de otimização
+    let pts_world = null; // Coordenadas de "mundo" (wx, wy) para o cálculo de distância isométrica
+    let grid = null;
+    let gridSize = 0, csx = 0, csy = 0;
+
+    // ---------- Geração ----------
+    function seedPoints(){
+      const rng = PRNG(SEED);
+      pts = new Float32Array(NUM*2);
+      if(!ISO){
+        pts_world = null; // Não usado no modo 2D normal
+        for(let i=0;i<NUM;i++){ pts[2*i] = rng()*canvasWidth; pts[2*i+1] = rng()*canvasHeight; }
+      } else {
+        // Modo isométrico: geramos sementes no espaço do mundo [0,1]x[0,1]
+        // e também as projetamos para o espaço da tela para a otimização da grade.
+        pts_world = new Float32Array(NUM * 2);
+        const cx = canvasWidth*0.5;
+
+        // A proporção para um ângulo de 30 graus é tan(30deg)
+        const angle = 30 * Math.PI / 180;
+        const y_scale_ratio = Math.tan(angle); // Aproximadamente 0.577
+
+        // Ajusta a escala para caber na largura do canvas
+        const scaleX = canvasWidth * 0.5;
+        const scaleY = scaleX * y_scale_ratio;
+
+        // Centraliza a forma verticalmente
+        const totalIsoHeight = 2 * scaleY;
+        const top_margin = (canvasHeight - totalIsoHeight) * 0.5;
+
+        for(let i=0;i<NUM;i++){
+          const wx = rng();
+          const wy = rng();
+          pts_world[2*i] = wx;
+          pts_world[2*i+1] = wy;
+
+          // Projeta para o espaço da tela para usar na grade de otimização
+          const sx = cx + (wx - wy) * scaleX;
+          const sy = top_margin + (wx + wy) * scaleY;
+          pts[2*i] = sx;
+          pts[2*i+1] = sy;
+        }
+      }
+    }
+
+    function buildGrid(){
+      gridSize = Math.max(8, Math.round(Math.sqrt(NUM)));
+      csx = canvasWidth / gridSize; csy = canvasHeight / gridSize;
+      grid = new Array(gridSize*gridSize); for(let i=0;i<grid.length;i++) grid[i] = [];
+      // A grade é sempre construída com as coordenadas da tela (pts)
+      for(let i=0;i<NUM;i++){
+        const gx = Math.min(gridSize-1, Math.floor(pts[2*i]   / csx));
+        const gy = Math.min(gridSize-1, Math.floor(pts[2*i+1] / csy));
+        if (gx >= 0 && gx < gridSize && gy >= 0 && gy < gridSize) {
+            grid[gy*gridSize + gx].push(i);
+        }
+      }
+    }
+
+    function candidates(x, y){
+      const gx = Math.min(gridSize-1, Math.floor(x / csx));
+      const gy = Math.min(gridSize-1, Math.floor(y / csy));
+      let out = [];
+      for(let r=1; r<=2; r++){
+        out.length = 0;
+        for(let j=gy-r; j<=gy+r; j++){
+          if(j<0||j>=gridSize) continue;
+          for(let i=gx-r; i<=gx+r; i++){
+            if(i<0||i>=gridSize) continue;
+            const arr = grid[j*gridSize+i];
+            if(arr && arr.length) out.push(...arr);
+          }
+        }
+        if(out.length || r===2) return out;
+      }
+      return out;
+    }
+
+    function drawCracks(){
+      const t0 = performance.now();
+      const img = ctx.createImageData(canvasWidth, canvasHeight);
+      const d = img.data;
+
+      if (!ISO) {
+        // --- Renderização 2D Padrão ---
+        for(let y=0;y<canvasHeight;y++){
+          for(let x=0;x<canvasWidth;x++){
+            const cand = candidates(x,y);
+            let b1 = Infinity, b2 = Infinity;
+
+            if(cand.length){
+              for(let k=0;k<cand.length;k++){
+                const i = cand[k];
+                const dx = x - pts[2*i];
+                const dy = y - pts[2*i+1];
+                const dist2 = dx*dx + dy*dy;
+                if(dist2 < b1){ b2 = b1; b1 = dist2; }
+                else if(dist2 < b2){ b2 = dist2; }
+              }
+            } else {
+              for(let i=0;i<NUM;i++){
+                const dx = x - pts[2*i];
+                const dy = y - pts[2*i+1];
+                const dist2 = dx*dx + dy*dy;
+                if(dist2 < b1){ b2 = b1; b1 = dist2; }
+                else if(dist2 < b2){ b2 = dist2; }
+              }
+            }
+
+            const delta = Math.sqrt(b2) - Math.sqrt(b1);
+            const p = (y*canvasWidth + x)*4;
+            if(delta < EPS){
+              d[p]   = EDGE[0];
+              d[p+1] = EDGE[1];
+              d[p+2] = EDGE[2];
+              d[p+3] = 255;
+            } else {
+              d[p+3] = 0;
+            }
           }
+        }
+      } else {
+        // --- Renderização Isométrica Corrigida (30 graus) ---
+        const angle = 30 * Math.PI / 180;
+        const y_scale_ratio = Math.tan(angle);
+        const scaleX = canvasWidth * 0.5;
+        const scaleY = scaleX * y_scale_ratio;
+        const totalIsoHeight = 2 * scaleY;
+        const top_margin = (canvasHeight - totalIsoHeight) * 0.5;
+        const cx = canvasWidth * 0.5;
 
-          // distance difference between nearest and second nearest (using sqrt to get real distances)
-          const distDiff = Math.sqrt(d2) - Math.sqrt(d1);
+        const scaled_eps = EPS * Math.sqrt(2) / canvasWidth;
 
-          // If the difference is small, we are near an edge (Voronoi boundary). Use threshold to control width.
-          if (distDiff < threshold) {
-            setPixel(data, p, EDGE_COLOR[0], EDGE_COLOR[1], EDGE_COLOR[2], 255);
-          } else {
-            // transparent background so you can overlay on other maps if desired
-            setPixel(data, p, 0, 0, 0, 0);
+        for(let sy=0; sy<canvasHeight; sy++){
+          for(let sx=0; sx<canvasWidth; sx++){
+            const p = (sy*canvasWidth + sx)*4;
+
+            // "Desprojeta" o ponto do ecrã (sx, sy) para o mundo (wx, wy)
+            const sx_prime = sx - cx;
+            const sy_prime = sy - top_margin;
+
+            // Evita divisão por zero se o canvas for muito estreito
+            if (scaleY === 0) {
+              d[p+3]=0;
+              continue;
+            }
+
+            const wx = sx_prime / (2 * scaleX) + sy_prime / (2 * scaleY);
+            const wy = sy_prime / (2 * scaleY) - sx_prime / (2 * scaleX);
+
+            // Se o ponto do mundo estiver fora de [0,1]x[0,1], está fora do losango
+            if (wx < 0 || wx > 1 || wy < 0 || wy > 1) {
+                d[p+3] = 0;
+                continue;
+            }
+
+            const cand = candidates(sx, sy);
+            let b1 = Infinity, b2 = Infinity;
+
+            const loop_pts = cand.length ? cand : Array.from({length: NUM}, (_, i) => i);
+
+            for (let k = 0; k < loop_pts.length; k++) {
+              const i = loop_pts[k];
+              // A distância é calculada no espaço do "MUNDO"
+              const dx = wx - pts_world[2*i];
+              const dy = wy - pts_world[2*i+1];
+              const dist2 = dx*dx + dy*dy;
+              if(dist2 < b1){ b2 = b1; b1 = dist2; }
+              else if(dist2 < b2){ b2 = dist2; }
+            }
+
+            const delta = Math.sqrt(b2) - Math.sqrt(b1);
+            if(delta < scaled_eps){
+              d[p]   = EDGE[0];
+              d[p+1] = EDGE[1];
+              d[p+2] = EDGE[2];
+              d[p+3] = 255;
+            } else {
+              d[p+3] = 0;
+            }
           }
         }
       }
 
-      ctx.putImageData(imageData, 0, 0);
-    }
+      ctx.putImageData(img, 0, 0);
+      const t1 = performance.now();
+      const isoTxt = ISO ? '• isométrico (30°)' : '';
+      infoEl.textContent = `Canvas ${canvasWidth}×${canvasHeight} • sementes ${NUM} • ε=${EPS.toFixed(1)} ${isoTxt} • ${Math.round(t1-t0)}ms`;
+    }
 
-    // UI wiring
-    const thSlider = document.getElementById('th');
-    const thVal = document.getElementById('thVal');
-    const regen = document.getElementById('regenerate');
+    function resizeCanvas(){
+      cvs.width = canvasWidth; cvs.height = canvasHeight;
+    }
 
-    function render(){
-      const t = parseFloat(thSlider.value);
-      thVal.textContent = t.toFixed(1);
-      drawEdgesOnly(t);
-    }
+    function regenerate(all=true){
+      if(all){
+        resizeCanvas();
+        seedPoints();
+        buildGrid();
+      }
+      drawCracks();
+    }
 
-    thSlider.addEventListener('input', render);
-    regen.addEventListener('click', () => { pts = generatePoints(); render(); });
+    // ---------- UI ----------
+    function syncLabels(){
+      numv.textContent = `${NUM}`;
+      epsv.textContent = EPS.toFixed(1);
+    }
 
-    // initial render
-    render();
-  </script>
+    wEl.addEventListener('change', ()=>{ canvasWidth = +wEl.value|0; regenerate(true); });
+    hEl.addEventListener('change', ()=>{ canvasHeight = +hEl.value|0; regenerate(true); });
+    numEl.addEventListener('input', ()=>{ NUM = +numEl.value|0; syncLabels(); });
+    numEl.addEventListener('change', ()=>regenerate(true));
+    epsEl.addEventListener('input', ()=>{ EPS = (+epsEl.value)/10; syncLabels(); regenerate(false); });
+    colorEl.addEventListener('input', ()=>{ const [r,g,b] = hexToRGB(colorEl.value); EDGE = [r,g,b,255]; regenerate(false); });
+    seedEl.addEventListener('change', ()=>{ SEED = +seedEl.value|0; regenerate(true); });
+    isoEl.addEventListener('change', ()=>{ ISO = !!isoEl.checked; regenerate(true); });
+    regenBtn.addEventListener('click', ()=>regenerate(true));
+
+    rerollBtn.addEventListener('click', ()=>{
+      SEED = (Math.random()*0xFFFFFFFF)>>>0;
+      seedEl.value = SEED;
+      regenerate(true);
+    });
+
+    saveBtn.addEventListener('click', ()=>{
+      const url = cvs.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = url; a.download = 'rachaduras_iso_30.png'; a.click();
+    });
+
+    // ---------- init ----------
+    syncLabels();
+    regenerate(true);
+  </script>
 </body>
 </html>
