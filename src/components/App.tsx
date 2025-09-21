@@ -711,9 +711,6 @@ const App: React.FC = () => {
                                 try { (config as any).render.showLaneOutlines = false; } catch (e) {}
                                 setLaneOutlinesEnabled(false);
                             }
-                            if (!noiseOverlayVisible) {
-                                setNoiseOverlayVisible(true);
-                            }
                         } else if (laneOutlinePrevRef.current !== null) {
                             const restore = laneOutlinePrevRef.current;
                             laneOutlinePrevRef.current = null;
