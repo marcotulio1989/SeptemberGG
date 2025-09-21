@@ -114,7 +114,7 @@ const NoiseZoning: InternalNoiseZoning = {
   _contourCache: null as null | { key: string; contours: number[][][] },
   _showIntersectionOutline: false,
   _DEBUG: false,
-  _pixelSize: 4,
+  _pixelSize: 2,
   _noiseThreshold: 0.5,
   _notifyChange() {
     if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
@@ -365,7 +365,8 @@ const NoiseZoning: InternalNoiseZoning = {
     // NO legacy full-image cache path: always use pixelated coarse rendering
     // Determine sampling step in screen pixels (pixelated blocks)
     const requestedStep = computeSampleStep(w, h, zoom);
-    const minPxSize = (this as any)._pixelSize ?? 4;
+    const safeZoom = Math.max(zoom, 1e-6);
+    const minPxSize = Math.max(1, Math.floor((this as any)._pixelSize ?? 2));
     let sampleStepPx = Math.max(requestedStep, minPxSize);
     // Compute coarse grid size in screen-space so the number of samples is bounded
     const regionPxW = (maxPx - minPx + 1);
@@ -377,7 +378,10 @@ const NoiseZoning: InternalNoiseZoning = {
     });
     let { w: estimatedCoarseW, h: estimatedCoarseH } = estimateCoarseDims();
     // Cap total cells to avoid explosion at high zoom — adaptively increase sampleStepPx
-    const MAX_CELLS = 20000; // safe upper bound for cells (tunable)
+    const baseMaxCells = 60000;
+    const zoomBoost = Math.max(1, Math.pow(safeZoom, 1.2));
+    const userPixelBoost = Math.max(1, 4 / Math.max(1, sampleStepPx));
+    const MAX_CELLS = Math.min(180000, Math.floor(baseMaxCells * zoomBoost * userPixelBoost));
     let totalCells = estimatedCoarseW * estimatedCoarseH;
     if (totalCells > MAX_CELLS) {
       const scale = Math.sqrt(totalCells / MAX_CELLS);
@@ -390,7 +394,6 @@ const NoiseZoning: InternalNoiseZoning = {
     }
     // helper: convert screen px -> world coords (handles isometric)
     // Precompute sample positions: sample at center of each coarse cell in screen-space, map back to world and sample noise
-    const safeZoom = Math.max(zoom, 1e-6);
     const invZoom = 1 / safeZoom;
     const screenToWorld = (screenX: number, screenY: number) => {
       if (renderModeIsometric) {
@@ -595,8 +598,8 @@ const NoiseZoning: InternalNoiseZoning = {
 
     const baseSeed = Math.floor((this as any)._handSeed ?? this._seed ?? 0);
     (this as any)._handSeed = baseSeed;
-    const jitterBase = Math.max(0.35, pixelSizePx * 0.45);
-    const strokeBase = Math.max(0.75, pixelSizePx * 0.6);
+    const jitterBase = Math.max(0.25, pixelSizePx * 0.35);
+    const strokeBase = Math.max(0.55, pixelSizePx * 0.5);
 
     const jitterFor = (gridX: number, gridY: number, variant: number) => {
       const s = Math.sin((gridX * 127.1 + gridY * 311.7 + (baseSeed + variant) * 74.7) * 12.9898) * 43758.5453;
@@ -675,7 +678,7 @@ const NoiseZoning: InternalNoiseZoning = {
           const noiseMix = Math.max(noiseThreshold, (coarse[idx] + coarse[nIdx]) * 0.5);
           const intensity = Math.max(0.1, Math.min(1, (noiseMix - noiseThreshold) * 2));
 
-          this._ctx.lineWidth = Math.max(0.6, width);
+          this._ctx.lineWidth = Math.max(0.45, width);
           this._ctx.globalAlpha = Math.max(0.15, Math.min(1, aNorm * 0.6 + intensity * 0.45));
 
           const dx = targetX - originX;
@@ -976,7 +979,7 @@ const NoiseZoning: InternalNoiseZoning = {
     if (this.enabled) this.redraw();
   },
   getPixelSize() {
-    return (this as any)._pixelSize ?? 4;
+    return (this as any)._pixelSize ?? 2;
   },
   setIntersectionOutlineEnabled(on: boolean) {
     this._contourCache = null;
