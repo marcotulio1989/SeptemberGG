@@ -33,6 +33,260 @@ const computeSampleStep = (w: number, h: number, zoom: number) => {
   return Math.max(1, Math.min(5, step || 1));
 };
 
+const createMulberry32 = (seed: number) => {
+  let t = seed >>> 0;
+  return () => {
+    t = (t + 0x6D2B79F5) | 0;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+type CrackMaskBounds = { minX: number; minY: number; maxX: number; maxY: number } | null;
+
+type CrackMaskResult = {
+  mask: Uint8Array;
+  bounds: CrackMaskBounds;
+  seed: number;
+};
+
+const generateVoronoiCrackMask = (
+  intersectionMask: Uint8Array,
+  coarseW: number,
+  coarseH: number,
+  opts: { seed: number; epsilon: number; density?: number }
+): CrackMaskResult => {
+  const totalCells = coarseW * coarseH;
+  const crackMask = new Uint8Array(totalCells);
+  if (!totalCells || coarseW <= 0 || coarseH <= 0) {
+    return { mask: crackMask, bounds: null, seed: opts.seed >>> 0 };
+  }
+
+  let minX = coarseW;
+  let minY = coarseH;
+  let maxX = -1;
+  let maxY = -1;
+  let insideCount = 0;
+  for (let y = 0; y < coarseH; y++) {
+    for (let x = 0; x < coarseW; x++) {
+      const idx = y * coarseW + x;
+      if (!intersectionMask[idx]) continue;
+      insideCount++;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+
+  if (insideCount < 3 || maxX < minX || maxY < minY) {
+    return { mask: crackMask, bounds: null, seed: opts.seed >>> 0 };
+  }
+
+  const width = Math.max(1, maxX - minX + 1);
+  const height = Math.max(1, maxY - minY + 1);
+  const area = width * height;
+  const density = typeof opts.density === 'number' && isFinite(opts.density) ? Math.max(0.05, opts.density) : 0.45;
+  const areaSeeds = Math.round(Math.sqrt(area) * 2.4);
+  const maskSeeds = Math.round(insideCount * density);
+  const upperBound = Math.max(8, Math.min(4000, insideCount * 2));
+  let numSeeds = Math.max(8, Math.min(upperBound, Math.max(areaSeeds, maskSeeds)));
+  if (numSeeds < 4) numSeeds = Math.min(insideCount, 4);
+  if (numSeeds < 2) {
+    return { mask: crackMask, bounds: { minX, minY, maxX, maxY }, seed: opts.seed >>> 0 };
+  }
+
+  const seed = opts.seed >>> 0;
+  const rng = createMulberry32(seed || 1);
+  const seeds = new Float32Array(numSeeds * 2);
+  for (let i = 0; i < numSeeds; i++) {
+    seeds[i * 2] = minX + rng() * width;
+    seeds[i * 2 + 1] = minY + rng() * height;
+  }
+
+  const gridDim = Math.max(2, Math.round(Math.sqrt(numSeeds)));
+  const cellW = width / gridDim || 1;
+  const cellH = height / gridDim || 1;
+  const invCellW = 1 / cellW;
+  const invCellH = 1 / cellH;
+  const buckets: number[][] = new Array(gridDim * gridDim);
+  for (let i = 0; i < buckets.length; i++) buckets[i] = [];
+  for (let i = 0; i < numSeeds; i++) {
+    const sx = seeds[i * 2];
+    const sy = seeds[i * 2 + 1];
+    let gx = Math.floor((sx - minX) * invCellW);
+    let gy = Math.floor((sy - minY) * invCellH);
+    if (!Number.isFinite(gx)) gx = 0;
+    if (!Number.isFinite(gy)) gy = 0;
+    gx = Math.max(0, Math.min(gridDim - 1, gx));
+    gy = Math.max(0, Math.min(gridDim - 1, gy));
+    buckets[gy * gridDim + gx].push(i);
+  }
+
+  const fallbackCandidates = Array.from({ length: numSeeds }, (_, i) => i);
+  const candidates: number[] = [];
+  const epsilon = Math.max(0.15, opts.epsilon);
+
+  const gatherCandidates = (localX: number, localY: number) => {
+    candidates.length = 0;
+    let gx = Math.floor((localX - minX) * invCellW);
+    let gy = Math.floor((localY - minY) * invCellH);
+    if (!Number.isFinite(gx)) gx = 0;
+    if (!Number.isFinite(gy)) gy = 0;
+    gx = Math.max(0, Math.min(gridDim - 1, gx));
+    gy = Math.max(0, Math.min(gridDim - 1, gy));
+    for (let radius = 0; radius <= 2; radius++) {
+      for (let y0 = gy - radius; y0 <= gy + radius; y0++) {
+        if (y0 < 0 || y0 >= gridDim) continue;
+        for (let x0 = gx - radius; x0 <= gx + radius; x0++) {
+          if (x0 < 0 || x0 >= gridDim) continue;
+          const bucket = buckets[y0 * gridDim + x0];
+          if (!bucket || bucket.length === 0) continue;
+          for (let j = 0; j < bucket.length; j++) {
+            candidates.push(bucket[j]);
+          }
+        }
+      }
+      if (candidates.length > 0 || radius === 2) break;
+    }
+    if (candidates.length === 0) {
+      for (let j = 0; j < fallbackCandidates.length; j++) candidates.push(fallbackCandidates[j]);
+    }
+  };
+
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const idx = y * coarseW + x;
+      if (!intersectionMask[idx]) continue;
+      const sampleX = x + 0.5;
+      const sampleY = y + 0.5;
+      gatherCandidates(sampleX, sampleY);
+      let best1 = Infinity;
+      let best2 = Infinity;
+      for (let k = 0; k < candidates.length; k++) {
+        const sIdx = candidates[k];
+        const dx = sampleX - seeds[sIdx * 2];
+        const dy = sampleY - seeds[sIdx * 2 + 1];
+        const dist2 = dx * dx + dy * dy;
+        if (dist2 < best1) {
+          best2 = best1;
+          best1 = dist2;
+        } else if (dist2 < best2) {
+          best2 = dist2;
+        }
+      }
+      if (!(best2 < Infinity)) continue;
+      const delta = Math.sqrt(best2) - Math.sqrt(best1);
+      if (delta < epsilon) {
+        crackMask[idx] = 1;
+      }
+    }
+  }
+
+  return { mask: crackMask, bounds: { minX, minY, maxX, maxY }, seed };
+};
+
+const drawVoronoiCracks = (
+  ctx: CanvasRenderingContext2D,
+  crackMask: Uint8Array,
+  intersectionMask: Uint8Array,
+  coarseCenters: Float32Array,
+  coarseW: number,
+  coarseH: number,
+  bounds: CrackMaskBounds,
+  pixelSizePx: number,
+  bbox: { minPx: number; minPy: number; maxPx: number; maxPy: number },
+  seed: number
+) => {
+  if (!ctx || !crackMask.length) return;
+  const minCellX = bounds ? Math.max(0, bounds.minX) : 0;
+  const minCellY = bounds ? Math.max(0, bounds.minY) : 0;
+  const maxCellX = bounds ? Math.min(coarseW - 1, bounds.maxX) : coarseW - 1;
+  const maxCellY = bounds ? Math.min(coarseH - 1, bounds.maxY) : coarseH - 1;
+  if (maxCellX < minCellX || maxCellY < minCellY) return;
+
+  const jitterScale = Math.max(0, Math.min(1, 0.35));
+  const dpr = typeof window !== 'undefined' && Number.isFinite((window as any).devicePixelRatio)
+    ? (window as any).devicePixelRatio
+    : 1;
+  const baseLineWidth = pixelSizePx * 0.22 * dpr;
+  const lineWidth = Math.max(1, Math.min(pixelSizePx * 0.75, baseLineWidth));
+  const alpha = 0.88;
+  const color = `rgba(0,229,255,${alpha.toFixed(3)})`;
+  const neighbors = [
+    [1, 0],
+    [0, 1],
+    [1, 1],
+    [-1, 1],
+  ];
+
+  const jitterForCell = (index: number) => {
+    const base = (index + 1) ^ seed;
+    let h = Math.imul(base ^ (base >>> 16), 2246822519);
+    h ^= h >>> 13;
+    h = Math.imul(h ^ (h >>> 16), 3266489917);
+    const fx = ((h & 0xffff) / 0xffff) - 0.5;
+    const fy = (((h >>> 16) & 0xffff) / 0xffff) - 0.5;
+    return {
+      dx: fx * pixelSizePx * jitterScale,
+      dy: fy * pixelSizePx * jitterScale,
+    };
+  };
+
+  ctx.save();
+  ctx.lineWidth = lineWidth;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = color;
+  ctx.beginPath();
+  let hasSegments = false;
+
+  for (let y = minCellY; y <= maxCellY; y++) {
+    for (let x = minCellX; x <= maxCellX; x++) {
+      const idx = y * coarseW + x;
+      if (!crackMask[idx] || !intersectionMask[idx]) continue;
+      const cx = coarseCenters[idx * 2];
+      const cy = coarseCenters[idx * 2 + 1];
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
+      if (cx < bbox.minPx - pixelSizePx || cx > bbox.maxPx + pixelSizePx || cy < bbox.minPy - pixelSizePx || cy > bbox.maxPy + pixelSizePx) continue;
+      const jitter = jitterForCell(idx);
+      const px = cx + jitter.dx;
+      const py = cy + jitter.dy;
+      for (const [dx, dy] of neighbors) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (ny < y || (ny === y && nx <= x)) continue;
+        if (nx < minCellX || nx > maxCellX || ny < minCellY || ny > maxCellY) continue;
+        const nIdx = ny * coarseW + nx;
+        if (!crackMask[nIdx] || !intersectionMask[nIdx]) continue;
+        const ncx = coarseCenters[nIdx * 2];
+        const ncy = coarseCenters[nIdx * 2 + 1];
+        if (!Number.isFinite(ncx) || !Number.isFinite(ncy)) continue;
+        const njitter = jitterForCell(nIdx);
+        const npx = ncx + njitter.dx;
+        const npy = ncy + njitter.dy;
+        const segDx = npx - px;
+        const segDy = npy - py;
+        const segLen = Math.hypot(segDx, segDy);
+        if (!(segLen > 0.5)) continue;
+        ctx.moveTo(px, py);
+        ctx.lineTo(npx, npy);
+        hasSegments = true;
+      }
+    }
+  }
+
+  if (hasSegments) {
+    try {
+      ctx.stroke();
+    } catch (e) {
+      // ignore drawing errors
+    }
+  }
+  ctx.restore();
+};
+
 
 export type NoiseZoningAPI = {
   attach: (canvas: HTMLCanvasElement) => void;
@@ -84,7 +338,7 @@ type InternalNoiseZoning = NoiseZoningAPI & {
   _DEBUG?: boolean;
   _pixelSize?: number;
   // _pixelCache.data may either be a full Uint8ClampedArray image buffer (legacy)
-  // or a small coarse-cache object { type: 'coarse', coarseW, coarseH, intersectionMask: Uint8Array }
+  // or a small coarse-cache object { type: 'coarse', coarseW, coarseH, intersectionMask: Uint8Array, crackMask?: Uint8Array }
   _pixelCache?: {
     w: number; h: number; cameraX: number; cameraY: number; zoom: number; data: any; bbox?: [number, number, number, number];
   } | null;
@@ -586,6 +840,18 @@ const NoiseZoning: InternalNoiseZoning = {
     for (let i = 0; i < coarse.length; i++) {
       intersectionMask[i] = (coarse[i] > noiseThreshold && coarseRoadMask[i]) ? 1 : 0;
     }
+
+    const viewHash = (
+      (Math.floor(cameraX * 928371) ^ Math.floor(cameraY * 572113) ^ Math.floor(zoom * 1000) ^ gridMinX ^ (gridMinY << 1)) >>> 0
+    );
+    const crackSeed = ((this._seed >>> 0) ^ viewHash) >>> 0;
+    const crackEpsilon = 0.45 + Math.min(0.35, pixelSizePx * 0.06);
+    const crackDensity = 0.4 + Math.min(0.4, pixelSizePx * 0.015);
+    const crackResult = generateVoronoiCrackMask(intersectionMask, coarseW, coarseH, {
+      seed: crackSeed,
+      epsilon: crackEpsilon,
+      density: crackDensity,
+    });
     // Pixelated rendering: draw one rect per coarse cell using nearest-neighbor.
     // This avoids allocating a full ImageData buffer and reduces memory churn.
     try {
@@ -621,6 +887,22 @@ const NoiseZoning: InternalNoiseZoning = {
     } catch (e) {
       // If rect drawing fails, clear canvas as a safe fallback
       try { this._ctx.clearRect(0, 0, w, h); } catch (e2) {}
+    }
+    if (crackResult.bounds) {
+      try {
+        drawVoronoiCracks(
+          this._ctx,
+          crackResult.mask,
+          intersectionMask,
+          coarseCenters,
+          coarseW,
+          coarseH,
+          crackResult.bounds,
+          pixelSizePx,
+          { minPx, minPy, maxPx, maxPy },
+          crackResult.seed
+        );
+      } catch (e) {}
     }
     // If requested, draw outlines around the road geometry intersecting noisy areas
     if ((this as any)._showIntersectionOutline) {
@@ -768,6 +1050,9 @@ const NoiseZoning: InternalNoiseZoning = {
         worldStep,
         pixelSizePx,
         intersectionMask: intersectionMask,
+        crackMask: crackResult.mask,
+        crackBounds: crackResult.bounds,
+        crackSeed: crackResult.seed,
       },
     };
     try {
