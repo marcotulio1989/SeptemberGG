@@ -24,6 +24,7 @@ type CrackRandomFlags = {
     maxSamplesAlong: boolean;
     maxSamplesAcross: boolean;
     probeStep: boolean;
+    supersample: boolean;
     patternAssignments: boolean;
 };
 
@@ -271,6 +272,7 @@ const App: React.FC = () => {
     const [crackMaxSamplesAlong, setCrackMaxSamplesAlong] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAlong ?? 240);
     const [crackMaxSamplesAcross, setCrackMaxSamplesAcross] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAcross ?? 96);
     const [crackProbeStep, setCrackProbeStep] = useState<number>(() => (config as any).render.crackedRoadProbeStepM ?? 1.1);
+    const [crackSupersample, setCrackSupersample] = useState<number>(() => (config as any).render.crackedRoadSupersample ?? 3);
     const [crackRandomFlags, setCrackRandomFlags] = useState<CrackRandomFlags>({
         color: true,
         alpha: true,
@@ -283,6 +285,7 @@ const App: React.FC = () => {
         maxSamplesAlong: true,
         maxSamplesAcross: true,
         probeStep: true,
+        supersample: true,
         patternAssignments: true,
     });
     const broadcastCrackedRoadConfigChange = useCallback(() => {
@@ -361,6 +364,7 @@ const App: React.FC = () => {
         setCrackMaxSamplesAlong(240);
         setCrackMaxSamplesAcross(96);
         setCrackProbeStep(1.1);
+        setCrackSupersample(3);
         try { (config as any).render.crackedRoadPatternAssignments = null; } catch (e) {}
         broadcastCrackedRoadConfigChange();
         setUiTick(t => t + 1);
@@ -459,6 +463,13 @@ const App: React.FC = () => {
             setCrackProbeStep(nextProbeStep);
         }
         renderCfg.crackedRoadProbeStepM = Math.max(0.25, nextProbeStep);
+
+        let nextSupersample = crackSupersample;
+        if (flags.supersample) {
+            nextSupersample = randomFloat(1.2, 4.8, 2);
+            setCrackSupersample(nextSupersample);
+        }
+        renderCfg.crackedRoadSupersample = Math.max(1, Math.min(8, nextSupersample));
 
         if (flags.patternAssignments) {
             const patternCount = CRACK_PATTERNS.length;
@@ -595,6 +606,7 @@ const App: React.FC = () => {
         renderCfg.crackedRoadMaxSamplesAlong = Math.max(4, Math.round(crackMaxSamplesAlong));
         renderCfg.crackedRoadMaxSamplesAcross = Math.max(4, Math.round(crackMaxSamplesAcross));
         renderCfg.crackedRoadProbeStepM = Math.max(0.25, crackProbeStep);
+        renderCfg.crackedRoadSupersample = Math.max(1, Math.min(8, crackSupersample));
         broadcastCrackedRoadConfigChange();
     }, [
         crackAlpha,
@@ -604,6 +616,7 @@ const App: React.FC = () => {
         crackMaxSeeds,
         crackMinLength,
         crackProbeStep,
+        crackSupersample,
         crackSampleAlong,
         crackSampleAcross,
         crackSeedDensity,
@@ -1446,6 +1459,40 @@ const App: React.FC = () => {
                                     const raw = parseNumberInput(e.target.value);
                                     const nv = Number.isFinite(raw) ? Math.max(0.25, raw) : 1.1;
                                     setCrackProbeStep(nv);
+                                }}
+                                style={{
+                                    padding: '4px 6px',
+                                    borderRadius: 4,
+                                    border: '1px solid rgba(255,255,255,0.2)',
+                                    background: 'rgba(255,255,255,0.06)',
+                                    color: '#ECEFF1',
+                                }}
+                            />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <label htmlFor="crack-supersample" style={{ fontSize: 11, fontWeight: 600 }}>Supersample</label>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, opacity: 0.75 }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={crackRandomFlags.supersample}
+                                        onChange={() => toggleCrackRandomFlag('supersample')}
+                                        style={{ margin: 0 }}
+                                    />
+                                    Rand
+                                </label>
+                            </div>
+                            <input
+                                id="crack-supersample"
+                                type="number"
+                                min={1}
+                                max={8}
+                                step={0.1}
+                                value={crackSupersample}
+                                onChange={(e) => {
+                                    const raw = parseNumberInput(e.target.value);
+                                    const nv = Number.isFinite(raw) ? Math.min(8, Math.max(1, raw)) : 3;
+                                    setCrackSupersample(nv);
                                 }}
                                 style={{
                                     padding: '4px 6px',
