@@ -136,8 +136,9 @@ const generateRoadCrackSprite = ({
     const isoOriginX = expandedMinX;
     const isoOriginY = expandedMinY;
 
-    const pixelCols = Math.max(16, Math.min(2048, Math.round(Math.min(maxSamplesAlong, Math.max(2, samplesAlong)) * 4)));
-    const pixelRows = Math.max(16, Math.min(2048, Math.round(Math.min(maxSamplesAcross, Math.max(2, samplesAcross)) * 4)));
+    const qualityMultiplier = 8;
+    const pixelCols = Math.max(24, Math.min(2048, Math.round(Math.min(maxSamplesAlong, Math.max(2, samplesAlong)) * qualityMultiplier)));
+    const pixelRows = Math.max(24, Math.min(2048, Math.round(Math.min(maxSamplesAcross, Math.max(2, samplesAcross)) * qualityMultiplier)));
     if (!(pixelCols > 1) || !(pixelRows > 1)) return null;
 
     const spanScaleX = expandedSpanX / pixelCols;
@@ -186,12 +187,17 @@ const generateRoadCrackSprite = ({
     const fallbackIndices = Array.from({ length: actualSeeds }, (_, i) => i);
     const buffer = new Uint8Array(pixelCols * pixelRows * 4);
     const candidateBuf: number[] = [];
-    let hits = 0;
+    let totalStrength = 0;
+
+    const jitterScaleX = spanScaleX * 0.45;
+    const jitterScaleY = spanScaleY * 0.45;
 
     for (let py = 0; py < pixelRows; py++) {
-        const isoY = isoOriginY + (py + 0.5) * spanScaleY;
+        const baseIsoY = isoOriginY + (py + 0.5) * spanScaleY;
         for (let px = 0; px < pixelCols; px++) {
-            const isoX = isoOriginX + (px + 0.5) * spanScaleX;
+            const baseIsoX = isoOriginX + (px + 0.5) * spanScaleX;
+            const isoX = baseIsoX + (rng() - 0.5) * jitterScaleX;
+            const isoY = baseIsoY + (rng() - 0.5) * jitterScaleY;
             const world = isoToWorld({ x: isoX, y: isoY });
             if (!Number.isFinite(world.x) || !Number.isFinite(world.y)) continue;
             const relX = world.x - baseX;
@@ -237,18 +243,28 @@ const generateRoadCrackSprite = ({
             if (!Number.isFinite(best1) || !Number.isFinite(best2) || best2 === Infinity) continue;
 
             const delta = Math.sqrt(best2) - Math.sqrt(best1);
-            if (delta < epsilonWorld) {
-                const baseIdx = (py * pixelCols + px) * 4;
-                buffer[baseIdx] = 255;
-                buffer[baseIdx + 1] = 255;
-                buffer[baseIdx + 2] = 255;
-                buffer[baseIdx + 3] = 255;
-                hits++;
-            }
+            const threshold = epsilonWorld * (0.6 + (rng() - 0.5) * 0.55);
+            const falloff = Math.max(epsilonWorld * (2.2 + rng() * 0.9), 1e-6);
+            const closeness = 1 - clamp((delta - threshold) / falloff, 0, 1);
+            if (!(closeness > 0)) continue;
+
+            const centerFactor = clamp(1 - Math.abs(lateral) / (halfWidth + 1e-3), 0, 1);
+            const handmadeBias = 0.25 + 0.75 * Math.pow(centerFactor, 0.7);
+            const irregular = 0.85 + (rng() - 0.5) * 0.3;
+            const strength = clamp(Math.pow(closeness, 0.65) * handmadeBias * irregular, 0, 1);
+            if (!(strength > 0.01)) continue;
+
+            const baseIdx = (py * pixelCols + px) * 4;
+            const alpha = Math.round(strength * 255);
+            buffer[baseIdx] = 255;
+            buffer[baseIdx + 1] = 255;
+            buffer[baseIdx + 2] = 255;
+            buffer[baseIdx + 3] = alpha;
+            totalStrength += strength;
         }
     }
 
-    if (hits === 0) return null;
+    if (totalStrength <= 0) return null;
 
     return {
         buffer,
@@ -1382,8 +1398,9 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 if (!spriteData) return;
                 try {
                     const baseTexture = PIXI.BaseTexture.fromBuffer(spriteData.buffer, spriteData.width, spriteData.height, {
-                        scaleMode: PIXI.SCALE_MODES.NEAREST,
+                        scaleMode: PIXI.SCALE_MODES.LINEAR,
                     });
+                    try { baseTexture.mipmap = PIXI.MIPMAP_MODES.ON; } catch (e) {}
                     const texture = new PIXI.Texture(baseTexture);
                     const sprite = new PIXI.Sprite(texture);
                     sprite.x = spriteData.spriteX;
