@@ -17,7 +17,7 @@ export interface CrackPattern {
     description: string;
     seedOffset: number;
     multipliers?: CrackPatternMultipliers;
-    thresholdOffset?: number;
+    thicknessOffset?: number;
     color?: number;
 }
 
@@ -40,7 +40,7 @@ export const CRACK_PATTERNS: CrackPattern[] = [
             alpha: 0.9,
             minLength: 1.05,
         },
-        thresholdOffset: 0.08,
+        thicknessOffset: 0.08,
         color: 0x8ed9ff,
     },
     {
@@ -58,7 +58,7 @@ export const CRACK_PATTERNS: CrackPattern[] = [
             maxSamplesAlong: 1.1,
             maxSamplesAcross: 1.05,
         },
-        thresholdOffset: -0.12,
+        thicknessOffset: -0.12,
         color: 0x00c2ff,
     },
     {
@@ -75,7 +75,7 @@ export const CRACK_PATTERNS: CrackPattern[] = [
             maxSeeds: 0.75,
             minLength: 1.35,
         },
-        thresholdOffset: -0.05,
+        thicknessOffset: -0.05,
         color: 0x00b0ff,
     },
     {
@@ -92,7 +92,7 @@ export const CRACK_PATTERNS: CrackPattern[] = [
             maxSamplesAcross: 0.85,
             strokePx: 0.95,
         },
-        thresholdOffset: -0.02,
+        thicknessOffset: -0.02,
         color: 0x00d1ff,
     },
     {
@@ -108,7 +108,7 @@ export const CRACK_PATTERNS: CrackPattern[] = [
             probeStep: 0.85,
             strokePx: 1.05,
         },
-        thresholdOffset: 0.03,
+        thicknessOffset: 0.03,
         color: 0x00e0ff,
     },
 ];

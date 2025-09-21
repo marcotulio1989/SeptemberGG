@@ -19,7 +19,7 @@ type CrackRandomFlags = {
     seedDensity: boolean;
     sampleAlong: boolean;
     sampleAcross: boolean;
-    threshold: boolean;
+    thickness: boolean;
     minLength: boolean;
     maxSeeds: boolean;
     maxSamplesAlong: boolean;
@@ -267,7 +267,7 @@ const App: React.FC = () => {
     const [crackSeedDensity, setCrackSeedDensity] = useState<number>(() => (config as any).render.crackedRoadSeedDensity ?? 0.055);
     const [crackSampleAlong, setCrackSampleAlong] = useState<number>(() => (config as any).render.crackedRoadSampleDensityAlong ?? 1.6);
     const [crackSampleAcross, setCrackSampleAcross] = useState<number>(() => (config as any).render.crackedRoadSampleDensityAcross ?? 1.1);
-    const [crackThreshold, setCrackThreshold] = useState<number>(() => (config as any).render.crackedRoadVoronoiThreshold ?? 0.65);
+    const [crackThickness, setCrackThickness] = useState<number>(() => (config as any).render.crackedRoadVoronoiThickness ?? 0.6);
     const [crackMinLength, setCrackMinLength] = useState<number>(() => (config as any).render.crackedRoadMinLengthM ?? 5.0);
     const [crackMaxSeeds, setCrackMaxSeeds] = useState<number>(() => (config as any).render.crackedRoadMaxSeeds ?? 520);
     const [crackMaxSamplesAlong, setCrackMaxSamplesAlong] = useState<number>(() => (config as any).render.crackedRoadMaxSamplesAlong ?? 240);
@@ -280,7 +280,7 @@ const App: React.FC = () => {
         seedDensity: true,
         sampleAlong: true,
         sampleAcross: true,
-        threshold: true,
+        thickness: true,
         minLength: true,
         maxSeeds: true,
         maxSamplesAlong: true,
@@ -359,7 +359,7 @@ const App: React.FC = () => {
         setCrackSeedDensity(0.055);
         setCrackSampleAlong(1.6);
         setCrackSampleAcross(1.1);
-        setCrackThreshold(0.65);
+        setCrackThickness(0.6);
         setCrackMinLength(5.0);
         setCrackMaxSeeds(520);
         setCrackMaxSamplesAlong(240);
@@ -429,12 +429,12 @@ const App: React.FC = () => {
         }
         renderCfg.crackedRoadSampleDensityAcross = Math.max(0.1, nextSampleAcross);
 
-        let nextThreshold = crackThreshold;
-        if (flags.threshold) {
-            nextThreshold = randomFloat(0.45, 0.82, 2);
-            setCrackThreshold(nextThreshold);
+        let nextThickness = crackThickness;
+        if (flags.thickness) {
+            nextThickness = randomFloat(0.35, 1.85, 2);
+            setCrackThickness(nextThickness);
         }
-        renderCfg.crackedRoadVoronoiThreshold = Math.min(1, Math.max(0, nextThreshold));
+        renderCfg.crackedRoadVoronoiThickness = Math.max(0.05, nextThickness);
 
         let nextMinLength = crackMinLength;
         if (flags.minLength) {
@@ -601,7 +601,7 @@ const App: React.FC = () => {
         renderCfg.crackedRoadSeedDensity = Math.max(0.001, crackSeedDensity);
         renderCfg.crackedRoadSampleDensityAlong = Math.max(0.1, crackSampleAlong);
         renderCfg.crackedRoadSampleDensityAcross = Math.max(0.1, crackSampleAcross);
-        renderCfg.crackedRoadVoronoiThreshold = Math.min(1, Math.max(0, crackThreshold));
+        renderCfg.crackedRoadVoronoiThickness = Math.max(0.05, crackThickness);
         renderCfg.crackedRoadMinLengthM = Math.max(0.5, crackMinLength);
         renderCfg.crackedRoadMaxSeeds = Math.max(8, Math.round(crackMaxSeeds));
         renderCfg.crackedRoadMaxSamplesAlong = Math.max(4, Math.round(crackMaxSamplesAlong));
@@ -620,7 +620,7 @@ const App: React.FC = () => {
         crackSampleAcross,
         crackSeedDensity,
         crackStrokePx,
-        crackThreshold,
+        crackThickness,
         broadcastCrackedRoadConfigChange,
     ]);
 
@@ -1305,28 +1305,27 @@ const App: React.FC = () => {
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <label htmlFor="crack-threshold" style={{ fontSize: 11, fontWeight: 600 }}>Threshold Voronoi</label>
+                                <label htmlFor="crack-thickness" style={{ fontSize: 11, fontWeight: 600 }}>Espessura ε</label>
                                 <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, opacity: 0.75 }}>
                                     <input
                                         type="checkbox"
-                                        checked={crackRandomFlags.threshold}
-                                        onChange={() => toggleCrackRandomFlag('threshold')}
+                                        checked={crackRandomFlags.thickness}
+                                        onChange={() => toggleCrackRandomFlag('thickness')}
                                         style={{ margin: 0 }}
                                     />
                                     Rand
                                 </label>
                             </div>
                             <input
-                                id="crack-threshold"
+                                id="crack-thickness"
                                 type="number"
-                                min={0}
-                                max={1}
-                                step={0.01}
-                                value={crackThreshold}
+                                min={0.05}
+                                step={0.05}
+                                value={crackThickness}
                                 onChange={(e) => {
                                     const raw = parseNumberInput(e.target.value);
-                                    const nv = Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 1) : 0.65;
-                                    setCrackThreshold(nv);
+                                    const nv = Number.isFinite(raw) ? Math.max(0.05, raw) : 0.6;
+                                    setCrackThickness(nv);
                                 }}
                                 style={{
                                     padding: '4px 6px',
