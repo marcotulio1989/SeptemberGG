@@ -15,7 +15,6 @@ import type { Point } from '../generic_modules/math';
 import NoiseZoning from '../overlays/NoiseZoning';
 import { createGrassTexture } from '../overlays/grassTexture';
 import Quadtree from '../lib/quadtree';
-import { CrackPatternAssignments, getCrackPatternById } from '../lib/crackPatterns';
 // ClipperLib (sem typings completos) - usar require para acessar classes
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const ClipperLib: any = require('clipper-lib');
@@ -153,49 +152,77 @@ const marchingSquaresContoursLocal = (
 };
 
 const generateVoronoiContours = (
-    length: number,
-    width: number,
+    isoBounds: { minX: number; maxX: number; minY: number; maxY: number },
+    worldBounds: { minX: number; maxX: number; minY: number; maxY: number },
     seedCount: number,
-    samplesU: number,
-    samplesV: number,
+    samplesX: number,
+    samplesY: number,
     threshold: number,
     seed: number,
+    options: {
+        isoToWorld: (p: Point) => Point;
+        worldToIso: (p: Point) => Point;
+        worldTester: (x: number, y: number) => boolean;
+    },
 ): LocalPoint[][] => {
-    if (!(length > 0) || !(width > 0)) return [];
-    if (seedCount < 2 || samplesU < 2 || samplesV < 2) return [];
-    const halfW = width * 0.5;
+    const isoWidth = isoBounds.maxX - isoBounds.minX;
+    const isoHeight = isoBounds.maxY - isoBounds.minY;
+    const worldWidth = worldBounds.maxX - worldBounds.minX;
+    const worldHeight = worldBounds.maxY - worldBounds.minY;
+    if (!(isoWidth > 0) || !(isoHeight > 0)) return [];
+    if (!(worldWidth > 0) || !(worldHeight > 0)) return [];
+    if (seedCount < 2 || samplesX < 2 || samplesY < 2) return [];
     const rng = createPRNG(seed);
-    const pts = new Float32Array(seedCount * 2);
-    for (let i = 0; i < seedCount; i++) {
-        pts[2 * i] = rng() * length;
-        pts[2 * i + 1] = (rng() - 0.5) * width;
+    const seedIsoX: number[] = [];
+    const seedIsoY: number[] = [];
+    const seedWorldX: number[] = [];
+    const seedWorldY: number[] = [];
+    const maxAttempts = Math.max(32, seedCount * 8);
+    let attempts = 0;
+    while (seedIsoX.length < seedCount && attempts < maxAttempts) {
+        attempts++;
+        const wx = worldBounds.minX + rng() * worldWidth;
+        const wy = worldBounds.minY + rng() * worldHeight;
+        if (!options.worldTester(wx, wy)) continue;
+        const iso = options.worldToIso({ x: wx, y: wy });
+        seedWorldX.push(wx);
+        seedWorldY.push(wy);
+        seedIsoX.push(iso.x);
+        seedIsoY.push(iso.y);
     }
-    const gridX = Math.max(4, Math.round(Math.sqrt(seedCount)));
-    const gridY = Math.max(4, Math.round(Math.sqrt(seedCount)));
-    const cellU = Math.max(length / gridX, 1e-6);
-    const cellV = Math.max(width / gridY, 1e-6);
+    const actualSeeds = seedIsoX.length;
+    if (actualSeeds < 2) return [];
+    const gridX = Math.max(4, Math.round(Math.sqrt(actualSeeds)));
+    const gridY = Math.max(4, Math.round(Math.sqrt(actualSeeds)));
+    const cellIsoW = Math.max(isoWidth / gridX, 1e-6);
+    const cellIsoH = Math.max(isoHeight / gridY, 1e-6);
     const grid: number[][] = new Array(gridX * gridY);
     for (let i = 0; i < grid.length; i++) grid[i] = [];
-    for (let i = 0; i < seedCount; i++) {
-        const u = pts[2 * i];
-        const v = pts[2 * i + 1] + halfW;
-        const gx = clamp(Math.floor(u / cellU), 0, gridX - 1);
-        const gy = clamp(Math.floor(v / cellV), 0, gridY - 1);
+    for (let i = 0; i < actualSeeds; i++) {
+        const isoX = seedIsoX[i] - isoBounds.minX;
+        const isoY = seedIsoY[i] - isoBounds.minY;
+        const gx = clamp(Math.floor(isoX / cellIsoW), 0, gridX - 1);
+        const gy = clamp(Math.floor(isoY / cellIsoH), 0, gridY - 1);
         grid[gy * gridX + gx].push(i);
     }
-    const allIndices = new Array<number>(seedCount);
-    for (let i = 0; i < seedCount; i++) allIndices[i] = i;
+    const allIndices = new Array<number>(actualSeeds);
+    for (let i = 0; i < actualSeeds; i++) allIndices[i] = i;
     const candidateBuf: number[] = [];
-    const stepU = length / (samplesU - 1);
-    const stepV = width / (samplesV - 1);
-    const mask = new Uint8Array(samplesU * samplesV);
-    for (let jy = 0; jy < samplesV; jy++) {
-        const sy = -halfW + jy * stepV;
-        for (let ix = 0; ix < samplesU; ix++) {
-            const sx = ix * stepU;
+    const stepIsoX = isoWidth / (samplesX - 1);
+    const stepIsoY = isoHeight / (samplesY - 1);
+    const mask = new Uint8Array(samplesX * samplesY);
+    for (let jy = 0; jy < samplesY; jy++) {
+        const isoY = isoBounds.minY + jy * stepIsoY;
+        for (let ix = 0; ix < samplesX; ix++) {
+            const isoX = isoBounds.minX + ix * stepIsoX;
+            const world = options.isoToWorld({ x: isoX, y: isoY });
+            if (!options.worldTester(world.x, world.y)) {
+                mask[jy * samplesX + ix] = 0;
+                continue;
+            }
             candidateBuf.length = 0;
-            const gx = clamp(Math.floor(sx / cellU), 0, gridX - 1);
-            const gy = clamp(Math.floor((sy + halfW) / cellV), 0, gridY - 1);
+            const gx = clamp(Math.floor((isoX - isoBounds.minX) / cellIsoW), 0, gridX - 1);
+            const gy = clamp(Math.floor((isoY - isoBounds.minY) / cellIsoH), 0, gridY - 1);
             for (let r = 1; r <= 2; r++) {
                 candidateBuf.length = 0;
                 for (let yy = gy - r; yy <= gy + r; yy++) {
@@ -209,12 +236,16 @@ const generateVoronoiContours = (
                 if (candidateBuf.length || r === 2) break;
             }
             const source = candidateBuf.length ? candidateBuf : allIndices;
+            if (!source.length) {
+                mask[jy * samplesX + ix] = 0;
+                continue;
+            }
             let best1 = Infinity;
             let best2 = Infinity;
             for (let k = 0; k < source.length; k++) {
                 const idx = source[k];
-                const dx = sx - pts[2 * idx];
-                const dy = sy - pts[2 * idx + 1];
+                const dx = world.x - seedWorldX[idx];
+                const dy = world.y - seedWorldY[idx];
                 const dist2 = dx * dx + dy * dy;
                 if (dist2 < best1) {
                     best2 = best1;
@@ -224,14 +255,14 @@ const generateVoronoiContours = (
                 }
             }
             if (!Number.isFinite(best1) || !Number.isFinite(best2) || best2 === Infinity) {
-                mask[jy * samplesU + ix] = 0;
+                mask[jy * samplesX + ix] = 0;
                 continue;
             }
             const delta = Math.sqrt(best2) - Math.sqrt(best1);
-            mask[jy * samplesU + ix] = delta < threshold ? 1 : 0;
+            mask[jy * samplesX + ix] = delta < threshold ? 1 : 0;
         }
     }
-    return marchingSquaresContoursLocal(mask, samplesU, samplesV, stepU, stepV, 0, -halfW);
+    return marchingSquaresContoursLocal(mask, samplesX, samplesY, stepIsoX, stepIsoY, isoBounds.minX, isoBounds.minY);
 };
 
 interface GameCanvasProps {
@@ -1197,13 +1228,12 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         }
     };
 
-    const drawCrackedRoads = (segments: Segment[]) => {
+    const drawCrackedRoads = (_segments: Segment[]) => {
         const container = crackedRoadOverlay.current;
         if (!container) return;
         container.removeChildren();
         const cfg = (config as any).render;
-        const show = !!cfg.showCrackedRoadsOutline;
-        if (!show) {
+        if (!(cfg?.showCrackedRoadsOutline)) {
             container.visible = false;
             return;
         }
@@ -1218,7 +1248,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             container.visible = false;
             return;
         }
-        const maskInfo = typeof getMask === 'function' ? getMask.call(NoiseZoning) as {
+        const maskInfo = typeof getMask === 'function' ? (getMask.call(NoiseZoning) as {
             coarseW: number;
             coarseH: number;
             gridMinX: number;
@@ -1226,131 +1256,133 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             worldStep: number;
             pixelSizePx: number;
             intersectionMask: Uint8Array;
-        } | null : null;
+        } | null) : null;
         if (!maskInfo || !(maskInfo.worldStep > 0)) {
             container.visible = false;
             return;
         }
-        const mask = maskInfo.intersectionMask;
+        const { coarseW, coarseH, gridMinX, gridMinY, worldStep, intersectionMask: mask } = maskInfo;
         if (!mask || !mask.length) {
             container.visible = false;
             return;
         }
-        let anyMask = false;
-        for (let i = 0; i < mask.length; i++) {
-            if (mask[i]) { anyMask = true; break; }
+        let minGX = coarseW;
+        let minGY = coarseH;
+        let maxGX = -1;
+        let maxGY = -1;
+        for (let gy = 0; gy < coarseH; gy++) {
+            for (let gx = 0; gx < coarseW; gx++) {
+                if (mask[gy * coarseW + gx] > 0) {
+                    if (gx < minGX) minGX = gx;
+                    if (gx > maxGX) maxGX = gx;
+                    if (gy < minGY) minGY = gy;
+                    if (gy > maxGY) maxGY = gy;
+                }
+            }
         }
-        if (!anyMask) {
+        if (maxGX < minGX || maxGY < minGY) {
             container.visible = false;
             return;
         }
+        const worldMinX = (gridMinX + minGX) * worldStep;
+        const worldMaxX = (gridMinX + maxGX + 1) * worldStep;
+        const worldMinY = (gridMinY + minGY) * worldStep;
+        const worldMaxY = (gridMinY + maxGY + 1) * worldStep;
+        const worldWidth = worldMaxX - worldMinX;
+        const worldHeight = worldMaxY - worldMinY;
+        if (!(worldWidth > 0) || !(worldHeight > 0)) {
+            container.visible = false;
+            return;
+        }
+        const isoCorners = [
+            worldToIso({ x: worldMinX, y: worldMinY }),
+            worldToIso({ x: worldMaxX, y: worldMinY }),
+            worldToIso({ x: worldMaxX, y: worldMaxY }),
+            worldToIso({ x: worldMinX, y: worldMaxY }),
+        ];
+        let isoMinX = Infinity;
+        let isoMaxX = -Infinity;
+        let isoMinY = Infinity;
+        let isoMaxY = -Infinity;
+        for (const c of isoCorners) {
+            if (!Number.isFinite(c.x) || !Number.isFinite(c.y)) continue;
+            if (c.x < isoMinX) isoMinX = c.x;
+            if (c.x > isoMaxX) isoMaxX = c.x;
+            if (c.y < isoMinY) isoMinY = c.y;
+            if (c.y > isoMaxY) isoMaxY = c.y;
+        }
+        if (!Number.isFinite(isoMinX) || !Number.isFinite(isoMaxX) || !Number.isFinite(isoMinY) || !Number.isFinite(isoMaxY)) {
+            container.visible = false;
+            return;
+        }
+        const isoWidth = isoMaxX - isoMinX;
+        const isoHeight = isoMaxY - isoMinY;
+        if (!(isoWidth > 0) || !(isoHeight > 0)) {
+            container.visible = false;
+            return;
+        }
+
         const baseColor: number = cfg.crackedRoadColor ?? 0x00E5FF;
         const baseAlpha: number = Math.min(1, Math.max(0, cfg.crackedRoadAlpha ?? 0.88));
         const baseStrokePx: number = Math.max(0.05, cfg.crackedRoadStrokePx ?? 1.35);
-        const baseSeedDensity: number = Math.max(0.005, cfg.crackedRoadSeedDensity ?? 0.055);
-        const baseSampleAlong: number = Math.max(0.25, cfg.crackedRoadSampleDensityAlong ?? 1.6);
-        const baseSampleAcross: number = Math.max(0.25, cfg.crackedRoadSampleDensityAcross ?? 1.1);
+        const baseSeedDensity: number = Math.max(0.0001, cfg.crackedRoadSeedDensity ?? 0.055);
+        const baseSampleAlong: number = Math.max(0.1, cfg.crackedRoadSampleDensityAlong ?? 1.6);
+        const baseSampleAcross: number = Math.max(0.1, cfg.crackedRoadSampleDensityAcross ?? 1.1);
         const baseThreshold: number = clamp(cfg.crackedRoadVoronoiThreshold ?? 0.65, 0, 1);
         const baseMinLength: number = Math.max(1, cfg.crackedRoadMinLengthM ?? 5.0);
         const baseMaxSeeds: number = Math.max(8, cfg.crackedRoadMaxSeeds ?? 520);
         const baseMaxSamplesAlong: number = Math.max(4, cfg.crackedRoadMaxSamplesAlong ?? 240);
         const baseMaxSamplesAcross: number = Math.max(4, cfg.crackedRoadMaxSamplesAcross ?? 96);
-        const baseProbeStep: number = Math.max(0.4, cfg.crackedRoadProbeStepM ?? 1.1);
-        const assignments = ((cfg.crackedRoadPatternAssignments as CrackPatternAssignments | undefined)?.segments) ?? null;
         const globalSeed: number = (NoiseZoning as any)?.getSeed?.call(NoiseZoning) ?? 0;
 
+        const worldArea = Math.max(1, worldWidth * worldHeight);
+        const seeds = Math.max(8, Math.min(baseMaxSeeds, Math.round(worldArea * baseSeedDensity)));
+        const samplesX = Math.max(4, Math.min(baseMaxSamplesAlong, Math.round(worldWidth * baseSampleAlong)));
+        const samplesY = Math.max(4, Math.min(baseMaxSamplesAcross, Math.round(worldHeight * baseSampleAcross)));
+        if (seeds < 2 || samplesX < 2 || samplesY < 2) {
+            container.visible = false;
+            return;
+        }
+
+        const isoBounds = { minX: isoMinX, maxX: isoMaxX, minY: isoMinY, maxY: isoMaxY };
+        const worldBounds = { minX: worldMinX, maxX: worldMaxX, minY: worldMinY, maxY: worldMaxY };
+        const seedHash = hashNumbers(globalSeed, worldMinX, worldMinY, worldWidth, worldHeight, seeds, samplesX, samplesY);
+        const contours = generateVoronoiContours(
+            isoBounds,
+            worldBounds,
+            seeds,
+            samplesX,
+            samplesY,
+            baseThreshold,
+            seedHash,
+            {
+                isoToWorld,
+                worldToIso,
+                worldTester: tester,
+            },
+        );
+        if (!contours.length) {
+            container.visible = false;
+            return;
+        }
+
+        const isoUnitX = worldToIso({ x: 1, y: 0 });
+        const isoUnitY = worldToIso({ x: 0, y: 1 });
+        const approxIsoScale = Math.max(0.0001, (Math.hypot(isoUnitX.x, isoUnitX.y) + Math.hypot(isoUnitY.x, isoUnitY.y)) * 0.5);
+        const minContourIsoLength = Math.max(4, baseMinLength * approxIsoScale);
+
         const graphics = new PIXI.Graphics();
+        graphics.lineStyle(baseStrokePx, baseColor, baseAlpha, 0.5, true);
         let drewAny = false;
-
-        segments.forEach((segment, segmentIndex) => {
-            if (!segment || !segment.r) return;
-            const start = segment.r.start;
-            const end = segment.r.end;
-            const vx = end.x - start.x;
-            const vy = end.y - start.y;
-            const segLen = Math.hypot(vx, vy);
-            if (!(segLen > 1e-3)) return;
-            const roadWidth = Math.max(1.5, segment.width || 0);
-            const ux = vx / segLen;
-            const uy = vy / segLen;
-            const nx = -uy;
-            const ny = ux;
-            const segKey = segment?.id != null ? String(segment.id) : `idx:${segmentIndex}`;
-            const patternId = assignments ? assignments[segKey] : undefined;
-            const pattern = patternId ? getCrackPatternById(patternId) : undefined;
-            const mult = pattern?.multipliers || {};
-            const segSeedDensity = Math.max(0.005, baseSeedDensity * (mult.seedDensity ?? 1));
-            const segSampleAlong = Math.max(0.25, baseSampleAlong * (mult.sampleAlong ?? 1));
-            const segSampleAcross = Math.max(0.25, baseSampleAcross * (mult.sampleAcross ?? 1));
-            const segThreshold = clamp(baseThreshold + (pattern?.thresholdOffset ?? 0), 0, 1);
-            const segMinLength = Math.max(0.5, baseMinLength * (mult.minLength ?? 1));
-            const segMaxSeeds = Math.max(8, Math.round(baseMaxSeeds * (mult.maxSeeds ?? 1)));
-            const segMaxSamplesAlong = Math.max(4, Math.round(baseMaxSamplesAlong * (mult.maxSamplesAlong ?? 1)));
-            const segMaxSamplesAcross = Math.max(4, Math.round(baseMaxSamplesAcross * (mult.maxSamplesAcross ?? 1)));
-            const segProbeStep = Math.max(0.25, baseProbeStep * (mult.probeStep ?? 1));
-            const segStrokePx = Math.max(0.05, baseStrokePx * (mult.strokePx ?? 1));
-            const segAlpha = Math.max(0.05, Math.min(1, baseAlpha * (mult.alpha ?? 1)));
-            const segColor = pattern?.color ?? baseColor;
-            const segSeedOffset = pattern?.seedOffset ?? 0;
-            const steps = Math.max(4, Math.ceil(segLen / segProbeStep));
-            const intervals: Array<{ start: number; end: number }> = [];
-            let runStart: number | null = null;
-            for (let s = 0; s <= steps; s++) {
-                const t = steps === 0 ? 0 : s / steps;
-                const px = start.x + vx * t;
-                const py = start.y + vy * t;
-                const inside = tester(px, py);
-                if (inside) {
-                    if (runStart === null) runStart = t;
-                } else if (runStart !== null) {
-                    if (t > runStart + 1e-4) intervals.push({ start: runStart, end: t });
-                    runStart = null;
-                }
+        for (const contour of contours) {
+            if (!contour || contour.length < 2) continue;
+            if (polylineLength(contour) < minContourIsoLength) continue;
+            graphics.moveTo(contour[0][0], contour[0][1]);
+            for (let i = 1; i < contour.length; i++) {
+                graphics.lineTo(contour[i][0], contour[i][1]);
             }
-            if (runStart !== null) {
-                intervals.push({ start: runStart, end: 1 });
-            }
-
-            intervals.forEach((interval, intervalIndex) => {
-                const startT = clamp(interval.start, 0, 1);
-                const endT = clamp(interval.end, 0, 1);
-                if (!(endT > startT + 1e-4)) return;
-                const intervalLen = segLen * (endT - startT);
-                if (intervalLen < segMinLength) return;
-                const area = intervalLen * roadWidth;
-                let seeds = Math.max(8, Math.round(area * segSeedDensity));
-                seeds = Math.min(seeds, segMaxSeeds);
-                if (seeds < 2) return;
-                let samplesU = Math.max(2, Math.round(intervalLen * segSampleAlong));
-                let samplesV = Math.max(2, Math.round(roadWidth * segSampleAcross));
-                samplesU = Math.min(samplesU, segMaxSamplesAlong);
-                samplesV = Math.min(samplesV, segMaxSamplesAcross);
-                if (samplesU < 2 || samplesV < 2) return;
-                const hash = hashNumbers(globalSeed, segmentIndex, intervalIndex, startT * 1000, endT * 1000, roadWidth, segSeedOffset);
-                const contours = generateVoronoiContours(intervalLen, roadWidth, seeds, samplesU, samplesV, segThreshold, hash);
-                if (!contours.length) return;
-                const startOffset = segLen * startT;
-                const baseX = start.x + ux * startOffset;
-                const baseY = start.y + uy * startOffset;
-                const minContourLen = Math.max(roadWidth * 0.35, 2.5);
-                for (const contour of contours) {
-                    if (!contour || contour.length < 2) continue;
-                    if (polylineLength(contour) < minContourLen) continue;
-                    graphics.lineStyle(segStrokePx, segColor, segAlpha, 0.5, true);
-                    contour.forEach((pt, idx) => {
-                        const along = pt[0];
-                        const lateral = pt[1];
-                        const worldPt = {
-                            x: baseX + ux * along + nx * lateral,
-                            y: baseY + uy * along + ny * lateral,
-                        };
-                        const iso = worldToIso(worldPt);
-                        if (idx === 0) graphics.moveTo(iso.x, iso.y); else graphics.lineTo(iso.x, iso.y);
-                    });
-                    drewAny = true;
-                }
-            });
-        });
+            drewAny = true;
+        }
 
         container.visible = drewAny;
         if (drewAny) {
