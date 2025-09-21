@@ -1335,8 +1335,8 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         const baseMaxSamplesAlong: number = Math.max(4, cfg.crackedRoadMaxSamplesAlong ?? 240);
         const baseMaxSamplesAcross: number = Math.max(4, cfg.crackedRoadMaxSamplesAcross ?? 96);
         const baseProbeStep: number = Math.max(0.4, cfg.crackedRoadProbeStepM ?? 1.1);
-        const baseStrokePx: number = Math.max(0.35, cfg.crackedRoadStrokePx ?? 1.35);
-        const baseResolutionMultiplier: number = Math.max(1, cfg.crackedRoadResolutionMultiplier ?? 3);
+        const baseStrokePx: number = Math.max(0.35, cfg.crackedRoadStrokePx ?? 0.85);
+        const baseResolutionMultiplier: number = Math.max(1, cfg.crackedRoadResolutionMultiplier ?? 4.5);
         const assignments = ((cfg.crackedRoadPatternAssignments as CrackPatternAssignments | undefined)?.segments) ?? null;
         const globalSeed: number = (NoiseZoning as any)?.getSeed?.call(NoiseZoning) ?? 0;
 
@@ -1443,10 +1443,14 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                     });
                     try { (baseTexture as any).mipmap = PIXI.MIPMAP_MODES.ON; } catch (e) {}
                     const aniso = (baseTexture as any).anisotropicLevel;
-                    if (typeof aniso === 'number' && aniso < 4) {
-                        (baseTexture as any).anisotropicLevel = 4;
+                    if (typeof aniso !== 'number' || aniso < 8) {
+                        (baseTexture as any).anisotropicLevel = 8;
                     }
                     const texture = new PIXI.Texture(baseTexture);
+                    try {
+                        texture.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR;
+                        texture.baseTexture.mipmap = PIXI.MIPMAP_MODES.ON;
+                    } catch (e) {}
                     const sprite = new PIXI.Sprite(texture);
                     sprite.x = spriteData.spriteX;
                     sprite.y = spriteData.spriteY;
