@@ -70,6 +70,7 @@ interface RoadCrackParams {
     resolutionMultiplier: number;
     seed: number;
     tester: (x: number, y: number) => boolean;
+    maskChecker?: (x: number, y: number) => boolean;
     baseX: number;
     baseY: number;
     ux: number;
@@ -93,6 +94,7 @@ const generateRoadCrackSprite = ({
     resolutionMultiplier,
     seed,
     tester,
+    maskChecker,
     baseX,
     baseY,
     ux,
@@ -167,7 +169,7 @@ const generateRoadCrackSprite = ({
     const targetSeeds = Math.max(2, Math.min(4096, Math.floor(seedCount)));
     const worldSeeds: number[] = [];
     const isoSeedPx: number[] = [];
-    const maxAttempts = Math.max(500, targetSeeds * 80);
+    const maxAttempts = Math.max(800, targetSeeds * 160);
     let attempts = 0;
     while (worldSeeds.length < targetSeeds * 2 && attempts < maxAttempts) {
         attempts++;
@@ -177,6 +179,7 @@ const generateRoadCrackSprite = ({
         const wy = baseY + uy * along + ny * lateral;
         if (!Number.isFinite(wx) || !Number.isFinite(wy)) continue;
         if (!tester(wx, wy)) continue;
+        if (maskChecker && !maskChecker(wx, wy)) continue;
         worldSeeds.push(wx, wy);
         const iso = worldToIso({ x: wx, y: wy });
         const sx = (iso.x - isoOriginX) / expandedSpanX * pixelCols;
@@ -252,6 +255,7 @@ const generateRoadCrackSprite = ({
             const lateral = relX * nx + relY * ny;
             if (along < -1e-3 || along > length + 1e-3 || Math.abs(lateral) > halfWidth + 1e-3) continue;
             if (!tester(world.x, world.y)) continue;
+            if (maskChecker && !maskChecker(world.x, world.y)) continue;
 
             const gx = Math.min(gridCols - 1, Math.max(0, Math.floor(px / cellPxX)));
             const gy = Math.min(gridRows - 1, Math.max(0, Math.floor(py / cellPxY)));
@@ -1324,6 +1328,19 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             container.visible = false;
             return;
         }
+        const maskWidth = maskInfo.coarseW;
+        const maskHeight = maskInfo.coarseH;
+        const maskGridMinX = maskInfo.gridMinX;
+        const maskGridMinY = maskInfo.gridMinY;
+        const maskStep = maskInfo.worldStep;
+        if (!(maskWidth > 0) || !(maskHeight > 0) || !(maskStep > 0)) {
+            container.visible = false;
+            return;
+        }
+        const invMaskStep = 1 / maskStep;
+        const maskClaims = new Int32Array(mask.length);
+        maskClaims.fill(-1);
+        let nextClaimId = 0;
         const baseColor: number = cfg.crackedRoadColor ?? 0x00E5FF;
         const baseAlpha: number = Math.min(1, Math.max(0, cfg.crackedRoadAlpha ?? 0.88));
         const baseSeedDensity: number = Math.max(0.005, cfg.crackedRoadSeedDensity ?? 0.055);
@@ -1409,10 +1426,47 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 samplesU = Math.min(samplesU, segMaxSamplesAlong);
                 samplesV = Math.min(samplesV, segMaxSamplesAcross);
                 if (samplesU < 2 || samplesV < 2) return;
-                const hash = hashNumbers(globalSeed, segmentIndex, intervalIndex, startT * 1000, endT * 1000, roadWidth, segSeedOffset);
+                const seenCells = new Set<number>();
+                const newCells: number[] = [];
                 const startOffset = segLen * startT;
                 const baseX = start.x + ux * startOffset;
                 const baseY = start.y + uy * startOffset;
+                const alongSamples = Math.min(256, Math.max(1, Math.ceil(intervalLen * invMaskStep * 2)));
+                const acrossSamples = Math.min(96, Math.max(1, Math.ceil(roadWidth * invMaskStep * 2)));
+                for (let ai = 0; ai <= alongSamples; ai++) {
+                    const alongT = alongSamples === 0 ? 0 : ai / alongSamples;
+                    const cx = baseX + ux * (intervalLen * alongT);
+                    const cy = baseY + uy * (intervalLen * alongT);
+                    for (let bi = 0; bi <= acrossSamples; bi++) {
+                        const lateralNorm = acrossSamples === 0 ? 0 : bi / acrossSamples;
+                        const lateral = (lateralNorm - 0.5) * roadWidth * 1.08;
+                        const wx = cx + nx * lateral;
+                        const wy = cy + ny * lateral;
+                        if (!Number.isFinite(wx) || !Number.isFinite(wy)) continue;
+                        const gx = Math.floor(wx * invMaskStep) - maskGridMinX;
+                        const gy = Math.floor(wy * invMaskStep) - maskGridMinY;
+                        if (gx < 0 || gy < 0 || gx >= maskWidth || gy >= maskHeight) continue;
+                        const idx = gy * maskWidth + gx;
+                        if (!mask[idx]) continue;
+                        if (seenCells.has(idx)) continue;
+                        seenCells.add(idx);
+                        if (maskClaims[idx] === -1) newCells.push(idx);
+                    }
+                }
+                if (!newCells.length) return;
+                const claimId = nextClaimId++;
+                for (let i = 0; i < newCells.length; i++) {
+                    maskClaims[newCells[i]] = claimId;
+                }
+                const maskChecker = (x: number, y: number) => {
+                    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+                    const gx = Math.floor(x * invMaskStep) - maskGridMinX;
+                    const gy = Math.floor(y * invMaskStep) - maskGridMinY;
+                    if (gx < 0 || gy < 0 || gx >= maskWidth || gy >= maskHeight) return false;
+                    const idx = gy * maskWidth + gx;
+                    return maskClaims[idx] === claimId;
+                };
+                const hash = hashNumbers(globalSeed, claimId, segmentIndex, intervalIndex, startT * 1000, endT * 1000, roadWidth, segSeedOffset, newCells.length);
                 const spriteData = generateRoadCrackSprite({
                     length: intervalLen,
                     width: roadWidth,
@@ -1426,6 +1480,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                     resolutionMultiplier: segResolutionMultiplier,
                     seed: hash,
                     tester,
+                    maskChecker,
                     baseX,
                     baseY,
                     ux,
@@ -1435,7 +1490,12 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                     worldToIso,
                     isoToWorld,
                 });
-                if (!spriteData) return;
+                if (!spriteData) {
+                    for (let i = 0; i < newCells.length; i++) {
+                        maskClaims[newCells[i]] = -1;
+                    }
+                    return;
+                }
                 try {
                     const baseTexture = PIXI.BaseTexture.fromBuffer(spriteData.buffer, spriteData.width, spriteData.height, {
                         scaleMode: PIXI.SCALE_MODES.LINEAR,
