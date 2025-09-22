@@ -78,6 +78,9 @@ interface RoadCrackParams {
     ny: number;
     worldToIso: (p: Point) => Point;
     isoToWorld: (p: Point) => Point;
+    claimSet?: Set<string> | null;
+    claimInvStep?: number;
+    claimPad?: number;
 }
 
 const generateRoadCrackSprite = ({
@@ -101,10 +104,35 @@ const generateRoadCrackSprite = ({
     ny,
     worldToIso,
     isoToWorld,
+    claimSet,
+    claimInvStep,
+    claimPad,
 }: RoadCrackParams): RoadCrackSpriteData | null => {
     if (!(length > 0) || !(width > 0)) return null;
     const halfWidth = width * 0.5;
     const rng = createPRNG(seed);
+    const useClaiming = !!(claimSet && Number.isFinite(claimInvStep) && (claimInvStep as number) > 0);
+    const invClaimStep = useClaiming ? Math.max(0, claimInvStep as number) : 0;
+    const claimPadCells = Math.max(0, Math.min(6, Math.round(claimPad ?? 0)));
+    const claimedKey = (ix: number, iy: number) => `${ix}:${iy}`;
+    const isAlreadyClaimed = (ix: number, iy: number) => {
+        if (!useClaiming || !claimSet) return false;
+        for (let dy = -claimPadCells; dy <= claimPadCells; dy++) {
+            for (let dx = -claimPadCells; dx <= claimPadCells; dx++) {
+                const key = claimedKey(ix + dx, iy + dy);
+                if (claimSet.has(key)) return true;
+            }
+        }
+        return false;
+    };
+    const markClaimed = (ix: number, iy: number) => {
+        if (!useClaiming || !claimSet) return;
+        for (let dy = -claimPadCells; dy <= claimPadCells; dy++) {
+            for (let dx = -claimPadCells; dx <= claimPadCells; dx++) {
+                claimSet.add(claimedKey(ix + dx, iy + dy));
+            }
+        }
+    };
     const isoCorners = [
         worldToIso({ x: baseX + nx * -halfWidth, y: baseY + ny * -halfWidth }),
         worldToIso({ x: baseX + ux * length + nx * -halfWidth, y: baseY + uy * length + ny * -halfWidth }),
@@ -253,6 +281,16 @@ const generateRoadCrackSprite = ({
             if (along < -1e-3 || along > length + 1e-3 || Math.abs(lateral) > halfWidth + 1e-3) continue;
             if (!tester(world.x, world.y)) continue;
 
+            let claimInfo: { ix: number; iy: number } | null = null;
+            if (useClaiming) {
+                const ix = Math.floor(world.x * invClaimStep);
+                const iy = Math.floor(world.y * invClaimStep);
+                if (Number.isFinite(ix) && Number.isFinite(iy)) {
+                    claimInfo = { ix, iy };
+                    if (isAlreadyClaimed(ix, iy)) continue;
+                }
+            }
+
             const gx = Math.min(gridCols - 1, Math.max(0, Math.floor(px / cellPxX)));
             const gy = Math.min(gridRows - 1, Math.max(0, Math.floor(py / cellPxY)));
 
@@ -290,6 +328,7 @@ const generateRoadCrackSprite = ({
 
             const delta = Math.sqrt(best2) - Math.sqrt(best1);
             if (delta < epsilonWorld) {
+                if (claimInfo) markClaimed(claimInfo.ix, claimInfo.iy);
                 paintDisc(px, py);
                 hits++;
             }
@@ -1324,6 +1363,10 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             container.visible = false;
             return;
         }
+        const claimStep = Math.max(0.5, maskInfo.worldStep * 0.5);
+        const claimInvStep = claimStep > 0 ? 1 / claimStep : 0;
+        const claimPadCells = 1;
+        const claimSet = new Set<string>();
         const baseColor: number = cfg.crackedRoadColor ?? 0x00E5FF;
         const baseAlpha: number = Math.min(1, Math.max(0, cfg.crackedRoadAlpha ?? 0.88));
         const baseSeedDensity: number = Math.max(0.005, cfg.crackedRoadSeedDensity ?? 0.055);
@@ -1434,6 +1477,9 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                     ny,
                     worldToIso,
                     isoToWorld,
+                    claimSet,
+                    claimInvStep,
+                    claimPad: claimPadCells,
                 });
                 if (!spriteData) return;
                 try {
