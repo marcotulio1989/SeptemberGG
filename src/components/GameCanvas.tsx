@@ -57,6 +57,15 @@ interface RoadCrackSpriteData {
     spriteHeight: number;
 }
 
+interface RoadCrackMaskContext {
+    coarseW: number;
+    coarseH: number;
+    gridMinX: number;
+    gridMinY: number;
+    worldStep: number;
+    claimedCells: Set<number>;
+}
+
 interface RoadCrackParams {
     length: number;
     width: number;
@@ -78,6 +87,7 @@ interface RoadCrackParams {
     ny: number;
     worldToIso: (p: Point) => Point;
     isoToWorld: (p: Point) => Point;
+    maskContext?: RoadCrackMaskContext | null;
 }
 
 const generateRoadCrackSprite = ({
@@ -101,10 +111,21 @@ const generateRoadCrackSprite = ({
     ny,
     worldToIso,
     isoToWorld,
+    maskContext,
 }: RoadCrackParams): RoadCrackSpriteData | null => {
     if (!(length > 0) || !(width > 0)) return null;
     const halfWidth = width * 0.5;
     const rng = createPRNG(seed);
+    const maskCtx = maskContext && maskContext.worldStep > 0 ? maskContext : null;
+    const invMaskStep = maskCtx ? 1 / maskCtx.worldStep : 0;
+    const localMaskClaims: number[] = [];
+    const releaseMaskClaims = () => {
+        if (!maskCtx || !localMaskClaims.length) return;
+        for (let i = 0; i < localMaskClaims.length; i++) {
+            maskCtx.claimedCells.delete(localMaskClaims[i]);
+        }
+        localMaskClaims.length = 0;
+    };
     const isoCorners = [
         worldToIso({ x: baseX + nx * -halfWidth, y: baseY + ny * -halfWidth }),
         worldToIso({ x: baseX + ux * length + nx * -halfWidth, y: baseY + uy * length + ny * -halfWidth }),
@@ -177,14 +198,29 @@ const generateRoadCrackSprite = ({
         const wy = baseY + uy * along + ny * lateral;
         if (!Number.isFinite(wx) || !Number.isFinite(wy)) continue;
         if (!tester(wx, wy)) continue;
+        let maskIdx = -1;
+        if (maskCtx) {
+            const gx = Math.floor(wx * invMaskStep) - maskCtx.gridMinX;
+            const gy = Math.floor(wy * invMaskStep) - maskCtx.gridMinY;
+            if (gx < 0 || gy < 0 || gx >= maskCtx.coarseW || gy >= maskCtx.coarseH) continue;
+            maskIdx = gy * maskCtx.coarseW + gx;
+            if (maskCtx.claimedCells.has(maskIdx)) continue;
+        }
         worldSeeds.push(wx, wy);
         const iso = worldToIso({ x: wx, y: wy });
         const sx = (iso.x - isoOriginX) / expandedSpanX * pixelCols;
         const sy = (iso.y - isoOriginY) / expandedSpanY * pixelRows;
         isoSeedPx.push(sx, sy);
+        if (maskCtx && maskIdx >= 0) {
+            maskCtx.claimedCells.add(maskIdx);
+            localMaskClaims.push(maskIdx);
+        }
     }
     const actualSeeds = worldSeeds.length / 2;
-    if (actualSeeds < 2) return null;
+    if (actualSeeds < 2) {
+        releaseMaskClaims();
+        return null;
+    }
 
     const gridSize = Math.max(8, Math.round(Math.sqrt(actualSeeds)));
     const gridCols = gridSize;
@@ -296,7 +332,10 @@ const generateRoadCrackSprite = ({
         }
     }
 
-    if (hits === 0) return null;
+    if (hits === 0) {
+        releaseMaskClaims();
+        return null;
+    }
 
     return {
         buffer,
@@ -1324,6 +1363,14 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             container.visible = false;
             return;
         }
+        const maskClaimContext: RoadCrackMaskContext = {
+            coarseW: maskInfo.coarseW,
+            coarseH: maskInfo.coarseH,
+            gridMinX: maskInfo.gridMinX,
+            gridMinY: maskInfo.gridMinY,
+            worldStep: maskInfo.worldStep,
+            claimedCells: new Set<number>(),
+        };
         const baseColor: number = cfg.crackedRoadColor ?? 0x00E5FF;
         const baseAlpha: number = Math.min(1, Math.max(0, cfg.crackedRoadAlpha ?? 0.88));
         const baseSeedDensity: number = Math.max(0.005, cfg.crackedRoadSeedDensity ?? 0.055);
@@ -1434,6 +1481,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                     ny,
                     worldToIso,
                     isoToWorld,
+                    maskContext: maskClaimContext,
                 });
                 if (!spriteData) return;
                 try {
