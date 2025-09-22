@@ -2,13 +2,25 @@ import React from 'react';
 import NoiseZoning from '../overlays/NoiseZoning';
 
 const OverlayToggle: React.FC = () => {
-  const [enabled, setEnabled] = React.useState(NoiseZoning.enabled);
+  const [enabled, setEnabled] = React.useState(() => {
+    if (typeof NoiseZoning.isOverlayVisible === 'function') {
+      return !!NoiseZoning.isOverlayVisible();
+    }
+    return NoiseZoning.enabled;
+  });
   const [threshold, setThreshold] = React.useState<number>(NoiseZoning.getNoiseThreshold ? NoiseZoning.getNoiseThreshold() : 0.5);
   const [outlineOn, setOutlineOn] = React.useState<boolean>(NoiseZoning.getIntersectionOutlineEnabled ? NoiseZoning.getIntersectionOutlineEnabled() : false);
 
   const onToggle = () => {
     NoiseZoning.toggle();
-    setEnabled(NoiseZoning.enabled);
+    if (NoiseZoning.enabled && typeof NoiseZoning.setOverlayHidden === 'function') {
+      NoiseZoning.setOverlayHidden(false);
+    }
+    if (typeof NoiseZoning.isOverlayVisible === 'function') {
+      setEnabled(!!NoiseZoning.isOverlayVisible());
+    } else {
+      setEnabled(NoiseZoning.enabled);
+    }
   };
   const onReseed = () => {
     NoiseZoning.reseed();
@@ -17,9 +29,11 @@ const OverlayToggle: React.FC = () => {
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ enabled?: boolean }>).detail;
-      if (detail && typeof detail.enabled === 'boolean') {
-        setEnabled(detail.enabled);
+      const detail = (event as CustomEvent<{ enabled?: boolean; visible?: boolean }>).detail;
+      if (!detail) return;
+      const next = (typeof detail.visible === 'boolean') ? detail.visible : detail.enabled;
+      if (typeof next === 'boolean') {
+        setEnabled(next);
       }
     };
     const outlineHandler = (event: Event) => {

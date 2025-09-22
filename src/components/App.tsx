@@ -34,6 +34,11 @@ const App: React.FC = () => {
     const [heatmapVisible, setHeatmapVisible] = useState((config as any).mapGeneration.DRAW_HEATMAP);
     const [noiseOverlayVisible, setNoiseOverlayVisible] = useState<boolean>(() => {
         try {
+            if (typeof NoiseZoning.isOverlayVisible === 'function') {
+                return !!NoiseZoning.isOverlayVisible();
+            }
+        } catch (e) {}
+        try {
             return !!((config as any).render?.showNoiseDelimitations);
         } catch (e) {
             return !!NoiseZoning.enabled;
@@ -200,28 +205,33 @@ const App: React.FC = () => {
     };
 
     useEffect(() => {
+        const shouldEnableOverlay = noiseOverlayVisible || crackedRoadsVisible;
         try { (config as any).render.showNoiseDelimitations = noiseOverlayVisible; } catch (e) {}
         try {
             if (typeof NoiseZoning.setEnabled === 'function') {
-                NoiseZoning.setEnabled(noiseOverlayVisible);
-            } else if (noiseOverlayVisible !== NoiseZoning.enabled && typeof NoiseZoning.toggle === 'function') {
+                NoiseZoning.setEnabled(shouldEnableOverlay);
+            } else if (shouldEnableOverlay !== NoiseZoning.enabled && typeof NoiseZoning.toggle === 'function') {
                 NoiseZoning.toggle();
             }
-            if (noiseOverlayVisible && typeof NoiseZoning.redraw === 'function') {
+            if (typeof NoiseZoning.setOverlayHidden === 'function') {
+                NoiseZoning.setOverlayHidden(!noiseOverlayVisible);
+            }
+            if (shouldEnableOverlay && typeof NoiseZoning.redraw === 'function') {
                 NoiseZoning.redraw();
             }
         } catch (e) {
             try { console.warn('[App] Failed to sync noise overlay', e); } catch (err) {}
         }
-    }, [noiseOverlayVisible]);
+    }, [noiseOverlayVisible, crackedRoadsVisible]);
 
     useEffect(() => {
         if (typeof window === 'undefined') return;
         const handler = (event: Event) => {
-            const detail = (event as CustomEvent<{ enabled?: boolean }>).detail;
-            if (!detail || typeof detail.enabled !== 'boolean') return;
-            const enabled = detail.enabled as boolean;
-            setNoiseOverlayVisible(prev => (prev === enabled ? prev : enabled));
+            const detail = (event as CustomEvent<{ enabled?: boolean; visible?: boolean }>).detail;
+            if (!detail) return;
+            const next = (typeof detail.visible === 'boolean') ? detail.visible : detail.enabled;
+            if (typeof next !== 'boolean') return;
+            setNoiseOverlayVisible(prev => (prev === next ? prev : next));
         };
         window.addEventListener('noise-overlay-change', handler as EventListener);
         return () => {

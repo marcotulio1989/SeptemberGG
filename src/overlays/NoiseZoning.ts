@@ -53,6 +53,8 @@ export type NoiseZoningAPI = {
   getIntersectionOutlineEnabled?: () => boolean;
   setPixelSize?: (px: number) => void;
   getPixelSize?: () => number;
+  setOverlayHidden?: (hidden: boolean) => void;
+  isOverlayVisible?: () => boolean;
   getIntersectionMaskData?: () => {
     coarseW: number;
     coarseH: number;
@@ -78,6 +80,7 @@ type InternalNoiseZoning = NoiseZoningAPI & {
   _params: NoiseZoningParams;
   _noiseThreshold: number;
   _showIntersectionOutline: boolean;
+  _overlayHidden: boolean;
   _ensureSize: () => void;
   _precomputed?: any;
   _mapGeneratedHandler?: (ev: Event) => void;
@@ -90,6 +93,7 @@ type InternalNoiseZoning = NoiseZoningAPI & {
     w: number; h: number; cameraX: number; cameraY: number; zoom: number; data: any; bbox?: [number, number, number, number];
   } | null;
   _notifyChange: () => void;
+  _applyOverlayVisibility: () => void;
 };
 
 export type NoiseZoningParams = {
@@ -116,10 +120,22 @@ const NoiseZoning: InternalNoiseZoning = {
   _DEBUG: false,
   _pixelSize: 4,
   _noiseThreshold: 0.5,
+  _overlayHidden: false,
+  _applyOverlayVisibility() {
+    if (!this._overlayCanvas) return;
+    if (!this.enabled) {
+      this._overlayCanvas.style.visibility = 'hidden';
+      this._overlayCanvas.style.opacity = '0';
+      return;
+    }
+    const show = !this._overlayHidden;
+    this._overlayCanvas.style.visibility = show ? 'visible' : 'hidden';
+    this._overlayCanvas.style.opacity = show ? '1' : '0';
+  },
   _notifyChange() {
     if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
     try {
-      const evt = new CustomEvent('noise-overlay-change', { detail: { enabled: !!this.enabled } });
+      const evt = new CustomEvent('noise-overlay-change', { detail: { enabled: !!this.enabled, visible: !!(this.enabled && !this._overlayHidden) } });
       window.dispatchEvent(evt);
     } catch (err) {
       try { console.warn('[NoiseZoning] Failed to dispatch change event', err); } catch (e) {}
@@ -175,6 +191,7 @@ const NoiseZoning: InternalNoiseZoning = {
     this._observer = new ResizeObserver(resize);
     if (parent) this._observer.observe(parent);
     resize();
+    this._applyOverlayVisibility();
 
     // Listen for map generation events so we can prepare noise immediately.
     // Use a named handler so we can remove it on detach. When a map is generated,
@@ -259,6 +276,7 @@ const NoiseZoning: InternalNoiseZoning = {
     if (this._overlayCanvas) {
       this._overlayCanvas.style.display = this.enabled ? 'block' : 'none';
     }
+    this._applyOverlayVisibility();
     // Clear pixel & mask caches when enabling to force fresh calculation (avoid stale empty cache)
     if (this.enabled) {
       this._pixelCache = null;
@@ -886,6 +904,7 @@ const NoiseZoning: InternalNoiseZoning = {
       this._overlayCanvas.height = pxH;
     }
     if (this._overlayCanvas) this._overlayCanvas.style.display = this.enabled ? 'block' : 'none';
+    this._applyOverlayVisibility();
     if (this.enabled) this.redraw();
   },
   detach() {
@@ -913,6 +932,7 @@ const NoiseZoning: InternalNoiseZoning = {
   setEnabled(on: boolean) {
     this.enabled = !!on;
     if (this._overlayCanvas) this._overlayCanvas.style.display = this.enabled ? 'block' : 'none';
+    this._applyOverlayVisibility();
     if (this.enabled) {
       // ensure caches are invalidated so redraw always recomputes masks and noise
       this._pixelCache = null;
@@ -932,6 +952,13 @@ const NoiseZoning: InternalNoiseZoning = {
       }
     }
     this._notifyChange();
+  },
+  setOverlayHidden(hidden: boolean) {
+    this._overlayHidden = !!hidden;
+    this._applyOverlayVisibility();
+  },
+  isOverlayVisible() {
+    return !!(this.enabled && !this._overlayHidden);
   },
   setParams(p?: Partial<NoiseZoningParams>) {
     if (!p) return;
