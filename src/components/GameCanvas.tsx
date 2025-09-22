@@ -151,18 +151,18 @@ const generateRoadCrackSprite = ({
     const spanScaleY = expandedSpanY / pixelRows;
     if (!(spanScaleX > 0) || !(spanScaleY > 0)) return null;
 
-    const spanScaleXAbs = Math.max(Math.abs(spanScaleX), 1e-4);
-    const spanScaleYAbs = Math.max(Math.abs(spanScaleY), 1e-4);
-    const strokeWidthPx = Math.max(0.35, Number.isFinite(strokePx) ? strokePx : 1);
-    const isoRadiusX = Math.max(spanScaleXAbs * strokeWidthPx * 0.5, spanScaleXAbs * 0.5);
-    const isoRadiusY = Math.max(spanScaleYAbs * strokeWidthPx * 0.5, spanScaleYAbs * 0.5);
-    const invIsoRadiusXSq = isoRadiusX > 1e-6 ? 1 / (isoRadiusX * isoRadiusX) : 0;
-    const invIsoRadiusYSq = isoRadiusY > 1e-6 ? 1 / (isoRadiusY * isoRadiusY) : 0;
-    const pxRadius = Math.max(1, Math.ceil(strokeWidthPx * supersample * 0.5 + 1));
-    const softEdgeNorm = Math.min(0.65, Math.max(0.18, 0.9 / (strokeWidthPx * supersample + 1e-3)));
-    const edgeEpsilon = 0.12;
-
     const epsilonWorld = Math.max(1e-6, epsilonPx);
+    const strokePxClamped = Math.max(0.2, Number.isFinite(strokePx) ? strokePx : 1);
+    const originWorld = isoToWorld({ x: 0, y: 0 });
+    const stepXWorld = isoToWorld({ x: spanScaleX, y: 0 });
+    const stepYWorld = isoToWorld({ x: 0, y: spanScaleY });
+    const worldStepX = Math.hypot(stepXWorld.x - originWorld.x, stepXWorld.y - originWorld.y);
+    const worldStepY = Math.hypot(stepYWorld.x - originWorld.x, stepYWorld.y - originWorld.y);
+    const approxPixelWorld = Math.max(1e-5, (worldStepX + worldStepY) * 0.5);
+    const extraThicknessWorld = Math.max(0, (strokePxClamped - 1) * approxPixelWorld);
+    const extendedThreshold = epsilonWorld + extraThicknessWorld;
+    const falloffWorld = extraThicknessWorld > 1e-6 ? extraThicknessWorld : 0;
+    const invFalloffWorld = falloffWorld > 1e-6 ? 1 / falloffWorld : 0;
 
     const targetSeeds = Math.max(2, Math.min(4096, Math.floor(seedCount)));
     const worldSeeds: number[] = [];
@@ -205,40 +205,6 @@ const generateRoadCrackSprite = ({
     const buffer = new Uint8Array(pixelCols * pixelRows * 4);
     const candidateBuf: number[] = [];
     let hits = 0;
-
-    const paintDisc = (cx: number, cy: number) => {
-        const minY = Math.max(0, Math.floor(cy - pxRadius));
-        const maxY = Math.min(pixelRows - 1, Math.ceil(cy + pxRadius));
-        const minX = Math.max(0, Math.floor(cx - pxRadius));
-        const maxX = Math.min(pixelCols - 1, Math.ceil(cx + pxRadius));
-        const falloffStart = 1 - softEdgeNorm;
-        const falloffEnd = 1 + edgeEpsilon;
-        const denom = Math.max(1e-4, falloffEnd - falloffStart);
-        for (let yy = minY; yy <= maxY; yy++) {
-            const dy = yy - cy;
-            for (let xx = minX; xx <= maxX; xx++) {
-                const dx = xx - cx;
-                const dxIso = dx * spanScaleX;
-                const dyIso = dy * spanScaleY;
-                let norm = 0;
-                if (invIsoRadiusXSq > 0) norm += dxIso * dxIso * invIsoRadiusXSq;
-                if (invIsoRadiusYSq > 0) norm += dyIso * dyIso * invIsoRadiusYSq;
-                const distNorm = Math.sqrt(Math.max(0, norm));
-                if (distNorm >= falloffEnd) continue;
-                let weight = 1;
-                if (distNorm > falloffStart) {
-                    weight = Math.max(0, Math.min(1, (falloffEnd - distNorm) / denom));
-                }
-                if (weight <= 0) continue;
-                const idx = (yy * pixelCols + xx) * 4;
-                const alphaByte = Math.max(buffer[idx + 3], Math.round(weight * 255));
-                buffer[idx] = 255;
-                buffer[idx + 1] = 255;
-                buffer[idx + 2] = 255;
-                buffer[idx + 3] = alphaByte;
-            }
-        }
-    };
 
     for (let py = 0; py < pixelRows; py++) {
         const isoY = isoOriginY + (py + 0.5) * spanScaleY;
@@ -289,10 +255,29 @@ const generateRoadCrackSprite = ({
             if (!Number.isFinite(best1) || !Number.isFinite(best2) || best2 === Infinity) continue;
 
             const delta = Math.sqrt(best2) - Math.sqrt(best1);
-            if (delta < epsilonWorld) {
-                paintDisc(px, py);
-                hits++;
+            if (!Number.isFinite(delta) || delta > extendedThreshold) continue;
+
+            let weight = 0;
+            if (delta <= epsilonWorld) {
+                weight = 1;
+            } else if (falloffWorld > 0) {
+                const t = (extendedThreshold - delta) * invFalloffWorld;
+                if (t > 0) {
+                    const clamped = Math.min(1, t);
+                    weight = clamped * clamped;
+                }
             }
+            if (weight <= 0) continue;
+
+            const idx = (py * pixelCols + px) * 4;
+            const prevAlpha = buffer[idx + 3];
+            const nextAlpha = Math.max(prevAlpha, Math.round(weight * 255));
+            if (nextAlpha <= prevAlpha) continue;
+            buffer[idx] = 255;
+            buffer[idx + 1] = 255;
+            buffer[idx + 2] = 255;
+            buffer[idx + 3] = nextAlpha;
+            if (prevAlpha === 0) hits++;
         }
     }
 
