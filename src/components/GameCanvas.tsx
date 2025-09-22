@@ -151,25 +151,23 @@ const generateRoadCrackSprite = ({
     const spanScaleY = expandedSpanY / pixelRows;
     if (!(spanScaleX > 0) || !(spanScaleY > 0)) return null;
 
-    const spanScaleXAbs = Math.max(Math.abs(spanScaleX), 1e-4);
-    const spanScaleYAbs = Math.max(Math.abs(spanScaleY), 1e-4);
-    const strokeWidthPx = Math.max(0.35, Number.isFinite(strokePx) ? strokePx : 1);
-    const isoRadiusX = Math.max(spanScaleXAbs * strokeWidthPx * 0.5, spanScaleXAbs * 0.5);
-    const isoRadiusY = Math.max(spanScaleYAbs * strokeWidthPx * 0.5, spanScaleYAbs * 0.5);
-    const invIsoRadiusXSq = isoRadiusX > 1e-6 ? 1 / (isoRadiusX * isoRadiusX) : 0;
-    const invIsoRadiusYSq = isoRadiusY > 1e-6 ? 1 / (isoRadiusY * isoRadiusY) : 0;
-    const pxRadius = Math.max(1, Math.ceil(strokeWidthPx * supersample * 0.5 + 1));
-    const softEdgeNorm = Math.min(0.65, Math.max(0.18, 0.9 / (strokeWidthPx * supersample + 1e-3)));
-    const edgeEpsilon = 0.12;
-
-    const epsilonWorld = Math.max(1e-6, epsilonPx);
+    const spanScaleXAbs = Math.max(Math.abs(spanScaleX), 1e-6);
+    const spanScaleYAbs = Math.max(Math.abs(spanScaleY), 1e-6);
+    const strokeIsoWidth = Math.max(0.1, Number.isFinite(strokePx) ? strokePx : 1);
+    const strokeRadiusIso = Math.max(0.05, strokeIsoWidth * 0.5);
+    const strokeRadiusPxX = Math.min(64, Math.max(1, Math.ceil(strokeRadiusIso / spanScaleXAbs)));
+    const strokeRadiusPxY = Math.min(64, Math.max(1, Math.ceil(strokeRadiusIso / spanScaleYAbs)));
+    const epsilonBase = Math.max(0.001, Number.isFinite(epsilonPx) ? epsilonPx : 0.5);
+    const isoThreshold = Math.max(0.01, epsilonBase);
+    const feather = Math.max(0.01, isoThreshold * 0.35);
+    const hardThreshold = Math.max(0, isoThreshold - feather);
+    const isoFalloffMargin = Math.max(spanScaleXAbs, spanScaleYAbs);
 
     const targetSeeds = Math.max(2, Math.min(4096, Math.floor(seedCount)));
-    const worldSeeds: number[] = [];
     const isoSeedPx: number[] = [];
     const maxAttempts = Math.max(500, targetSeeds * 80);
     let attempts = 0;
-    while (worldSeeds.length < targetSeeds * 2 && attempts < maxAttempts) {
+    while (isoSeedPx.length < targetSeeds * 2 && attempts < maxAttempts) {
         attempts++;
         const along = rng() * length;
         const lateral = (rng() - 0.5) * width;
@@ -177,13 +175,12 @@ const generateRoadCrackSprite = ({
         const wy = baseY + uy * along + ny * lateral;
         if (!Number.isFinite(wx) || !Number.isFinite(wy)) continue;
         if (!tester(wx, wy)) continue;
-        worldSeeds.push(wx, wy);
         const iso = worldToIso({ x: wx, y: wy });
         const sx = (iso.x - isoOriginX) / expandedSpanX * pixelCols;
         const sy = (iso.y - isoOriginY) / expandedSpanY * pixelRows;
         isoSeedPx.push(sx, sy);
     }
-    const actualSeeds = worldSeeds.length / 2;
+    const actualSeeds = isoSeedPx.length / 2;
     if (actualSeeds < 2) return null;
 
     const gridSize = Math.max(8, Math.round(Math.sqrt(actualSeeds)));
@@ -206,36 +203,35 @@ const generateRoadCrackSprite = ({
     const candidateBuf: number[] = [];
     let hits = 0;
 
-    const paintDisc = (cx: number, cy: number) => {
-        const minY = Math.max(0, Math.floor(cy - pxRadius));
-        const maxY = Math.min(pixelRows - 1, Math.ceil(cy + pxRadius));
-        const minX = Math.max(0, Math.floor(cx - pxRadius));
-        const maxX = Math.min(pixelCols - 1, Math.ceil(cx + pxRadius));
-        const falloffStart = 1 - softEdgeNorm;
-        const falloffEnd = 1 + edgeEpsilon;
-        const denom = Math.max(1e-4, falloffEnd - falloffStart);
-        for (let yy = minY; yy <= maxY; yy++) {
-            const dy = yy - cy;
-            for (let xx = minX; xx <= maxX; xx++) {
-                const dx = xx - cx;
-                const dxIso = dx * spanScaleX;
-                const dyIso = dy * spanScaleY;
-                let norm = 0;
-                if (invIsoRadiusXSq > 0) norm += dxIso * dxIso * invIsoRadiusXSq;
-                if (invIsoRadiusYSq > 0) norm += dyIso * dyIso * invIsoRadiusYSq;
-                const distNorm = Math.sqrt(Math.max(0, norm));
-                if (distNorm >= falloffEnd) continue;
-                let weight = 1;
-                if (distNorm > falloffStart) {
-                    weight = Math.max(0, Math.min(1, (falloffEnd - distNorm) / denom));
-                }
-                if (weight <= 0) continue;
-                const idx = (yy * pixelCols + xx) * 4;
-                const alphaByte = Math.max(buffer[idx + 3], Math.round(weight * 255));
-                buffer[idx] = 255;
-                buffer[idx + 1] = 255;
-                buffer[idx + 2] = 255;
-                buffer[idx + 3] = alphaByte;
+    const blendPixel = (xx: number, yy: number, weight: number) => {
+        if (xx < 0 || xx >= pixelCols || yy < 0 || yy >= pixelRows) return;
+        if (!(weight > 0)) return;
+        const idx = (yy * pixelCols + xx) * 4;
+        const alpha = Math.max(buffer[idx + 3], Math.round(Math.max(0, Math.min(1, weight)) * 255));
+        buffer[idx] = 255;
+        buffer[idx + 1] = 255;
+        buffer[idx + 2] = 255;
+        buffer[idx + 3] = alpha;
+    };
+
+    const stampStroke = (cx: number, cy: number, weight: number) => {
+        const clamped = Math.max(0, Math.min(1, weight));
+        if (!(clamped > 0)) return;
+        if (strokeRadiusPxX <= 1 && strokeRadiusPxY <= 1) {
+            blendPixel(cx, cy, clamped);
+            return;
+        }
+        for (let oy = -strokeRadiusPxY; oy <= strokeRadiusPxY; oy++) {
+            const yy = cy + oy;
+            if (yy < 0 || yy >= pixelRows) continue;
+            for (let ox = -strokeRadiusPxX; ox <= strokeRadiusPxX; ox++) {
+                const xx = cx + ox;
+                if (xx < 0 || xx >= pixelCols) continue;
+                const distIso = Math.hypot(ox * spanScaleXAbs, oy * spanScaleYAbs);
+                if (distIso > strokeRadiusIso + isoFalloffMargin) continue;
+                const falloff = Math.max(0, 1 - distIso / (strokeRadiusIso + 1e-3));
+                if (falloff <= 0) continue;
+                blendPixel(xx, yy, clamped * falloff);
             }
         }
     };
@@ -253,8 +249,11 @@ const generateRoadCrackSprite = ({
             if (along < -1e-3 || along > length + 1e-3 || Math.abs(lateral) > halfWidth + 1e-3) continue;
             if (!tester(world.x, world.y)) continue;
 
-            const gx = Math.min(gridCols - 1, Math.max(0, Math.floor(px / cellPxX)));
-            const gy = Math.min(gridRows - 1, Math.max(0, Math.floor(py / cellPxY)));
+            const sampleSx = px + 0.5;
+            const sampleSy = py + 0.5;
+
+            const gx = Math.min(gridCols - 1, Math.max(0, Math.floor(sampleSx / cellPxX)));
+            const gy = Math.min(gridRows - 1, Math.max(0, Math.floor(sampleSy / cellPxY)));
 
             for (let r = 1; r <= 2; r++) {
                 candidateBuf.length = 0;
@@ -276,9 +275,11 @@ const generateRoadCrackSprite = ({
             let best2 = Infinity;
             for (let k = 0; k < source.length; k++) {
                 const idx = source[k];
-                const dx = world.x - worldSeeds[2 * idx];
-                const dy = world.y - worldSeeds[2 * idx + 1];
-                const dist2 = dx * dx + dy * dy;
+                const dx = sampleSx - isoSeedPx[2 * idx];
+                const dy = sampleSy - isoSeedPx[2 * idx + 1];
+                const dxIso = dx * spanScaleX;
+                const dyIso = dy * spanScaleY;
+                const dist2 = dxIso * dxIso + dyIso * dyIso;
                 if (dist2 < best1) {
                     best2 = best1;
                     best1 = dist2;
@@ -289,9 +290,16 @@ const generateRoadCrackSprite = ({
             if (!Number.isFinite(best1) || !Number.isFinite(best2) || best2 === Infinity) continue;
 
             const delta = Math.sqrt(best2) - Math.sqrt(best1);
-            if (delta < epsilonWorld) {
-                paintDisc(px, py);
-                hits++;
+            if (!Number.isFinite(delta)) continue;
+
+            if (delta <= isoThreshold) {
+                let weight = 1;
+                if (delta > hardThreshold) {
+                    const denom = Math.max(1e-6, isoThreshold - hardThreshold);
+                    weight = Math.max(0, Math.min(1, (isoThreshold - delta) / denom));
+                }
+                stampStroke(px, py, weight);
+                if (weight > 0) hits++;
             }
         }
     }

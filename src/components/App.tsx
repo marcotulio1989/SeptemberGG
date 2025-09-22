@@ -420,10 +420,10 @@ const App: React.FC = () => {
 
         let nextThreshold = crackThreshold;
         if (flags.threshold) {
-            nextThreshold = randomFloat(0.45, 0.82, 2);
+            nextThreshold = randomFloat(0.25, 1.8, 2);
             setCrackThreshold(nextThreshold);
         }
-        renderCfg.crackedRoadVoronoiThreshold = Math.min(1, Math.max(0, nextThreshold));
+        renderCfg.crackedRoadVoronoiThreshold = Math.min(4, Math.max(0.05, nextThreshold));
 
         let nextMinLength = crackMinLength;
         if (flags.minLength) {
@@ -589,7 +589,7 @@ const App: React.FC = () => {
         renderCfg.crackedRoadSeedDensity = Math.max(0.001, crackSeedDensity);
         renderCfg.crackedRoadSampleDensityAlong = Math.max(0.1, crackSampleAlong);
         renderCfg.crackedRoadSampleDensityAcross = Math.max(0.1, crackSampleAcross);
-        renderCfg.crackedRoadVoronoiThreshold = Math.min(1, Math.max(0, crackThreshold));
+        renderCfg.crackedRoadVoronoiThreshold = Math.min(4, Math.max(0.05, crackThreshold));
         renderCfg.crackedRoadMinLengthM = Math.max(0.5, crackMinLength);
         renderCfg.crackedRoadMaxSeeds = Math.max(8, Math.round(crackMaxSeeds));
         renderCfg.crackedRoadMaxSamplesAlong = Math.max(4, Math.round(crackMaxSamplesAlong));
@@ -1270,13 +1270,13 @@ const App: React.FC = () => {
                             <input
                                 id="crack-threshold"
                                 type="number"
-                                min={0}
-                                max={1}
-                                step={0.01}
+                                min={0.05}
+                                max={4}
+                                step={0.05}
                                 value={crackThreshold}
                                 onChange={(e) => {
                                     const raw = parseNumberInput(e.target.value);
-                                    const nv = Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 1) : 0.65;
+                                    const nv = Number.isFinite(raw) ? Math.min(Math.max(raw, 0.05), 4) : 0.65;
                                     setCrackThreshold(nv);
                                 }}
                                 style={{
