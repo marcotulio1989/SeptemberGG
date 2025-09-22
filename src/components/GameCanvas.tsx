@@ -165,11 +165,10 @@ const generateRoadCrackSprite = ({
     const epsilonWorld = Math.max(1e-6, epsilonPx);
 
     const targetSeeds = Math.max(2, Math.min(4096, Math.floor(seedCount)));
-    const worldSeeds: number[] = [];
     const isoSeedPx: number[] = [];
     const maxAttempts = Math.max(500, targetSeeds * 80);
     let attempts = 0;
-    while (worldSeeds.length < targetSeeds * 2 && attempts < maxAttempts) {
+    while (isoSeedPx.length < targetSeeds * 2 && attempts < maxAttempts) {
         attempts++;
         const along = rng() * length;
         const lateral = (rng() - 0.5) * width;
@@ -177,13 +176,12 @@ const generateRoadCrackSprite = ({
         const wy = baseY + uy * along + ny * lateral;
         if (!Number.isFinite(wx) || !Number.isFinite(wy)) continue;
         if (!tester(wx, wy)) continue;
-        worldSeeds.push(wx, wy);
         const iso = worldToIso({ x: wx, y: wy });
         const sx = (iso.x - isoOriginX) / expandedSpanX * pixelCols;
         const sy = (iso.y - isoOriginY) / expandedSpanY * pixelRows;
         isoSeedPx.push(sx, sy);
     }
-    const actualSeeds = worldSeeds.length / 2;
+    const actualSeeds = isoSeedPx.length / 2;
     if (actualSeeds < 2) return null;
 
     const gridSize = Math.max(8, Math.round(Math.sqrt(actualSeeds)));
@@ -206,7 +204,8 @@ const generateRoadCrackSprite = ({
     const candidateBuf: number[] = [];
     let hits = 0;
 
-    const paintDisc = (cx: number, cy: number) => {
+    const paintDisc = (cx: number, cy: number, intensity: number) => {
+        if (!(intensity > 0)) return;
         const minY = Math.max(0, Math.floor(cy - pxRadius));
         const maxY = Math.min(pixelRows - 1, Math.ceil(cy + pxRadius));
         const minX = Math.max(0, Math.floor(cx - pxRadius));
@@ -231,7 +230,8 @@ const generateRoadCrackSprite = ({
                 }
                 if (weight <= 0) continue;
                 const idx = (yy * pixelCols + xx) * 4;
-                const alphaByte = Math.max(buffer[idx + 3], Math.round(weight * 255));
+                const clamped = Math.max(0, Math.min(1, intensity));
+                const alphaByte = Math.max(buffer[idx + 3], Math.round(clamped * weight * 255));
                 buffer[idx] = 255;
                 buffer[idx + 1] = 255;
                 buffer[idx + 2] = 255;
@@ -241,9 +241,11 @@ const generateRoadCrackSprite = ({
     };
 
     for (let py = 0; py < pixelRows; py++) {
-        const isoY = isoOriginY + (py + 0.5) * spanScaleY;
+        const pyCenter = py + 0.5;
+        const isoY = isoOriginY + pyCenter * spanScaleY;
         for (let px = 0; px < pixelCols; px++) {
-            const isoX = isoOriginX + (px + 0.5) * spanScaleX;
+            const pxCenter = px + 0.5;
+            const isoX = isoOriginX + pxCenter * spanScaleX;
             const world = isoToWorld({ x: isoX, y: isoY });
             if (!Number.isFinite(world.x) || !Number.isFinite(world.y)) continue;
             const relX = world.x - baseX;
@@ -253,8 +255,8 @@ const generateRoadCrackSprite = ({
             if (along < -1e-3 || along > length + 1e-3 || Math.abs(lateral) > halfWidth + 1e-3) continue;
             if (!tester(world.x, world.y)) continue;
 
-            const gx = Math.min(gridCols - 1, Math.max(0, Math.floor(px / cellPxX)));
-            const gy = Math.min(gridRows - 1, Math.max(0, Math.floor(py / cellPxY)));
+            const gx = Math.min(gridCols - 1, Math.max(0, Math.floor(pxCenter / cellPxX)));
+            const gy = Math.min(gridRows - 1, Math.max(0, Math.floor(pyCenter / cellPxY)));
 
             for (let r = 1; r <= 2; r++) {
                 candidateBuf.length = 0;
@@ -276,9 +278,12 @@ const generateRoadCrackSprite = ({
             let best2 = Infinity;
             for (let k = 0; k < source.length; k++) {
                 const idx = source[k];
-                const dx = world.x - worldSeeds[2 * idx];
-                const dy = world.y - worldSeeds[2 * idx + 1];
-                const dist2 = dx * dx + dy * dy;
+                const sx = isoSeedPx[2 * idx];
+                const sy = isoSeedPx[2 * idx + 1];
+                if (!Number.isFinite(sx) || !Number.isFinite(sy)) continue;
+                const dxPx = (pxCenter - sx) * spanScaleX;
+                const dyPx = (pyCenter - sy) * spanScaleY;
+                const dist2 = dxPx * dxPx + dyPx * dyPx;
                 if (dist2 < best1) {
                     best2 = best1;
                     best1 = dist2;
@@ -290,13 +295,16 @@ const generateRoadCrackSprite = ({
 
             const delta = Math.sqrt(best2) - Math.sqrt(best1);
             if (delta < epsilonWorld) {
-                paintDisc(px, py);
-                hits++;
+                const intensity = Math.max(0, Math.min(1, 1 - delta / (epsilonWorld + 1e-6)));
+                if (intensity > 0) {
+                    paintDisc(pxCenter, pyCenter, intensity);
+                    hits += intensity;
+                }
             }
         }
     }
 
-    if (hits === 0) return null;
+    if (hits <= 0) return null;
 
     return {
         buffer,
