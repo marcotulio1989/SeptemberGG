@@ -148,6 +148,7 @@ const NoiseZoning: InternalNoiseZoning = {
     overlay.style.top = '0';
     overlay.style.pointerEvents = 'none';
     overlay.style.zIndex = '5';
+    overlay.style.opacity = '0';
     // Garantir que o container do canvas tenha position: relative
     const parent = canvas.parentElement;
     if (parent) {

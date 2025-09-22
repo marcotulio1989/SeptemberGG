@@ -80,6 +80,56 @@ interface RoadCrackParams {
     isoToWorld: (p: Point) => Point;
 }
 
+const blitCrackMaskToGraphics = (
+    graphics: PIXI.Graphics,
+    spriteData: RoadCrackSpriteData,
+    tint: number,
+    baseAlpha: number,
+) => {
+    const { buffer, width, height, spriteX, spriteY, spriteWidth, spriteHeight } = spriteData;
+    if (!buffer || !buffer.length || width <= 0 || height <= 0) return;
+    const stepX = spriteWidth / width;
+    const stepY = spriteHeight / height;
+    const clampedAlpha = Math.max(0, Math.min(1, baseAlpha));
+    if (!(stepX > 0) || !(stepY > 0) || !(clampedAlpha > 0)) return;
+
+    for (let row = 0; row < height; row++) {
+        const rowOffset = row * width * 4;
+        let col = 0;
+        while (col < width) {
+            const alphaIndex = rowOffset + col * 4 + 3;
+            const a = buffer[alphaIndex];
+            if (a > 0) {
+                let end = col + 1;
+                let alphaSum = a;
+                while (end < width) {
+                    const idx = rowOffset + end * 4 + 3;
+                    const a2 = buffer[idx];
+                    if (a2 <= 0) break;
+                    alphaSum += a2;
+                    end++;
+                }
+
+                const pxCount = end - col;
+                const runAlpha = clampedAlpha * Math.max(0, Math.min(1, alphaSum / (pxCount * 255)));
+                if (runAlpha > 0) {
+                    const isoX = spriteX + col * stepX;
+                    const isoY = spriteY + row * stepY;
+                    const w = pxCount * stepX;
+                    const h = stepY;
+                    graphics.beginFill(tint, runAlpha);
+                    graphics.drawRect(isoX, isoY, w, h);
+                    graphics.endFill();
+                }
+
+                col = end;
+            } else {
+                col++;
+            }
+        }
+    }
+};
+
 const generateRoadCrackSprite = ({
     length,
     width,
@@ -153,14 +203,14 @@ const generateRoadCrackSprite = ({
 
     const spanScaleXAbs = Math.max(Math.abs(spanScaleX), 1e-4);
     const spanScaleYAbs = Math.max(Math.abs(spanScaleY), 1e-4);
-    const strokeWidthPx = Math.max(0.35, Number.isFinite(strokePx) ? strokePx : 1);
+    const strokeWidthPx = Math.max(0.2, Number.isFinite(strokePx) ? strokePx : 1);
     const isoRadiusX = Math.max(spanScaleXAbs * strokeWidthPx * 0.5, spanScaleXAbs * 0.5);
     const isoRadiusY = Math.max(spanScaleYAbs * strokeWidthPx * 0.5, spanScaleYAbs * 0.5);
     const invIsoRadiusXSq = isoRadiusX > 1e-6 ? 1 / (isoRadiusX * isoRadiusX) : 0;
     const invIsoRadiusYSq = isoRadiusY > 1e-6 ? 1 / (isoRadiusY * isoRadiusY) : 0;
-    const pxRadius = Math.max(1, Math.ceil(strokeWidthPx * supersample * 0.5 + 1));
-    const softEdgeNorm = Math.min(0.65, Math.max(0.18, 0.9 / (strokeWidthPx * supersample + 1e-3)));
-    const edgeEpsilon = 0.12;
+    const pxRadius = Math.max(1, Math.ceil(strokeWidthPx * supersample * 0.55 + 1));
+    const softEdgeNorm = Math.min(0.78, Math.max(0.22, 1.05 / (strokeWidthPx * supersample + 0.2)));
+    const edgeEpsilon = 0.18;
 
     const epsilonWorld = Math.max(1e-6, epsilonPx);
 
@@ -353,6 +403,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     const roadLaneOverlay = useRef<PIXI.Container | null>(null);
     const roadLaneOutlines = useRef<PIXI.Container | null>(null);
     const crackedRoadOverlay = useRef<PIXI.Container | null>(null);
+    const crackedRoadGraphic = useRef<PIXI.Graphics | null>(null);
     const edgeOverlay = useRef<PIXI.Container | null>(null);
     const roadLaneTextureRef = useRef<PIXI.Texture | null>(roadLaneTexture || null);
     const edgeTextureRef = useRef<PIXI.Texture | null>(edgeTexture || null);
@@ -1274,13 +1325,10 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
 
     const drawCrackedRoads = (segments: Segment[]) => {
         const container = crackedRoadOverlay.current;
-        if (!container) return;
-        const previous = container.removeChildren();
-        previous.forEach(child => {
-            try {
-                child.destroy({ children: true, texture: true, baseTexture: true });
-            } catch (err) { try { console.warn('[CrackedRoads] Failed to destroy previous sprite', err); } catch (e) {} }
-        });
+        const graphics = crackedRoadGraphic.current;
+        if (!container || !graphics) return;
+        graphics.clear();
+        graphics.lineStyle(0);
         const cfg = (config as any).render;
         const show = !!cfg.showCrackedRoadsOutline;
         if (!show) {
@@ -1335,8 +1383,8 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         const baseMaxSamplesAlong: number = Math.max(4, cfg.crackedRoadMaxSamplesAlong ?? 240);
         const baseMaxSamplesAcross: number = Math.max(4, cfg.crackedRoadMaxSamplesAcross ?? 96);
         const baseProbeStep: number = Math.max(0.4, cfg.crackedRoadProbeStepM ?? 1.1);
-        const baseStrokePx: number = Math.max(0.35, cfg.crackedRoadStrokePx ?? 1.35);
-        const baseResolutionMultiplier: number = Math.max(1, cfg.crackedRoadResolutionMultiplier ?? 3);
+        const baseStrokePx: number = Math.max(0.2, cfg.crackedRoadStrokePx ?? 1.1);
+        const baseResolutionMultiplier: number = Math.max(1, cfg.crackedRoadResolutionMultiplier ?? 4);
         const assignments = ((cfg.crackedRoadPatternAssignments as CrackPatternAssignments | undefined)?.segments) ?? null;
         const globalSeed: number = (NoiseZoning as any)?.getSeed?.call(NoiseZoning) ?? 0;
 
@@ -1371,7 +1419,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             const segAlpha = Math.max(0.05, Math.min(1, baseAlpha * (mult.alpha ?? 1)));
             const segColor = pattern?.color ?? baseColor;
             const segStrokePxRaw = baseStrokePx * (mult.strokePx ?? 1);
-            const segStrokePx = Math.max(0.3, Number.isFinite(segStrokePxRaw) ? segStrokePxRaw : baseStrokePx);
+            const segStrokePx = Math.max(0.2, Number.isFinite(segStrokePxRaw) ? segStrokePxRaw : baseStrokePx);
             const segResolutionMultiplierRaw = baseResolutionMultiplier * (mult.resolutionMultiplier ?? 1);
             const segResolutionMultiplier = Math.max(1, Math.min(8, Number.isFinite(segResolutionMultiplierRaw) ? segResolutionMultiplierRaw : baseResolutionMultiplier));
             const segSeedOffset = pattern?.seedOffset ?? 0;
@@ -1436,33 +1484,12 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                     isoToWorld,
                 });
                 if (!spriteData) return;
-                try {
-                    const baseTexture = PIXI.BaseTexture.fromBuffer(spriteData.buffer, spriteData.width, spriteData.height, {
-                        scaleMode: PIXI.SCALE_MODES.LINEAR,
-                        mipmap: PIXI.MIPMAP_MODES.ON,
-                    });
-                    try { (baseTexture as any).mipmap = PIXI.MIPMAP_MODES.ON; } catch (e) {}
-                    const aniso = (baseTexture as any).anisotropicLevel;
-                    if (typeof aniso === 'number' && aniso < 4) {
-                        (baseTexture as any).anisotropicLevel = 4;
-                    }
-                    const texture = new PIXI.Texture(baseTexture);
-                    const sprite = new PIXI.Sprite(texture);
-                    sprite.x = spriteData.spriteX;
-                    sprite.y = spriteData.spriteY;
-                    sprite.width = spriteData.spriteWidth;
-                    sprite.height = spriteData.spriteHeight;
-                    sprite.tint = segColor;
-                    sprite.alpha = segAlpha;
-                    sprite.roundPixels = false;
-                    container.addChild(sprite);
-                    drewAny = true;
-                } catch (err) {
-                    try { console.warn('[CrackedRoads] Failed to build sprite', err); } catch (e) {}
-                }
+                blitCrackMaskToGraphics(graphics, spriteData, segColor, segAlpha);
+                drewAny = true;
             });
         });
 
+        graphics.visible = drewAny;
         container.visible = drewAny;
     };
 
@@ -1606,7 +1633,16 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     roadsSecondary.current?.removeChildren();
     roadOutlines.current.removeChildren();
     intersectionPatches.current.removeChildren();
-    crackedRoadOverlay.current?.removeChildren();
+    if (crackedRoadGraphic.current) {
+        crackedRoadGraphic.current.clear();
+        if (crackedRoadOverlay.current && crackedRoadGraphic.current.parent !== crackedRoadOverlay.current) {
+            try { crackedRoadOverlay.current.removeChildren(); } catch (e) {}
+            crackedRoadOverlay.current.addChild(crackedRoadGraphic.current);
+        }
+    }
+    if (crackedRoadOverlay.current) {
+        crackedRoadOverlay.current.visible = false;
+    }
     if (rebuildBuildings) blockOutlines.current?.removeChildren();
     // Limpeza adicional: bandas de borda devem ser sempre limpas ao atualizar mapa
     blockEdgeBands.current?.removeChildren();
@@ -3380,6 +3416,9 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     crackedRoadOverlay.current = new PIXI.Container();
     (crackedRoadOverlay.current as any).zIndex = 45;
     crackedRoadOverlay.current.visible = false;
+    crackedRoadGraphic.current = new PIXI.Graphics();
+    crackedRoadGraphic.current.blendMode = PIXI.BLEND_MODES.NORMAL;
+    crackedRoadOverlay.current.addChild(crackedRoadGraphic.current);
     edgeOverlay.current = new PIXI.Container();
     // ensure concrete overlay renders above the bands
     (edgeOverlay.current as any).zIndex = 200;
@@ -3652,6 +3691,14 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             if (crackedRoadsRaf.current != null && typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
                 window.cancelAnimationFrame(crackedRoadsRaf.current);
                 crackedRoadsRaf.current = null;
+            }
+            if (crackedRoadGraphic.current) {
+                try { crackedRoadGraphic.current.destroy(true); } catch (e) {}
+                crackedRoadGraphic.current = null;
+            }
+            if (crackedRoadOverlay.current) {
+                try { crackedRoadOverlay.current.destroy({ children: true }); } catch (e) {}
+                crackedRoadOverlay.current = null;
             }
             MapStore.removeChangeListener(onMapChange);
             pixiRenderer.current?.destroy();
