@@ -16,6 +16,7 @@ import NoiseZoning from '../overlays/NoiseZoning';
 import { createGrassTexture } from '../overlays/grassTexture';
 import Quadtree from '../lib/quadtree';
 import { CrackPatternAssignments, getCrackPatternById } from '../lib/crackPatterns';
+import { Noise } from 'noisejs';
 // ClipperLib (sem typings completos) - usar require para acessar classes
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const ClipperLib: any = require('clipper-lib');
@@ -47,16 +48,6 @@ const createPRNG = (seed: number) => {
     };
 };
 
-interface RoadCrackSpriteData {
-    buffer: Uint8Array;
-    width: number;
-    height: number;
-    spriteX: number;
-    spriteY: number;
-    spriteWidth: number;
-    spriteHeight: number;
-}
-
 interface RoadCrackParams {
     length: number;
     width: number;
@@ -68,6 +59,8 @@ interface RoadCrackParams {
     epsilonPx: number;
     strokePx: number;
     resolutionMultiplier: number;
+    minLength: number;
+    probeStep: number;
     seed: number;
     tester: (x: number, y: number) => boolean;
     baseX: number;
@@ -77,10 +70,15 @@ interface RoadCrackParams {
     nx: number;
     ny: number;
     worldToIso: (p: Point) => Point;
-    isoToWorld: (p: Point) => Point;
 }
 
-const generateRoadCrackSprite = ({
+interface RoadCrackPath {
+    isoPoints: Point[];
+    alphaScale: number;
+    lineWidth: number;
+}
+
+const generateRoadCrackPaths = ({
     length,
     width,
     seedCount,
@@ -91,6 +89,8 @@ const generateRoadCrackSprite = ({
     epsilonPx,
     strokePx,
     resolutionMultiplier,
+    minLength,
+    probeStep,
     seed,
     tester,
     baseX,
@@ -100,213 +100,139 @@ const generateRoadCrackSprite = ({
     nx,
     ny,
     worldToIso,
-    isoToWorld,
-}: RoadCrackParams): RoadCrackSpriteData | null => {
-    if (!(length > 0) || !(width > 0)) return null;
-    const halfWidth = width * 0.5;
+}: RoadCrackParams): RoadCrackPath[] => {
+    if (!(length > 0) || !(width > 0)) return [];
     const rng = createPRNG(seed);
-    const isoCorners = [
-        worldToIso({ x: baseX + nx * -halfWidth, y: baseY + ny * -halfWidth }),
-        worldToIso({ x: baseX + ux * length + nx * -halfWidth, y: baseY + uy * length + ny * -halfWidth }),
-        worldToIso({ x: baseX + ux * length + nx * halfWidth, y: baseY + uy * length + ny * halfWidth }),
-        worldToIso({ x: baseX + nx * halfWidth, y: baseY + ny * halfWidth }),
-    ];
-    let isoMinX = Infinity;
-    let isoMaxX = -Infinity;
-    let isoMinY = Infinity;
-    let isoMaxY = -Infinity;
-    for (const corner of isoCorners) {
-        if (!corner) continue;
-        if (!Number.isFinite(corner.x) || !Number.isFinite(corner.y)) continue;
-        if (corner.x < isoMinX) isoMinX = corner.x;
-        if (corner.x > isoMaxX) isoMaxX = corner.x;
-        if (corner.y < isoMinY) isoMinY = corner.y;
-        if (corner.y > isoMaxY) isoMaxY = corner.y;
-    }
-    if (!Number.isFinite(isoMinX) || !Number.isFinite(isoMaxX) || !Number.isFinite(isoMinY) || !Number.isFinite(isoMaxY)) {
-        return null;
-    }
-    const isoSpanX = isoMaxX - isoMinX;
-    const isoSpanY = isoMaxY - isoMinY;
-    if (!(isoSpanX > 1e-4) || !(isoSpanY > 1e-4)) return null;
-
-    const expandedMinX = Math.floor(isoMinX) - 2;
-    const expandedMinY = Math.floor(isoMinY) - 2;
-    const expandedMaxX = Math.ceil(isoMaxX) + 2;
-    const expandedMaxY = Math.ceil(isoMaxY) + 2;
-    const expandedSpanX = Math.max(2, expandedMaxX - expandedMinX);
-    const expandedSpanY = Math.max(2, expandedMaxY - expandedMinY);
-
-    const isoOriginX = expandedMinX;
-    const isoOriginY = expandedMinY;
-
+    const halfWidth = width * 0.5;
+    const noiseSeed = (seed ^ 0x9e3779b9) >>> 0;
+    const noise = new Noise(noiseSeed || 1);
+    const safeMinLength = Math.max(0.25, minLength);
     const supersample = Math.max(1, Math.min(8, Number.isFinite(resolutionMultiplier) ? resolutionMultiplier : 1));
-    const baseCols = Math.min(maxSamplesAlong, Math.max(2, samplesAlong));
-    const baseRows = Math.min(maxSamplesAcross, Math.max(2, samplesAcross));
-    const pixelCols = Math.max(16, Math.min(4096, Math.round(baseCols * 4 * supersample)));
-    const pixelRows = Math.max(16, Math.min(4096, Math.round(baseRows * 4 * supersample)));
-    if (!(pixelCols > 1) || !(pixelRows > 1)) return null;
+    const alongSamples = Math.min(maxSamplesAlong, Math.max(4, Math.round(samplesAlong * supersample)));
+    const branchBudget = Math.min(maxSamplesAcross, Math.max(1, Math.round(samplesAcross * supersample)));
+    const baseStep = Math.max(0.25, probeStep / Math.max(0.5, supersample));
+    const stepJitter = 0.5 + rng() * 0.5;
+    const bendStrengthBase = 0.18 + (supersample - 1) * 0.05;
+    const epsilonFactor = 1 / Math.max(0.15, epsilonPx);
+    const bendStrength = bendStrengthBase * (0.6 + epsilonFactor * 0.4);
+    const jitterStrength = 0.05 + (samplesAcross / Math.max(1, maxSamplesAcross)) * 0.3;
+    const lateralSlack = Math.min(0.97, 0.72 + (samplesAcross / Math.max(1, maxSamplesAcross)) * 0.25);
+    const noiseFreqBase = 0.12 * supersample / Math.max(8, length);
+    const noiseOffsetX = (noiseSeed % 4093) / 9973;
+    const noiseOffsetY = ((noiseSeed >>> 8) % 3947) / 8191;
+    const totalSeeds = Math.max(1, Math.floor(seedCount));
+    const pathCountFromSeeds = Math.min(totalSeeds, Math.max(1, Math.round(Math.sqrt(totalSeeds))));
+    const pathCount = Math.min(branchBudget * 4, Math.max(1, pathCountFromSeeds));
 
-    const spanScaleX = expandedSpanX / pixelCols;
-    const spanScaleY = expandedSpanY / pixelRows;
-    if (!(spanScaleX > 0) || !(spanScaleY > 0)) return null;
+    const cracks: RoadCrackPath[] = [];
 
-    const spanScaleXAbs = Math.max(Math.abs(spanScaleX), 1e-4);
-    const spanScaleYAbs = Math.max(Math.abs(spanScaleY), 1e-4);
-    const strokeWidthPx = Math.max(0.35, Number.isFinite(strokePx) ? strokePx : 1);
-    const isoRadiusX = Math.max(spanScaleXAbs * strokeWidthPx * 0.5, spanScaleXAbs * 0.5);
-    const isoRadiusY = Math.max(spanScaleYAbs * strokeWidthPx * 0.5, spanScaleYAbs * 0.5);
-    const invIsoRadiusXSq = isoRadiusX > 1e-6 ? 1 / (isoRadiusX * isoRadiusX) : 0;
-    const invIsoRadiusYSq = isoRadiusY > 1e-6 ? 1 / (isoRadiusY * isoRadiusY) : 0;
-    const pxRadius = Math.max(1, Math.ceil(strokeWidthPx * supersample * 0.5 + 1));
-    const softEdgeNorm = Math.min(0.65, Math.max(0.18, 0.9 / (strokeWidthPx * supersample + 1e-3)));
-    const edgeEpsilon = 0.12;
-
-    const epsilonWorld = Math.max(1e-6, epsilonPx);
-
-    const targetSeeds = Math.max(2, Math.min(4096, Math.floor(seedCount)));
-    const worldSeeds: number[] = [];
-    const isoSeedPx: number[] = [];
-    const maxAttempts = Math.max(500, targetSeeds * 80);
-    let attempts = 0;
-    while (worldSeeds.length < targetSeeds * 2 && attempts < maxAttempts) {
-        attempts++;
-        const along = rng() * length;
-        const lateral = (rng() - 0.5) * width;
-        const wx = baseX + ux * along + nx * lateral;
-        const wy = baseY + uy * along + ny * lateral;
-        if (!Number.isFinite(wx) || !Number.isFinite(wy)) continue;
-        if (!tester(wx, wy)) continue;
-        worldSeeds.push(wx, wy);
-        const iso = worldToIso({ x: wx, y: wy });
-        const sx = (iso.x - isoOriginX) / expandedSpanX * pixelCols;
-        const sy = (iso.y - isoOriginY) / expandedSpanY * pixelRows;
-        isoSeedPx.push(sx, sy);
-    }
-    const actualSeeds = worldSeeds.length / 2;
-    if (actualSeeds < 2) return null;
-
-    const gridSize = Math.max(8, Math.round(Math.sqrt(actualSeeds)));
-    const gridCols = gridSize;
-    const gridRows = gridSize;
-    const cellPxX = Math.max(1, pixelCols / gridCols);
-    const cellPxY = Math.max(1, pixelRows / gridRows);
-    const buckets: number[][] = new Array(gridCols * gridRows);
-    for (let i = 0; i < buckets.length; i++) buckets[i] = [];
-    for (let i = 0; i < actualSeeds; i++) {
-        const sx = isoSeedPx[2 * i];
-        const sy = isoSeedPx[2 * i + 1];
-        if (!Number.isFinite(sx) || !Number.isFinite(sy)) continue;
-        const gx = Math.min(gridCols - 1, Math.max(0, Math.floor(sx / cellPxX)));
-        const gy = Math.min(gridRows - 1, Math.max(0, Math.floor(sy / cellPxY)));
-        buckets[gy * gridCols + gx].push(i);
-    }
-    const fallbackIndices = Array.from({ length: actualSeeds }, (_, i) => i);
-    const buffer = new Uint8Array(pixelCols * pixelRows * 4);
-    const candidateBuf: number[] = [];
-    let hits = 0;
-
-    const paintDisc = (cx: number, cy: number) => {
-        const minY = Math.max(0, Math.floor(cy - pxRadius));
-        const maxY = Math.min(pixelRows - 1, Math.ceil(cy + pxRadius));
-        const minX = Math.max(0, Math.floor(cx - pxRadius));
-        const maxX = Math.min(pixelCols - 1, Math.ceil(cx + pxRadius));
-        const falloffStart = 1 - softEdgeNorm;
-        const falloffEnd = 1 + edgeEpsilon;
-        const denom = Math.max(1e-4, falloffEnd - falloffStart);
-        for (let yy = minY; yy <= maxY; yy++) {
-            const dy = yy - cy;
-            for (let xx = minX; xx <= maxX; xx++) {
-                const dx = xx - cx;
-                const dxIso = dx * spanScaleX;
-                const dyIso = dy * spanScaleY;
-                let norm = 0;
-                if (invIsoRadiusXSq > 0) norm += dxIso * dxIso * invIsoRadiusXSq;
-                if (invIsoRadiusYSq > 0) norm += dyIso * dyIso * invIsoRadiusYSq;
-                const distNorm = Math.sqrt(Math.max(0, norm));
-                if (distNorm >= falloffEnd) continue;
-                let weight = 1;
-                if (distNorm > falloffStart) {
-                    weight = Math.max(0, Math.min(1, (falloffEnd - distNorm) / denom));
-                }
-                if (weight <= 0) continue;
-                const idx = (yy * pixelCols + xx) * 4;
-                const alphaByte = Math.max(buffer[idx + 3], Math.round(weight * 255));
-                buffer[idx] = 255;
-                buffer[idx + 1] = 255;
-                buffer[idx + 2] = 255;
-                buffer[idx + 3] = alphaByte;
-            }
-        }
+    const noise2D = (x: number, y: number) => {
+        return noise.perlin2(x * noiseFreqBase + noiseOffsetX, y * noiseFreqBase + noiseOffsetY);
     };
 
-    for (let py = 0; py < pixelRows; py++) {
-        const isoY = isoOriginY + (py + 0.5) * spanScaleY;
-        for (let px = 0; px < pixelCols; px++) {
-            const isoX = isoOriginX + (px + 0.5) * spanScaleX;
-            const world = isoToWorld({ x: isoX, y: isoY });
-            if (!Number.isFinite(world.x) || !Number.isFinite(world.y)) continue;
-            const relX = world.x - baseX;
-            const relY = world.y - baseY;
-            const along = relX * ux + relY * uy;
-            const lateral = relX * nx + relY * ny;
-            if (along < -1e-3 || along > length + 1e-3 || Math.abs(lateral) > halfWidth + 1e-3) continue;
-            if (!tester(world.x, world.y)) continue;
+    const limitInside = (wx: number, wy: number) => {
+        const relX = wx - baseX;
+        const relY = wy - baseY;
+        const along = relX * ux + relY * uy;
+        const lateral = relX * nx + relY * ny;
+        if (along < -0.75 || along > length + 0.75) return false;
+        if (Math.abs(lateral) > halfWidth * lateralSlack) return false;
+        if (!tester(wx, wy)) return false;
+        return true;
+    };
 
-            const gx = Math.min(gridCols - 1, Math.max(0, Math.floor(px / cellPxX)));
-            const gy = Math.min(gridRows - 1, Math.max(0, Math.floor(py / cellPxY)));
+    const traceDirection = (startX: number, startY: number, heading: number, forward: number, maxLen: number, stepLimit: number) => {
+        let curX = startX;
+        let curY = startY;
+        let dir = heading;
+        let totalLen = 0;
+        const pts: Point[] = [];
+        for (let stepIndex = 0; stepIndex < stepLimit; stepIndex++) {
+            const n = noise2D(curX, curY);
+            dir += (n * 2 - 1) * bendStrength;
+            dir += (rng() - 0.5) * jitterStrength;
+            const step = baseStep * (0.75 + rng() * stepJitter);
+            const dx = Math.cos(dir) * step * forward;
+            const dy = Math.sin(dir) * step * forward;
+            const nextX = curX + dx;
+            const nextY = curY + dy;
+            if (!limitInside(nextX, nextY)) break;
+            pts.push({ x: nextX, y: nextY });
+            totalLen += Math.hypot(dx, dy);
+            curX = nextX;
+            curY = nextY;
+            if (totalLen >= maxLen) break;
+        }
+        return { points: pts, length: totalLen };
+    };
 
-            for (let r = 1; r <= 2; r++) {
-                candidateBuf.length = 0;
-                for (let yy = gy - r; yy <= gy + r; yy++) {
-                    if (yy < 0 || yy >= gridRows) continue;
-                    for (let xx = gx - r; xx <= gx + r; xx++) {
-                        if (xx < 0 || xx >= gridCols) continue;
-                        const arr = buckets[yy * gridCols + xx];
-                        if (arr && arr.length) candidateBuf.push(...arr);
-                    }
-                }
-                if (candidateBuf.length || r === 2) break;
-            }
+    const addPath = (worldPoints: Point[], alphaScale: number, lineWidth: number) => {
+        if (worldPoints.length < 2) return;
+        const isoPoints = worldPoints.map(worldToIso).filter(pt => Number.isFinite(pt.x) && Number.isFinite(pt.y));
+        if (isoPoints.length < 2) return;
+        cracks.push({ isoPoints, alphaScale, lineWidth });
+    };
 
-            const source = candidateBuf.length ? candidateBuf : fallbackIndices;
-            if (!source.length) continue;
+    const combinedStepsLimit = Math.max(8, Math.min(maxSamplesAlong, alongSamples * 2));
+    const baseHeading = Math.atan2(uy, ux);
 
-            let best1 = Infinity;
-            let best2 = Infinity;
-            for (let k = 0; k < source.length; k++) {
-                const idx = source[k];
-                const dx = world.x - worldSeeds[2 * idx];
-                const dy = world.y - worldSeeds[2 * idx + 1];
-                const dist2 = dx * dx + dy * dy;
-                if (dist2 < best1) {
-                    best2 = best1;
-                    best1 = dist2;
-                } else if (dist2 < best2) {
-                    best2 = dist2;
-                }
-            }
-            if (!Number.isFinite(best1) || !Number.isFinite(best2) || best2 === Infinity) continue;
+    for (let c = 0; c < pathCount; c++) {
+        const startAlong = Math.min(length - safeMinLength * 0.5, Math.max(0, rng() * length));
+        const startLateral = (rng() - 0.5) * width * 0.9;
+        const startX = baseX + ux * startAlong + nx * startLateral;
+        const startY = baseY + uy * startAlong + ny * startLateral;
+        if (!limitInside(startX, startY)) continue;
 
-            const delta = Math.sqrt(best2) - Math.sqrt(best1);
-            if (delta < epsilonWorld) {
-                paintDisc(px, py);
-                hits++;
-            }
+        const baseDir = baseHeading + (rng() - 0.5) * Math.PI * 0.35;
+        const forwardTarget = Math.min(length * 0.9, safeMinLength * (0.9 + rng() * 1.8));
+        const backwardTarget = forwardTarget * (0.45 + rng() * 0.4);
+
+        const forwardTrace = traceDirection(startX, startY, baseDir, 1, forwardTarget, combinedStepsLimit);
+        const backwardTrace = traceDirection(startX, startY, baseDir + Math.PI, -1, backwardTarget, combinedStepsLimit);
+
+        const totalLen = forwardTrace.length + backwardTrace.length;
+        if (totalLen < safeMinLength * 0.75) continue;
+
+        const worldPoints: Point[] = [];
+        for (let i = backwardTrace.points.length - 1; i >= 0; i--) worldPoints.push(backwardTrace.points[i]);
+        worldPoints.push({ x: startX, y: startY });
+        worldPoints.push(...forwardTrace.points);
+
+        if (worldPoints.length < 2) continue;
+
+        const widthScale = 0.7 + rng() * 0.6;
+        const lineWidth = Math.max(0.15, Number.isFinite(strokePx) ? strokePx * widthScale : 1);
+        const alphaScale = Math.max(0.2, Math.min(1, 0.65 + rng() * 0.35));
+        addPath(worldPoints, alphaScale, lineWidth);
+
+        if (branchBudget <= 1) continue;
+        const branchChance = Math.min(0.85, 0.25 + (samplesAcross / Math.max(1, maxSamplesAcross)) * 0.6);
+        const branchCount = Math.min(branchBudget, Math.max(0, Math.round(worldPoints.length * branchChance * 0.15)));
+        let branches = 0;
+        while (branches < branchCount) {
+            if (rng() > branchChance) break;
+            branches++;
+            const idx = Math.max(1, Math.min(worldPoints.length - 2, Math.floor(rng() * (worldPoints.length - 2))));
+            const origin = worldPoints[idx];
+            const prev = worldPoints[idx - 1];
+            const next = worldPoints[idx + 1];
+            const tanX = next.x - prev.x;
+            const tanY = next.y - prev.y;
+            const tanLen = Math.hypot(tanX, tanY) || 1;
+            const normX = -tanY / tanLen;
+            const normY = tanX / tanLen;
+            const branchDir = Math.atan2(normY, normX) + (rng() - 0.5) * Math.PI * 0.45;
+            const branchTarget = forwardTarget * (0.25 + rng() * 0.4);
+            const branchTrace = traceDirection(origin.x, origin.y, branchDir, 1, branchTarget, Math.max(4, Math.round(combinedStepsLimit * 0.6)));
+            if (branchTrace.points.length < 1) continue;
+            const branchPoints = [origin, ...branchTrace.points];
+            const branchWidth = Math.max(0.1, lineWidth * (0.65 + rng() * 0.25));
+            const branchAlpha = Math.max(0.15, Math.min(1, alphaScale * (0.6 + rng() * 0.3)));
+            addPath(branchPoints, branchAlpha, branchWidth);
         }
     }
 
-    if (hits === 0) return null;
-
-    return {
-        buffer,
-        width: pixelCols,
-        height: pixelRows,
-        spriteX: isoOriginX,
-        spriteY: isoOriginY,
-        spriteWidth: pixelCols * spanScaleX,
-        spriteHeight: pixelRows * spanScaleY,
-    };
+    return cracks;
 };
 
 interface GameCanvasProps {
@@ -1335,8 +1261,8 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         const baseMaxSamplesAlong: number = Math.max(4, cfg.crackedRoadMaxSamplesAlong ?? 240);
         const baseMaxSamplesAcross: number = Math.max(4, cfg.crackedRoadMaxSamplesAcross ?? 96);
         const baseProbeStep: number = Math.max(0.4, cfg.crackedRoadProbeStepM ?? 1.1);
-        const baseStrokePx: number = Math.max(0.35, cfg.crackedRoadStrokePx ?? 1.35);
-        const baseResolutionMultiplier: number = Math.max(1, cfg.crackedRoadResolutionMultiplier ?? 3);
+        const baseStrokePx: number = Math.max(0.2, cfg.crackedRoadStrokePx ?? 1.1);
+        const baseResolutionMultiplier: number = Math.max(1, cfg.crackedRoadResolutionMultiplier ?? 4);
         const assignments = ((cfg.crackedRoadPatternAssignments as CrackPatternAssignments | undefined)?.segments) ?? null;
         const globalSeed: number = (NoiseZoning as any)?.getSeed?.call(NoiseZoning) ?? 0;
 
@@ -1371,7 +1297,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             const segAlpha = Math.max(0.05, Math.min(1, baseAlpha * (mult.alpha ?? 1)));
             const segColor = pattern?.color ?? baseColor;
             const segStrokePxRaw = baseStrokePx * (mult.strokePx ?? 1);
-            const segStrokePx = Math.max(0.3, Number.isFinite(segStrokePxRaw) ? segStrokePxRaw : baseStrokePx);
+            const segStrokePx = Math.max(0.2, Number.isFinite(segStrokePxRaw) ? segStrokePxRaw : baseStrokePx);
             const segResolutionMultiplierRaw = baseResolutionMultiplier * (mult.resolutionMultiplier ?? 1);
             const segResolutionMultiplier = Math.max(1, Math.min(8, Number.isFinite(segResolutionMultiplierRaw) ? segResolutionMultiplierRaw : baseResolutionMultiplier));
             const segSeedOffset = pattern?.seedOffset ?? 0;
@@ -1413,7 +1339,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 const startOffset = segLen * startT;
                 const baseX = start.x + ux * startOffset;
                 const baseY = start.y + uy * startOffset;
-                const spriteData = generateRoadCrackSprite({
+                const crackPaths = generateRoadCrackPaths({
                     length: intervalLen,
                     width: roadWidth,
                     seedCount: seeds,
@@ -1424,6 +1350,8 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                     epsilonPx: segRawEpsilon,
                     strokePx: segStrokePx,
                     resolutionMultiplier: segResolutionMultiplier,
+                    minLength: segMinLength,
+                    probeStep: segProbeStep,
                     seed: hash,
                     tester,
                     baseX,
@@ -1433,32 +1361,32 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                     nx,
                     ny,
                     worldToIso,
-                    isoToWorld,
                 });
-                if (!spriteData) return;
-                try {
-                    const baseTexture = PIXI.BaseTexture.fromBuffer(spriteData.buffer, spriteData.width, spriteData.height, {
-                        scaleMode: PIXI.SCALE_MODES.LINEAR,
-                        mipmap: PIXI.MIPMAP_MODES.ON,
+                if (!crackPaths.length) return;
+                const gfx = new PIXI.Graphics();
+                crackPaths.forEach(path => {
+                    if (!path || !path.isoPoints || path.isoPoints.length < 2) return;
+                    const styleAlpha = Math.max(0.05, Math.min(1, segAlpha * path.alphaScale));
+                    const widthPx = Math.max(0.1, path.lineWidth);
+                    gfx.lineStyle({
+                        width: widthPx,
+                        color: segColor,
+                        alpha: styleAlpha,
+                        cap: PIXI.LINE_CAP.ROUND,
+                        join: PIXI.LINE_JOIN.ROUND,
                     });
-                    try { (baseTexture as any).mipmap = PIXI.MIPMAP_MODES.ON; } catch (e) {}
-                    const aniso = (baseTexture as any).anisotropicLevel;
-                    if (typeof aniso === 'number' && aniso < 4) {
-                        (baseTexture as any).anisotropicLevel = 4;
+                    const first = path.isoPoints[0];
+                    gfx.moveTo(first.x, first.y);
+                    for (let i = 1; i < path.isoPoints.length; i++) {
+                        const pt = path.isoPoints[i];
+                        gfx.lineTo(pt.x, pt.y);
                     }
-                    const texture = new PIXI.Texture(baseTexture);
-                    const sprite = new PIXI.Sprite(texture);
-                    sprite.x = spriteData.spriteX;
-                    sprite.y = spriteData.spriteY;
-                    sprite.width = spriteData.spriteWidth;
-                    sprite.height = spriteData.spriteHeight;
-                    sprite.tint = segColor;
-                    sprite.alpha = segAlpha;
-                    sprite.roundPixels = false;
-                    container.addChild(sprite);
+                });
+                if (gfx.geometry && gfx.geometry.graphicsData && gfx.geometry.graphicsData.length > 0) {
+                    container.addChild(gfx);
                     drewAny = true;
-                } catch (err) {
-                    try { console.warn('[CrackedRoads] Failed to build sprite', err); } catch (e) {}
+                } else {
+                    try { gfx.destroy({ children: true, texture: true, baseTexture: true }); } catch (e) {}
                 }
             });
         });
