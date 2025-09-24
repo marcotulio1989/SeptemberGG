@@ -259,6 +259,10 @@ const App: React.FC = () => {
     const [laneTexture, setLaneTexture] = useState<PIXI.Texture | null>(null);
     const [laneScale, setLaneScale] = useState<number>(() => safeLoadNumber('roadLaneScale', (config as any).render.roadLaneTextureScale || 1.0));
     const [laneAlpha, setLaneAlpha] = useState<number>(() => safeLoadNumber('roadLaneAlpha', (config as any).render.roadLaneTextureAlpha ?? 1.0));
+    const [sidewalkTexture, setSidewalkTexture] = useState<PIXI.Texture | null>(null);
+    const [sidewalkScale, setSidewalkScale] = useState<number>(() => safeLoadNumber('sidewalkTextureScale', (config as any).render.sidewalkTextureScale ?? 1.0));
+    const [sidewalkAlpha, setSidewalkAlpha] = useState<number>(() => safeLoadNumber('sidewalkTextureAlpha', (config as any).render.sidewalkTextureAlpha ?? 1.0));
+    const [sidewalkTint, setSidewalkTint] = useState<string>(() => safeLoadString('sidewalkTextureTint', '#' + (((config as any).render.sidewalkTextureTint ?? 0xFFFFFF).toString(16).padStart(6,'0'))));
     const [crackConfigOpen, setCrackConfigOpen] = useState<boolean>(false);
     const [crackColor, setCrackColor] = useState<string>(() => '#' + (((config as any).render.crackedRoadColor ?? 0x00E5FF).toString(16).padStart(6, '0')));
     const [crackAlpha, setCrackAlpha] = useState<number>(() => (config as any).render.crackedRoadAlpha ?? 0.88);
@@ -346,6 +350,33 @@ const App: React.FC = () => {
             return null;
         });
         try { (config as any).render.roadLaneUseTexture = false; } catch (e) {}
+        setUiTick(t => t + 1);
+    };
+
+    const handleSidewalkLoad = (tex: PIXI.Texture, url: string) => {
+        setSidewalkTexture(prev => {
+            if (prev && (prev as any).baseTexture && (prev as any).baseTexture.destroy) {
+                try { (prev as any).baseTexture.destroy(); } catch (e) {}
+            }
+            return tex;
+        });
+        try {
+            if ((tex as any).baseTexture) {
+                try { (tex as any).baseTexture.wrapMode = PIXI.WRAP_MODES.REPEAT; } catch (e) {}
+            }
+        } catch (e) {}
+        try { (config as any).render.sidewalkUseTexture = true; } catch (e) {}
+        setUiTick(t => t + 1);
+    };
+
+    const handleSidewalkClear = () => {
+        setSidewalkTexture(prev => {
+            if (prev && (prev as any).baseTexture && (prev as any).baseTexture.destroy) {
+                try { (prev as any).baseTexture.destroy(); } catch (e) {}
+            }
+            return null;
+        });
+        try { (config as any).render.sidewalkUseTexture = false; } catch (e) {}
         setUiTick(t => t + 1);
     };
 
@@ -578,6 +609,18 @@ const App: React.FC = () => {
         try { (config as any).render.roadLaneTextureAlpha = laneAlpha; } catch (e) {}
         try { localStorage.setItem('roadLaneAlpha', String(laneAlpha)); } catch (e) {}
     }, [laneAlpha]);
+    React.useEffect(() => {
+        try { (config as any).render.sidewalkTextureScale = sidewalkScale; } catch (e) {}
+        try { localStorage.setItem('sidewalkTextureScale', String(sidewalkScale)); } catch (e) {}
+    }, [sidewalkScale]);
+    React.useEffect(() => {
+        try { (config as any).render.sidewalkTextureAlpha = sidewalkAlpha; } catch (e) {}
+        try { localStorage.setItem('sidewalkTextureAlpha', String(sidewalkAlpha)); } catch (e) {}
+    }, [sidewalkAlpha]);
+    React.useEffect(() => {
+        try { (config as any).render.sidewalkTextureTint = parseInt(sidewalkTint.slice(1),16); } catch (e) {}
+        try { localStorage.setItem('sidewalkTextureTint', sidewalkTint); } catch (e) {}
+    }, [sidewalkTint]);
 
     useEffect(() => {
         const renderCfg = (config as any).render || {};
@@ -675,6 +718,7 @@ const App: React.FC = () => {
     return (
         <div id="main-viewport-container">
             <GameCanvas interiorTexture={interiorTexture} interiorTextureScale={texScale} interiorTextureAlpha={texAlpha} interiorTextureTint={parseInt(texTint.slice(1),16)} crossfadeEnabled={crossfadeEnabled} crossfadeMs={crossfadeMs}
+                sidewalkTexture={sidewalkTexture} sidewalkScale={sidewalkScale} sidewalkAlpha={sidewalkAlpha} sidewalkTint={parseInt(sidewalkTint.slice(1),16)}
                 edgeTexture={edgeTexture} edgeScale={edgeScale} edgeAlpha={edgeAlpha}
                 roadLaneTexture={laneTexture} roadLaneScale={laneScale} roadLaneAlpha={laneAlpha}
             />
@@ -1009,6 +1053,53 @@ const App: React.FC = () => {
                         <input type="checkbox" checked={crossfadeEnabled} onChange={(e)=>setCrossfadeEnabled(e.target.checked)} />
                         <label style={{ fontSize: 12 }}>Ms</label>
                         <input type="number" value={crossfadeMs} onChange={(e)=>setCrossfadeMs(parseInt(e.target.value)||500)} style={{ width: 80 }} />
+                    </div>
+                </div>
+                <div style={{ display: 'inline-block', marginLeft: 12 }}>
+                    <label style={{ fontSize: 12, fontWeight: 600, marginRight: 6 }}>Textura Calçada</label>
+                    <TextureLoader onLoad={handleSidewalkLoad} onClear={handleSidewalkClear} accept="image/*" />
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 8 }}>
+                        <label style={{ fontSize: 12 }}>Scale</label>
+                        <input
+                            type="number"
+                            step={0.01}
+                            min={0.001}
+                            value={sidewalkScale}
+                            onChange={(e) => {
+                                const raw = parseFloat(String(e.target.value).replace(',','.'));
+                                const nv = Number.isFinite(raw) ? raw : 1;
+                                setSidewalkScale(nv);
+                                try { (config as any).render.sidewalkTextureScale = nv; } catch (err) {}
+                                setUiTick(t => t + 1);
+                            }}
+                            style={{ width: 80 }}
+                        />
+                        <label style={{ fontSize: 12 }}>Alpha</label>
+                        <input
+                            type="number"
+                            step={0.05}
+                            min={0}
+                            max={1}
+                            value={sidewalkAlpha}
+                            onChange={(e) => {
+                                const raw = parseFloat(String(e.target.value).replace(',','.'));
+                                const nv = Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 1) : 1;
+                                setSidewalkAlpha(nv);
+                                try { (config as any).render.sidewalkTextureAlpha = nv; } catch (err) {}
+                                setUiTick(t => t + 1);
+                            }}
+                            style={{ width: 80 }}
+                        />
+                        <label style={{ fontSize: 12 }}>Tint</label>
+                        <input
+                            type="color"
+                            value={sidewalkTint}
+                            onChange={(e) => {
+                                setSidewalkTint(e.target.value);
+                                try { (config as any).render.sidewalkTextureTint = parseInt(e.target.value.slice(1),16); } catch (err) {}
+                                setUiTick(t => t + 1);
+                            }}
+                        />
                     </div>
                 </div>
                 {/* Painel para textura dos marcadores (será usada por cada retângulo de faixa) */}
