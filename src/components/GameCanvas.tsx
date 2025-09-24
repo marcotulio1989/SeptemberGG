@@ -14,6 +14,8 @@ import MapStore from '../stores/MapStore';
 import type { Point } from '../generic_modules/math';
 import NoiseZoning from '../overlays/NoiseZoning';
 import { createGrassTexture } from '../overlays/grassTexture';
+import { generateIsometricTilePattern, getDefaultTileOptions } from '../lib/isometricTileGenerator';
+import type { TileGeneratorOptions } from '../lib/isometricTileGenerator';
 import Quadtree from '../lib/quadtree';
 import { CrackPatternAssignments, getCrackPatternById } from '../lib/crackPatterns';
 // ClipperLib (sem typings completos) - usar require para acessar classes
@@ -21,6 +23,39 @@ import { CrackPatternAssignments, getCrackPatternById } from '../lib/crackPatter
 const ClipperLib: any = require('clipper-lib');
 
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+
+const toCssColorString = (value: unknown, fallback: string): string => {
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (trimmed) {
+            if (/^#?[0-9a-fA-F]{3,6}$/.test(trimmed)) {
+                const normalized = trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
+                return normalized.toUpperCase();
+            }
+            return trimmed;
+        }
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        const normalized = Math.max(0, Math.min(0xffffff, value >>> 0));
+        return `#${normalized.toString(16).toUpperCase().padStart(6, '0')}`;
+    }
+    return fallback;
+};
+
+const safeNumber = (value: unknown, fallback: number): number => {
+    return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+};
+
+const safeInt = (value: unknown, fallback: number, min: number, max?: number): number => {
+    const base = safeNumber(value, fallback);
+    let v = Math.floor(base);
+    if (!Number.isFinite(v)) v = Math.floor(fallback);
+    if (Number.isFinite(min)) v = Math.max(min, v);
+    if (typeof max === 'number' && Number.isFinite(max)) v = Math.min(max, v);
+    return v;
+};
+
+const defaultTileGeneratorOptions = getDefaultTileOptions();
 
 const toUint32 = (value: number) => {
     if (!Number.isFinite(value)) return 0;
@@ -33,6 +68,16 @@ const hashNumbers = (...values: number[]) => {
     let h = 0x811c9dc5 >>> 0;
     for (const v of values) {
         h ^= toUint32(v);
+        h = Math.imul(h, 0x01000193);
+        h >>>= 0;
+    }
+    return h >>> 0;
+};
+
+const hashString = (value: string): number => {
+    let h = 0x811c9dc5 >>> 0;
+    for (let i = 0; i < value.length; i++) {
+        h ^= value.charCodeAt(i);
         h = Math.imul(h, 0x01000193);
         h >>>= 0;
     }
@@ -454,6 +499,126 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         return `${Math.round(p.x / snap)}:${Math.round(p.y / snap)}`;
     };
 
+    const tilePatternConfig = ((config as any).render?.blockInteriorTilePattern) ?? {};
+    const tileGeneratorOptions: TileGeneratorOptions = {
+        tileWidth: safeInt(tilePatternConfig.tileWidthPx, defaultTileGeneratorOptions.tileWidth, 16, 1024),
+        tileHeight: safeInt(tilePatternConfig.tileHeightPx, defaultTileGeneratorOptions.tileHeight, 16, 1024),
+        seedCount: safeInt(tilePatternConfig.seedCount, defaultTileGeneratorOptions.seedCount, 30, 5000),
+        damageProbability: clamp(
+            safeNumber(tilePatternConfig.damageProbability, defaultTileGeneratorOptions.damageProbability),
+            0,
+            1,
+        ),
+        lateralFocus: clamp(
+            safeNumber(tilePatternConfig.lateralFocus, defaultTileGeneratorOptions.lateralFocus),
+            0,
+            1,
+        ),
+        lateralBias: clamp(
+            safeNumber(tilePatternConfig.lateralBias, defaultTileGeneratorOptions.lateralBias),
+            0,
+            4,
+        ),
+        randomAmplitude: clamp(
+            safeNumber(tilePatternConfig.randomAmplitude, defaultTileGeneratorOptions.randomAmplitude),
+            0,
+            1,
+        ),
+        outlineColor: toCssColorString(tilePatternConfig.outlineColor, defaultTileGeneratorOptions.outlineColor),
+        fillColor: toCssColorString(tilePatternConfig.fillColor, defaultTileGeneratorOptions.fillColor),
+        crackColor: toCssColorString(tilePatternConfig.crackColor, defaultTileGeneratorOptions.crackColor),
+        sideColor: toCssColorString(tilePatternConfig.sideColor, defaultTileGeneratorOptions.sideColor),
+        thickness: safeInt(tilePatternConfig.thicknessPx, defaultTileGeneratorOptions.thickness, 0, 256),
+        seedPosition: safeInt(tilePatternConfig.seedPosition, defaultTileGeneratorOptions.seedPosition, 0),
+        seedDamage: safeInt(tilePatternConfig.seedDamage, defaultTileGeneratorOptions.seedDamage, 0),
+    };
+    const tilePatternKey = JSON.stringify(tileGeneratorOptions);
+
+    type TilePatternVariantInfo = {
+        texture: PIXI.Texture;
+        width: number;
+        height: number;
+    };
+
+    type TilePatternLibrary = {
+        key: string;
+        options: TileGeneratorOptions;
+        variants: Map<number, TilePatternVariantInfo>;
+    };
+
+    const disposeTilePatternLibrary = (library: TilePatternLibrary | null) => {
+        if (!library) return;
+        library.variants.forEach(({ texture }) => {
+            try {
+                texture.destroy(true);
+            } catch (e) {}
+        });
+        library.variants.clear();
+    };
+
+    const tilePatternLibrary = useRef<TilePatternLibrary | null>(null);
+    if (typeof document !== 'undefined') {
+        const existingLibrary = tilePatternLibrary.current;
+        if (!existingLibrary || existingLibrary.key !== tilePatternKey) {
+            if (existingLibrary) {
+                disposeTilePatternLibrary(existingLibrary);
+            }
+            tilePatternLibrary.current = {
+                key: tilePatternKey,
+                options: tileGeneratorOptions,
+                variants: new Map<number, TilePatternVariantInfo>(),
+            };
+        } else {
+            existingLibrary.options = tileGeneratorOptions;
+        }
+    }
+
+    React.useEffect(() => {
+        return () => {
+            if (tilePatternLibrary.current) {
+                disposeTilePatternLibrary(tilePatternLibrary.current);
+                tilePatternLibrary.current = null;
+            }
+        };
+    }, []);
+
+    const tilePatternKeyHash = React.useMemo(() => hashString(tilePatternKey), [tilePatternKey]);
+
+    const ensureTilePatternVariant = React.useCallback(
+        (variantSeed: number): TilePatternVariantInfo | null => {
+            const library = tilePatternLibrary.current;
+            if (!library || typeof document === 'undefined') return null;
+            const cached = library.variants.get(variantSeed);
+            if (cached) return cached;
+            try {
+                const baseOptions = library.options;
+                const variantOptions: TileGeneratorOptions = {
+                    ...baseOptions,
+                    seedPosition: hashNumbers(baseOptions.seedPosition, variantSeed),
+                    seedDamage: hashNumbers(baseOptions.seedDamage, variantSeed ^ 0x9e3779b9),
+                };
+                const canvas = generateIsometricTilePattern(variantOptions);
+                if (!canvas) return null;
+                const texture = PIXI.Texture.from(canvas);
+                if (texture.baseTexture) {
+                    try { texture.baseTexture.wrapMode = PIXI.WRAP_MODES.REPEAT; } catch (e) {}
+                    try { texture.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR; } catch (e) {}
+                    try { texture.baseTexture.mipmap = PIXI.MIPMAP_MODES.OFF; } catch (e) {}
+                }
+                const info: TilePatternVariantInfo = {
+                    texture,
+                    width: canvas.width,
+                    height: canvas.height,
+                };
+                library.variants.set(variantSeed, info);
+                return info;
+            } catch (e) {
+                return null;
+            }
+        },
+        [tilePatternKeyHash],
+    );
+
     // Criar textura local de grama caso não venha por props
     const localGrassTexture = useRef<PIXI.Texture | null>(null);
     if (!interiorTexture && !localGrassTexture.current && typeof document !== 'undefined') {
@@ -686,17 +851,45 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         if (polygon.vertices.length > 0) {
             const firstVertex = worldToIso(polygon.vertices[0]);
             g.moveTo(firstVertex.x, firstVertex.y);
-            
+
             for (let i = 1; i < polygon.vertices.length; i++) {
                 const vertex = worldToIso(polygon.vertices[i]);
                 g.lineTo(vertex.x, vertex.y);
             }
-            
+
             g.closePath();
         }
-        
+
         g.endFill();
         return g;
+    };
+
+    const polygonCentroid = (pts: Point[]): Point | null => {
+        if (!pts || pts.length === 0) return null;
+        let areaAcc = 0;
+        let cxAcc = 0;
+        let cyAcc = 0;
+        for (let i = 0; i < pts.length; i++) {
+            const p0 = pts[i];
+            const p1 = pts[(i + 1) % pts.length];
+            const cross = p0.x * p1.y - p1.x * p0.y;
+            areaAcc += cross;
+            cxAcc += (p0.x + p1.x) * cross;
+            cyAcc += (p0.y + p1.y) * cross;
+        }
+        const area = areaAcc * 0.5;
+        if (Math.abs(area) < 1e-8) {
+            let avgX = 0;
+            let avgY = 0;
+            for (const pt of pts) {
+                avgX += pt.x;
+                avgY += pt.y;
+            }
+            const inv = 1 / pts.length;
+            return { x: avgX * inv, y: avgY * inv };
+        }
+        const inv6A = 1 / (6 * area);
+        return { x: cxAcc * inv6A, y: cyAcc * inv6A };
     };
 
     const sqrDist = (a: Point, b: Point): number => {
@@ -2992,11 +3185,62 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 gInner.addChild(shadowContainer);
             }
 
+            const heatmapRef = state.heatmap;
+            const heatmapRadius = heatmapRef ? Math.max(200, (heatmapRef as any)?.rUnit || 3000) : null;
+            const heatmapCenter = (config as any).zoningModel.cityCenter;
+            const tilePatternLibraryInfo = tilePatternLibrary.current;
+            const tilePatternScaleCandidate = safeNumber(
+                rCfg.blockInteriorTilePatternScale,
+                safeNumber(rCfg.blockInteriorTextureScale, 1.0),
+            );
+            const tilePatternScale = tilePatternScaleCandidate > 0 ? tilePatternScaleCandidate : 1.0;
+            const tilePatternAlpha = clamp(
+                safeNumber(rCfg.blockInteriorTilePatternAlpha, safeNumber(rCfg.blockInteriorTextureAlpha, 1.0)),
+                0,
+                1,
+            );
+
             blockWorldPaths.forEach((worldPts: Point[]) => {
+                const centroidWorld = polygonCentroid(worldPts);
+                const insideHeatmapRadius = !!(
+                    tilePatternLibraryInfo &&
+                    heatmapRadius !== null &&
+                    centroidWorld &&
+                    Math.hypot(centroidWorld.x - heatmapCenter.x, centroidWorld.y - heatmapCenter.y) <= heatmapRadius
+                );
                 const points = worldPts.map(p => worldToIso(p));
                 if (points.length > 2) {
                     const useTex = !!(config as any).render.blockInteriorUseTexture && interiorTexture;
-                    if (useTex) {
+                    if (insideHeatmapRadius) {
+                        try {
+                            const centroidSeedX = centroidWorld ? Math.round(centroidWorld.x * 0.25) : 0;
+                            const centroidSeedY = centroidWorld ? Math.round(centroidWorld.y * 0.25) : 0;
+                            const variantSeed = hashNumbers(
+                                tilePatternKeyHash,
+                                centroidSeedX,
+                                centroidSeedY,
+                            );
+                            const variantInfo = ensureTilePatternVariant(variantSeed);
+                            if (!variantInfo) throw new Error('Tile pattern variant unavailable');
+                            const { texture, width, height } = variantInfo;
+                            const matrix = new PIXI.Matrix();
+                            const isoCentroid = centroidWorld ? worldToIso(centroidWorld) : null;
+                            const scaledWidth = width * tilePatternScale;
+                            const scaledHeight = height * tilePatternScale;
+                            if (Math.abs(tilePatternScale - 1) > 1e-6) {
+                                matrix.scale(tilePatternScale, tilePatternScale);
+                            }
+                            if (isoCentroid) {
+                                const offsetX = scaledWidth > 0 ? ((isoCentroid.x % scaledWidth) + scaledWidth) % scaledWidth : 0;
+                                const offsetY = scaledHeight > 0 ? ((isoCentroid.y % scaledHeight) + scaledHeight) % scaledHeight : 0;
+                                matrix.translate(offsetX, offsetY);
+                            }
+                            gInner.beginTextureFill({ texture, alpha: tilePatternAlpha, matrix });
+                            gInner.tint = 0xFFFFFF;
+                        } catch (e) {
+                            gInner.beginFill(0x7A7A7A);
+                        }
+                    } else if (useTex) {
                         try {
                             const scale = (config as any).render.blockInteriorTextureScale || 1.0;
                             const alpha = (config as any).render.blockInteriorTextureAlpha ?? 1.0;
