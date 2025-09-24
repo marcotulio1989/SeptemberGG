@@ -10,6 +10,7 @@ import MapStore from '../stores/MapStore';
 import NoiseZoning from '../overlays/NoiseZoning';
 import OverlayToggle from './OverlayToggle';
 import { CRACK_PATTERNS, CrackPatternAssignments } from '../lib/crackPatterns';
+import { getDefaultTileOptions } from '../lib/isometricTileGenerator';
 // Controles avançados removidos: sem overlay/zonas aleatórias aqui
 
 type CrackRandomFlags = {
@@ -28,6 +29,80 @@ type CrackRandomFlags = {
 };
 
 const App: React.FC = () => {
+    const defaultTileOptions = getDefaultTileOptions();
+    const ensureTilePatternConfig = () => {
+        const renderCfg = (config as any).render || ((config as any).render = {});
+        if (!renderCfg.blockInteriorTilePattern) {
+            renderCfg.blockInteriorTilePattern = {
+                tileWidthPx: defaultTileOptions.tileWidth,
+                tileHeightPx: defaultTileOptions.tileHeight,
+                seedCount: defaultTileOptions.seedCount,
+                thicknessPx: defaultTileOptions.thickness,
+                damageProbability: defaultTileOptions.damageProbability,
+                lateralFocus: defaultTileOptions.lateralFocus,
+                lateralBias: defaultTileOptions.lateralBias,
+                randomAmplitude: defaultTileOptions.randomAmplitude,
+                outlineColor: defaultTileOptions.outlineColor,
+                fillColor: defaultTileOptions.fillColor,
+                crackColor: defaultTileOptions.crackColor,
+                sideColor: defaultTileOptions.sideColor,
+                seedPosition: defaultTileOptions.seedPosition,
+                seedDamage: defaultTileOptions.seedDamage,
+                variantGridColumns: defaultTileOptions.variantGridColumns,
+                variantGridRows: defaultTileOptions.variantGridRows,
+            };
+        }
+        return renderCfg.blockInteriorTilePattern as { [key: string]: any };
+    };
+    const tilePatternConfig = ensureTilePatternConfig();
+    const normalizeColorHex = (value: string | null | undefined, fallback: string) => {
+        if (typeof value === 'string') {
+            const trimmed = value.trim();
+            if (/^#?[0-9a-fA-F]{6}$/.test(trimmed)) {
+                return trimmed.startsWith('#') ? trimmed.toUpperCase() : `#${trimmed.toUpperCase()}`;
+            }
+            if (/^#?[0-9a-fA-F]{3}$/.test(trimmed)) {
+                const hex = trimmed.replace('#', '');
+                return `#${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}`.toUpperCase();
+            }
+        }
+        return fallback;
+    };
+    const defaultTileWidth = Math.min(1024, Math.max(16, Math.round(
+        typeof tilePatternConfig.tileWidthPx === 'number' ? tilePatternConfig.tileWidthPx : defaultTileOptions.tileWidth,
+    )));
+    const defaultTileHeight = Math.min(1024, Math.max(16, Math.round(
+        typeof tilePatternConfig.tileHeightPx === 'number' ? tilePatternConfig.tileHeightPx : defaultTileOptions.tileHeight,
+    )));
+    const defaultTileThickness = Math.min(256, Math.max(0, Math.round(
+        typeof tilePatternConfig.thicknessPx === 'number' ? tilePatternConfig.thicknessPx : defaultTileOptions.thickness,
+    )));
+    const defaultFillColor = normalizeColorHex(
+        typeof tilePatternConfig.fillColor === 'string' ? tilePatternConfig.fillColor : defaultTileOptions.fillColor,
+        '#606060',
+    );
+    const defaultOutlineColor = normalizeColorHex(
+        typeof tilePatternConfig.outlineColor === 'string' ? tilePatternConfig.outlineColor : defaultTileOptions.outlineColor,
+        '#000000',
+    );
+    const defaultCrackColor = normalizeColorHex(
+        typeof tilePatternConfig.crackColor === 'string' ? tilePatternConfig.crackColor : defaultTileOptions.crackColor,
+        '#333333',
+    );
+    const defaultSideColor = normalizeColorHex(
+        typeof tilePatternConfig.sideColor === 'string' ? tilePatternConfig.sideColor : defaultTileOptions.sideColor,
+        '#222222',
+    );
+    const defaultTilePatternScale = (() => {
+        const v = (config as any).render?.blockInteriorTilePatternScale;
+        return typeof v === 'number' && Number.isFinite(v) ? v : 1.0;
+    })();
+    const defaultTilePatternAlpha = (() => {
+        const v = (config as any).render?.blockInteriorTilePatternAlpha;
+        if (typeof v === 'number' && Number.isFinite(v)) return v;
+        const fallbackAlpha = (config as any).render?.blockInteriorTextureAlpha;
+        return (typeof fallbackAlpha === 'number' && Number.isFinite(fallbackAlpha)) ? fallbackAlpha : 1.0;
+    })();
     const [segmentCountLimit, setSegmentCountLimit] = useState((config as any).mapGeneration.SEGMENT_COUNT_LIMIT);
     const [charSpeed, setCharSpeed] = useState((config as any).controls.characterSpeedMps);
     const [segLen, setSegLen] = useState((config as any).mapGeneration.DEFAULT_SEGMENT_LENGTH);
@@ -127,6 +202,29 @@ const App: React.FC = () => {
         (config as any).mapGeneration.HIGHWAY_WIDTH_OVERRIDE_M = null;
         setRoadW(roadWidthM());
         setHwyW(highwayWidthM());
+        setUiTick(t => t + 1);
+    };
+    const resetTilePatternToDefaults = () => {
+        setTileWidthPx(defaultTileWidth);
+        setTileHeightPx(defaultTileHeight);
+        setTileThicknessPx(defaultTileThickness);
+        setTileFillColor(defaultFillColor);
+        setTileOutlineColor(defaultOutlineColor);
+        setTileCrackColor(defaultCrackColor);
+        setTileSideColor(defaultSideColor);
+        setTilePatternScale(defaultTilePatternScale);
+        setTilePatternAlpha(defaultTilePatternAlpha);
+        if (typeof window !== 'undefined') {
+            try { localStorage.removeItem('blockTileWidthPx'); } catch (e) {}
+            try { localStorage.removeItem('blockTileHeightPx'); } catch (e) {}
+            try { localStorage.removeItem('blockTileThicknessPx'); } catch (e) {}
+            try { localStorage.removeItem('blockTileFillColor'); } catch (e) {}
+            try { localStorage.removeItem('blockTileOutlineColor'); } catch (e) {}
+            try { localStorage.removeItem('blockTileCrackColor'); } catch (e) {}
+            try { localStorage.removeItem('blockTileSideColor'); } catch (e) {}
+            try { localStorage.removeItem('blockTilePatternScale'); } catch (e) {}
+            try { localStorage.removeItem('blockTilePatternAlpha'); } catch (e) {}
+        }
         setUiTick(t => t + 1);
     };
     // Ensure lane outlines visible by default when app mounts
@@ -251,6 +349,42 @@ const App: React.FC = () => {
     const [texScale, setTexScale] = useState<number>(() => safeLoadNumber('blockInteriorTextureScale', (config as any).render.blockInteriorTextureScale || 1.0));
     const [texAlpha, setTexAlpha] = useState<number>(() => safeLoadNumber('blockInteriorTextureAlpha', (config as any).render.blockInteriorTextureAlpha ?? 1.0));
     const [texTint, setTexTint] = useState<string>(() => safeLoadString('blockInteriorTextureTint', '#' + (((config as any).render.blockInteriorTextureTint ?? 0xFFFFFF)).toString(16).padStart(6,'0')));
+    const [tileWidthPx, setTileWidthPx] = useState<number>(() => {
+        const stored = safeLoadNumber('blockTileWidthPx', defaultTileWidth);
+        return Math.min(1024, Math.max(16, Math.round(stored)));
+    });
+    const [tileHeightPx, setTileHeightPx] = useState<number>(() => {
+        const stored = safeLoadNumber('blockTileHeightPx', defaultTileHeight);
+        return Math.min(1024, Math.max(16, Math.round(stored)));
+    });
+    const [tileThicknessPx, setTileThicknessPx] = useState<number>(() => {
+        const stored = safeLoadNumber('blockTileThicknessPx', defaultTileThickness);
+        return Math.min(256, Math.max(0, Math.round(stored)));
+    });
+    const [tileFillColor, setTileFillColor] = useState<string>(() => normalizeColorHex(
+        safeLoadString('blockTileFillColor', defaultFillColor),
+        defaultFillColor,
+    ));
+    const [tileOutlineColor, setTileOutlineColor] = useState<string>(() => normalizeColorHex(
+        safeLoadString('blockTileOutlineColor', defaultOutlineColor),
+        defaultOutlineColor,
+    ));
+    const [tileCrackColor, setTileCrackColor] = useState<string>(() => normalizeColorHex(
+        safeLoadString('blockTileCrackColor', defaultCrackColor),
+        defaultCrackColor,
+    ));
+    const [tileSideColor, setTileSideColor] = useState<string>(() => normalizeColorHex(
+        safeLoadString('blockTileSideColor', defaultSideColor),
+        defaultSideColor,
+    ));
+    const [tilePatternScale, setTilePatternScale] = useState<number>(() => {
+        const stored = safeLoadNumber('blockTilePatternScale', defaultTilePatternScale);
+        return Number.isFinite(stored) ? Math.min(8, Math.max(0.05, stored)) : 1.0;
+    });
+    const [tilePatternAlpha, setTilePatternAlpha] = useState<number>(() => {
+        const stored = safeLoadNumber('blockTilePatternAlpha', defaultTilePatternAlpha);
+        return Number.isFinite(stored) ? Math.min(1, Math.max(0, stored)) : defaultTilePatternAlpha;
+    });
     const [crossfadeEnabled, setCrossfadeEnabled] = useState<boolean>(true);
     const [crossfadeMs, setCrossfadeMs] = useState<number>(500);
     const [edgeScale, setEdgeScale] = useState<number>(() => safeLoadNumber('edgeScale', (config as any).render.edgeTextureScale || 1.0));
@@ -259,6 +393,31 @@ const App: React.FC = () => {
     const [laneTexture, setLaneTexture] = useState<PIXI.Texture | null>(null);
     const [laneScale, setLaneScale] = useState<number>(() => safeLoadNumber('roadLaneScale', (config as any).render.roadLaneTextureScale || 1.0));
     const [laneAlpha, setLaneAlpha] = useState<number>(() => safeLoadNumber('roadLaneAlpha', (config as any).render.roadLaneTextureAlpha ?? 1.0));
+    useEffect(() => {
+        const renderCfg = (config as any).render || ((config as any).render = {});
+        const tileCfg = ensureTilePatternConfig();
+        tileCfg.tileWidthPx = Math.min(1024, Math.max(16, Math.round(tileWidthPx)));
+        tileCfg.tileHeightPx = Math.min(1024, Math.max(16, Math.round(tileHeightPx)));
+        tileCfg.thicknessPx = Math.min(256, Math.max(0, Math.round(tileThicknessPx)));
+        tileCfg.fillColor = tileFillColor;
+        tileCfg.outlineColor = tileOutlineColor;
+        tileCfg.crackColor = tileCrackColor;
+        tileCfg.sideColor = tileSideColor;
+        renderCfg.blockInteriorTilePatternScale = Math.min(8, Math.max(0.05, tilePatternScale));
+        renderCfg.blockInteriorTilePatternAlpha = Math.min(1, Math.max(0, tilePatternAlpha));
+        if (typeof window !== 'undefined') {
+            try { localStorage.setItem('blockTileWidthPx', String(tileCfg.tileWidthPx)); } catch (e) {}
+            try { localStorage.setItem('blockTileHeightPx', String(tileCfg.tileHeightPx)); } catch (e) {}
+            try { localStorage.setItem('blockTileThicknessPx', String(tileCfg.thicknessPx)); } catch (e) {}
+            try { localStorage.setItem('blockTileFillColor', tileFillColor); } catch (e) {}
+            try { localStorage.setItem('blockTileOutlineColor', tileOutlineColor); } catch (e) {}
+            try { localStorage.setItem('blockTileCrackColor', tileCrackColor); } catch (e) {}
+            try { localStorage.setItem('blockTileSideColor', tileSideColor); } catch (e) {}
+            try { localStorage.setItem('blockTilePatternScale', String(renderCfg.blockInteriorTilePatternScale)); } catch (e) {}
+            try { localStorage.setItem('blockTilePatternAlpha', String(renderCfg.blockInteriorTilePatternAlpha)); } catch (e) {}
+        }
+        setUiTick(t => t + 1);
+    }, [tileWidthPx, tileHeightPx, tileThicknessPx, tileFillColor, tileOutlineColor, tileCrackColor, tileSideColor, tilePatternScale, tilePatternAlpha]);
     const [crackConfigOpen, setCrackConfigOpen] = useState<boolean>(false);
     const [crackColor, setCrackColor] = useState<string>(() => '#' + (((config as any).render.crackedRoadColor ?? 0x00E5FF).toString(16).padStart(6, '0')));
     const [crackAlpha, setCrackAlpha] = useState<number>(() => (config as any).render.crackedRoadAlpha ?? 0.88);
@@ -1009,6 +1168,138 @@ const App: React.FC = () => {
                         <input type="checkbox" checked={crossfadeEnabled} onChange={(e)=>setCrossfadeEnabled(e.target.checked)} />
                         <label style={{ fontSize: 12 }}>Ms</label>
                         <input type="number" value={crossfadeMs} onChange={(e)=>setCrossfadeMs(parseInt(e.target.value)||500)} style={{ width: 80 }} />
+                    </div>
+                    <div
+                        style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 8,
+                            marginLeft: 8,
+                            marginTop: 8,
+                            padding: '6px 8px',
+                            border: '1px solid #3a3a3a',
+                            borderRadius: 6,
+                            background: 'rgba(0,0,0,0.15)',
+                        }}
+                    >
+                        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase' }}>
+                            Padrão Procedural (Centro)
+                        </span>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+                            <label style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                Largura (px)
+                                <input
+                                    type="number"
+                                    min={16}
+                                    max={1024}
+                                    step={2}
+                                    value={tileWidthPx}
+                                    onChange={(e)=>{
+                                        const parsed = parseInt(e.target.value, 10);
+                                        const nv = Number.isFinite(parsed) ? Math.min(1024, Math.max(16, parsed)) : defaultTileWidth;
+                                        setTileWidthPx(nv);
+                                    }}
+                                    style={{ width: 90 }}
+                                />
+                            </label>
+                            <label style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                Altura (px)
+                                <input
+                                    type="number"
+                                    min={16}
+                                    max={1024}
+                                    step={2}
+                                    value={tileHeightPx}
+                                    onChange={(e)=>{
+                                        const parsed = parseInt(e.target.value, 10);
+                                        const nv = Number.isFinite(parsed) ? Math.min(1024, Math.max(16, parsed)) : defaultTileHeight;
+                                        setTileHeightPx(nv);
+                                    }}
+                                    style={{ width: 90 }}
+                                />
+                            </label>
+                            <label style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                Espessura (px)
+                                <input
+                                    type="number"
+                                    min={0}
+                                    max={256}
+                                    step={1}
+                                    value={tileThicknessPx}
+                                    onChange={(e)=>{
+                                        const parsed = parseInt(e.target.value, 10);
+                                        const nv = Number.isFinite(parsed) ? Math.min(256, Math.max(0, parsed)) : defaultTileThickness;
+                                        setTileThicknessPx(nv);
+                                    }}
+                                    style={{ width: 90 }}
+                                />
+                            </label>
+                            <label style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                Escala
+                                <input
+                                    type="number"
+                                    min={0.05}
+                                    max={8}
+                                    step={0.05}
+                                    value={tilePatternScale}
+                                    onChange={(e)=>{
+                                        const parsed = parseNumberInput(e.target.value);
+                                        const nv = Number.isFinite(parsed) ? Math.min(8, Math.max(0.05, parsed)) : defaultTilePatternScale;
+                                        setTilePatternScale(nv);
+                                    }}
+                                    style={{ width: 90 }}
+                                />
+                            </label>
+                            <label style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                Alpha
+                                <input
+                                    type="number"
+                                    min={0}
+                                    max={1}
+                                    step={0.05}
+                                    value={tilePatternAlpha}
+                                    onChange={(e)=>{
+                                        const parsed = parseNumberInput(e.target.value);
+                                        const nv = Number.isFinite(parsed) ? Math.min(1, Math.max(0, parsed)) : defaultTilePatternAlpha;
+                                        setTilePatternAlpha(nv);
+                                    }}
+                                    style={{ width: 90 }}
+                                />
+                            </label>
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
+                            <label style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                Preenchimento
+                                <input type="color" value={tileFillColor} onChange={(e)=>setTileFillColor(normalizeColorHex(e.target.value, tileFillColor))} />
+                            </label>
+                            <label style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                Contorno
+                                <input type="color" value={tileOutlineColor} onChange={(e)=>setTileOutlineColor(normalizeColorHex(e.target.value, tileOutlineColor))} />
+                            </label>
+                            <label style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                Rachadura
+                                <input type="color" value={tileCrackColor} onChange={(e)=>setTileCrackColor(normalizeColorHex(e.target.value, tileCrackColor))} />
+                            </label>
+                            <label style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                Lateral
+                                <input type="color" value={tileSideColor} onChange={(e)=>setTileSideColor(normalizeColorHex(e.target.value, tileSideColor))} />
+                            </label>
+                            <button
+                                type="button"
+                                onClick={resetTilePatternToDefaults}
+                                style={{
+                                    fontSize: 11,
+                                    padding: '6px 10px',
+                                    borderRadius: 4,
+                                    border: '1px solid #444',
+                                    background: '#2d2d2d',
+                                    color: '#f1f1f1',
+                                    cursor: 'pointer',
+                                }}
+                            >
+                                Restaurar padrão
+                            </button>
+                        </div>
                     </div>
                 </div>
                 {/* Painel para textura dos marcadores (será usada por cada retângulo de faixa) */}
