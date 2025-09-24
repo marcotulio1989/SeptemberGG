@@ -441,6 +441,8 @@ export const config = {
     sidewalkTextureTint: 0xFFFFFF,
     sidewalkTextureAlpha: 1.0,
     sidewalkTextureScale: 1.0,
+    // Tamanho alvo do ladrilho da calçada (em metros) quando usando padrão procedural
+    sidewalkDesiredTileSizeM: 0.6,
     // Jitter do padrão (em px) dentro do tile para reduzir uniformidade
     sidewalkPatternJitterPx: 2,
     // Tamanho base do ladrilho (em px no canvas do padrão) e rejunte

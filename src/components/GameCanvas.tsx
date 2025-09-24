@@ -3154,8 +3154,14 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                                         if (useSideTex) {
                                             try {
                                                 const texture = sidewalkTex!;
+                                                // Escala alvo: manter o tamanho da textura consistente em pixels por metro
+                                                // Base: sidewalkTextureScale (user) multiplicada por conversão aproximada mundo->tela
                                                 const sRaw = typeof sidewalkScaleVal === 'number' ? sidewalkScaleVal : (config as any).render.sidewalkTextureScale || 1.0;
-                                                const s = (Number.isFinite(sRaw) && sRaw > 0) ? sRaw : 1.0;
+                                                const baseS = (Number.isFinite(sRaw) && sRaw > 0) ? sRaw : 1.0;
+                                                const unit0 = worldToIso({ x: 0, y: 0 });
+                                                const unit1 = worldToIso({ x: 1, y: 0 });
+                                                const pxPerM = Math.max(0.1, Math.hypot(unit1.x - unit0.x, unit1.y - unit0.y));
+                                                const s = baseS * (pxPerM / 48); // 48px ~ 1m padrão visual
                                                 const A = (config as any).render.isoA ?? 1;
                                                 const B = (config as any).render.isoB ?? 0;
                                                 const C = (config as any).render.isoC ?? 0;
@@ -3212,8 +3218,14 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                                                     texture = tex;
                                                     proceduralSidewalkTextureCacheRef.current.set(key, tex);
                                                 }
-                                                const sRaw = typeof sidewalkScaleVal === 'number' ? sidewalkScaleVal : (config as any).render.sidewalkTextureScale || 1.0;
-                                                const s = (Number.isFinite(sRaw) && sRaw > 0) ? sRaw : 1.0;
+                                                // Procedural: ajustar escala para alvo em metros por tile
+                                                const desiredM = (config as any).render.sidewalkDesiredTileSizeM ?? 0.6;
+                                                const unit0b = worldToIso({ x: 0, y: 0 });
+                                                const unit1b = worldToIso({ x: desiredM, y: 0 });
+                                                const pxPerDesired = Math.max(1, Math.hypot(unit1b.x - unit0b.x, unit1b.y - unit0b.y));
+                                                // A textura procedimental é gerada em pixels (tilePx). Queremos que esse tile ocupe 'desiredM' na tela.
+                                                // Usaremos a matriz com fator tal que 1 texel -> 1 px, então m2 já escala com pxPorMetro.
+                                                const s = 1.0 * (pxPerDesired / Math.max(8, selTilePx));
                                                 const A = (config as any).render.isoA ?? 1;
                                                 const B = (config as any).render.isoB ?? 0;
                                                 const C = (config as any).render.isoC ?? 0;
