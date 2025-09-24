@@ -422,9 +422,45 @@ export const config = {
     // ================== Textura Calçada ==================
     // Permite substituir o padrão procedural do centro pela textura enviada pelo usuário (área da calçada/praça central).
     sidewalkUseTexture: false,
+    // Quando true e nenhuma textura enviada estiver ativa, usa o gerador procedural de piso isométrico
+    sidewalkUseProceduralFallback: false,
+    // Quando true e não houver textura do usuário, usa nosso padrão próprio (canvas) para a calçada
+    sidewalkUseCustomPattern: true,
     sidewalkTextureTint: 0xFFFFFF,
     sidewalkTextureAlpha: 1.0,
     sidewalkTextureScale: 1.0,
+    // Jitter do padrão (em px) dentro do tile para reduzir uniformidade
+    sidewalkPatternJitterPx: 2,
+    // Tamanho base do ladrilho (em px no canvas do padrão) e rejunte
+    sidewalkPatternTilePx: 28,
+    sidewalkPatternGroutPx: 2,
+    sidewalkPatternGroutJitterPx: 1, // variação (±px) no rejunte por ladrilho
+    // Variação de período (tilePx) por quarteirão, preservando tileabilidade por variante
+    sidewalkRandomPeriodEnabled: false,
+    sidewalkPeriodVariantsPx: [24, 28, 34] as number[],
+    // Rotação aleatória do padrão por quarteirão (em graus)
+    sidewalkRandomRotationEnabled: false,
+    sidewalkRotationAnglesDeg: [0, 90, 180, 270] as number[],
+    // Quebra de repetição por quarteirão
+    sidewalkPerBlockOffsetPx: 24, // deslocamento aleatório máximo em px
+    sidewalkPerBlockTintJitter: 0.06, // variação de luminosidade (0..0.3 recomendado)
+    // Reduzir repetição visual do padrão: deslocamento por quarteirão e jitter de tint
+    sidewalkTextureJitterPx: 96,       // deslocamento máx. (px) aplicado ao início do padrão por quarteirão
+    sidewalkTextureTintJitter: 0.05,   // variação de brilho (0..0.3 recomendado)
+    // ================== Tiles Vetoriais de Calçada ==================
+    // Mostra uma faixa (anel) de calçada ao redor do quarteirão, dentro do raio R.
+    // Se 'sidewalkUseTexture' estiver ativo e houver textura enviada, essa textura é usada no anel com matriz isométrica.
+    // Caso contrário, usamos um preenchimento sólido com a cor abaixo.
+    sidewalkVectorTilesEnabled: true,
+    sidewalkWidthM: 2.0,                 // largura da calçada (anel) em metros
+    sidewalkFillColor: 0xCFCFCF,         // cor de preenchimento (concreto claro)
+    sidewalkFillAlpha: 0.9,              // opacidade do preenchimento
+    // Parâmetros antigos de linhas diagonais (mantidos para compatibilidade, mas não usados mais)
+    sidewalkVectorTileSpacingPx: 18,
+    sidewalkVectorTileStrokePx: 1.25,
+    sidewalkVectorTileAlpha: 0.55,
+    sidewalkVectorTileColor: 0xBDBDBD,
+    sidewalkVectorTileCrosshatch: true,
     },
     gameLogic: {
         SELECT_PAN_THRESHOLD: 50, // px

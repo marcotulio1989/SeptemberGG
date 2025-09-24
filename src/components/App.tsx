@@ -289,6 +289,8 @@ const App: React.FC = () => {
         probeStep: true,
         patternAssignments: true,
     });
+
+    // Removido: fallback procedural automático de calçada não é mais utilizado
     const broadcastCrackedRoadConfigChange = useCallback(() => {
         try { window.dispatchEvent(new CustomEvent('cracked-roads-config-change')); } catch (e) {}
     }, []);
@@ -1093,6 +1095,144 @@ const App: React.FC = () => {
                         />
                         <label style={{ fontSize: 12 }}>Tint</label>
                         <input type="color" value={sidewalkTint} onChange={(e) => { setSidewalkTint(e.target.value); setUiTick(t => t + 1); }} />
+                    </div>
+                    {/* Tiles Vetoriais de Calçada */}
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 8, padding: '4px 6px', border: '1px solid #444', borderRadius: 4 }}>
+                        <label style={{ fontSize: 12, fontWeight: 600 }}>Tiles Calçada</label>
+                        <ToggleButton
+                            onText="Tiles: ON"
+                            offText="Tiles: OFF"
+                            action={(next) => {
+                                (config as any).render.sidewalkVectorTilesEnabled = next;
+                                try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(e) {}
+                            }}
+                            initialState={!!(config as any).render.sidewalkVectorTilesEnabled}
+                        />
+                        <label style={{ fontSize: 12 }}>Largura (m)</label>
+                        <input
+                            type="number"
+                            step={0.1}
+                            min={0.25}
+                            defaultValue={(config as any).render.sidewalkWidthM ?? 2.0}
+                            onChange={(e)=>{ const v=parseFloat(e.target.value); (config as any).render.sidewalkWidthM = (isFinite(v) && v>0)?v:2.0; try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }}
+                            style={{ width: 70 }}
+                        />
+                        <label style={{ fontSize: 12 }}>Padrão Custom</label>
+                        <input
+                            type="checkbox"
+                            defaultChecked={!!(config as any).render.sidewalkUseCustomPattern}
+                            onChange={(e)=>{ (config as any).render.sidewalkUseCustomPattern = e.target.checked; try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }}
+                        />
+                        <label style={{ fontSize: 12 }}>Cor</label>
+                        <input
+                            type="color"
+                            defaultValue={'#' + ((config as any).render.sidewalkFillColor ?? 0xCFCFCF).toString(16).padStart(6,'0')}
+                            onChange={(e)=>{ (config as any).render.sidewalkFillColor = parseInt(e.target.value.replace('#',''),16); try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }}
+                        />
+                        <label style={{ fontSize: 12 }}>Alpha</label>
+                        <input
+                            type="number"
+                            step={0.05}
+                            min={0}
+                            max={1}
+                            defaultValue={(config as any).render.sidewalkFillAlpha ?? 0.9}
+                            onChange={(e)=>{ const v=parseFloat(e.target.value); (config as any).render.sidewalkFillAlpha = Math.min(1, Math.max(0, (isFinite(v)?v:0.9))); try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }}
+                            style={{ width: 70 }}
+                        />
+                        <label style={{ fontSize: 12 }}>Offset/Bloco (px)</label>
+                        <input
+                            type="number"
+                            step={1}
+                            min={0}
+                            defaultValue={(config as any).render.sidewalkPerBlockOffsetPx ?? (config as any).render.sidewalkTextureJitterPx ?? 96}
+                            onChange={(e)=>{ const v = parseInt(e.target.value)||0; (config as any).render.sidewalkPerBlockOffsetPx = Math.max(0, v); try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }}
+                            style={{ width: 70 }}
+                        />
+                        <label style={{ fontSize: 12 }}>Tint/Bloco</label>
+                        <input
+                            type="number"
+                            step={0.01}
+                            min={0}
+                            max={0.3}
+                            defaultValue={(config as any).render.sidewalkPerBlockTintJitter ?? (config as any).render.sidewalkTextureTintJitter ?? 0.05}
+                            onChange={(e)=>{ const v=parseFloat(e.target.value); (config as any).render.sidewalkPerBlockTintJitter = Math.max(0, Math.min(0.3, (isFinite(v)?v:0.05))); try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }}
+                            style={{ width: 70 }}
+                        />
+                        <label style={{ fontSize: 12 }}>Período Aleatório</label>
+                        <input
+                            type="checkbox"
+                            defaultChecked={!!(config as any).render.sidewalkRandomPeriodEnabled}
+                            onChange={(e)=>{ (config as any).render.sidewalkRandomPeriodEnabled = e.target.checked; try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }}
+                        />
+                        <label style={{ fontSize: 12 }}>Tile (px)</label>
+                        <input
+                            type="number"
+                            step={1}
+                            min={6}
+                            defaultValue={(config as any).render.sidewalkPatternTilePx ?? 28}
+                            onChange={(e)=>{ const v=parseInt(e.target.value)||28; (config as any).render.sidewalkPatternTilePx = Math.max(6, v); try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }}
+                            style={{ width: 70 }}
+                        />
+                        <label style={{ fontSize: 12 }}>Grout (px)</label>
+                        <input
+                            type="number"
+                            step={1}
+                            min={1}
+                            defaultValue={(config as any).render.sidewalkPatternGroutPx ?? 2}
+                            onChange={(e)=>{ const v=parseInt(e.target.value)||2; (config as any).render.sidewalkPatternGroutPx = Math.max(1, v); try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }}
+                            style={{ width: 70 }}
+                        />
+                        <label style={{ fontSize: 12 }}>Grout Jitter</label>
+                        <input
+                            type="number"
+                            step={1}
+                            min={0}
+                            defaultValue={(config as any).render.sidewalkPatternGroutJitterPx ?? 1}
+                            onChange={(e)=>{ const v=parseInt(e.target.value)||0; (config as any).render.sidewalkPatternGroutJitterPx = Math.max(0, v); try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }}
+                            style={{ width: 70 }}
+                        />
+                        <label style={{ fontSize: 12 }}>Variantes (px)</label>
+                        <input
+                            type="text"
+                            defaultValue={((config as any).render.sidewalkPeriodVariantsPx ?? [24,28,34]).join(',')}
+                            onChange={(e)=>{ const arr = String(e.target.value).split(',').map(s=>parseInt(s.trim())).filter(n=>isFinite(n) && n>4); (config as any).render.sidewalkPeriodVariantsPx = arr.length?arr:[24,28,34]; try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }}
+                            style={{ width: 120 }}
+                        />
+                        <label style={{ fontSize: 12 }}>Rotação Aleatória</label>
+                        <input
+                            type="checkbox"
+                            defaultChecked={!!(config as any).render.sidewalkRandomRotationEnabled}
+                            onChange={(e)=>{ (config as any).render.sidewalkRandomRotationEnabled = e.target.checked; try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }}
+                        />
+                        <label style={{ fontSize: 12 }}>Ângulos (°)</label>
+                        <input
+                            type="text"
+                            defaultValue={((config as any).render.sidewalkRotationAnglesDeg ?? [0,90,180,270]).join(',')}
+                            onChange={(e)=>{ const arr = String(e.target.value).split(',').map(s=>parseFloat(s.trim())).filter(n=>isFinite(n)); (config as any).render.sidewalkRotationAnglesDeg = arr.length?arr:[0,90,180,270]; try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }}
+                            style={{ width: 120 }}
+                        />
+                        <label style={{ fontSize: 12 }}>Espaço (px)</label>
+                        <input type="number" min={2} max={200} step={1}
+                            defaultValue={(config as any).render.sidewalkVectorTileSpacingPx ?? 18}
+                            onChange={(e)=>{ (config as any).render.sidewalkVectorTileSpacingPx = Math.max(2, parseInt(e.target.value)||18); try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }}
+                            style={{ width: 70 }} />
+                        <label style={{ fontSize: 12 }}>Stroke (px)</label>
+                        <input type="number" min={0.25} max={8} step={0.25}
+                            defaultValue={(config as any).render.sidewalkVectorTileStrokePx ?? 1.25}
+                            onChange={(e)=>{ const v=parseFloat(e.target.value); (config as any).render.sidewalkVectorTileStrokePx = (isFinite(v) ? v : 1.25); try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }}
+                            style={{ width: 70 }} />
+                        <label style={{ fontSize: 12 }}>Alpha</label>
+                        <input type="number" min={0} max={1} step={0.05}
+                            defaultValue={(config as any).render.sidewalkVectorTileAlpha ?? 0.55}
+                            onChange={(e)=>{ const v=parseFloat(e.target.value); (config as any).render.sidewalkVectorTileAlpha = Math.min(1, Math.max(0, (isFinite(v)?v:0.55))); try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }}
+                            style={{ width: 70 }} />
+                        <label style={{ fontSize: 12 }}>Cor</label>
+                        <input type="color" defaultValue={'#' + ((config as any).render.sidewalkVectorTileColor ?? 0xBDBDBD).toString(16).padStart(6,'0')}
+                            onChange={(e)=>{ (config as any).render.sidewalkVectorTileColor = parseInt(e.target.value.replace('#',''),16); try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }} />
+                        <label style={{ fontSize: 12 }}>
+                            <input type="checkbox" defaultChecked={!!(config as any).render.sidewalkVectorTileCrosshatch}
+                                onChange={(e)=>{ (config as any).render.sidewalkVectorTileCrosshatch = e.target.checked; try { window.dispatchEvent(new CustomEvent('sidewalk-tiles-config-changed')); } catch(err) {} }} /> Cross
+                        </label>
                     </div>
                 </div>
                 {/* Painel para textura dos marcadores (será usada por cada retângulo de faixa) */}
