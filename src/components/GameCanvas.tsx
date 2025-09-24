@@ -2984,6 +2984,8 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             // Criar gráficos locais para interior e bandas (evita uso acidental de variáveis de outro escopo)
             const gInner = new PIXI.Graphics();
             const gBands = new PIXI.Graphics();
+            // Container para juntas (linhas) das bordas, adicionado após as bandas para ficar por cima
+            const jointsG = new PIXI.Container();
             const roadGapM = (config as any).render.roadGapM ?? 2.0;
             // Extrai todos os contornos da PolyTree manualmente
             const extractContours = (polyTree: any): any[] => {
@@ -3303,30 +3305,33 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                                 face = ny > 0 ? 'N' : 'S';
                             }
                             if (excluded.has(face)) continue; // pular faces excluídas
+                            const segEnabled = !!(rCfg as any).blockEdgeBandSegmentsEnabled;
+                            const segLenM = (rCfg as any).blockEdgeBandSegmentLenM ?? 1.0;
+                            const faceColors = rCfg.blockEdgeBandFaceColors || {};
+                            const faceColor = faceColors[face as 'N'|'S'|'L'|'O'] ?? bandColor;
+                            const outlineColor = (rCfg.roadOutlineColor !== undefined) ? (rCfg.roadOutlineColor as number) : ((faceColor & 0xFFFFFF) * 0.72 >>> 0);
                             if (!(verticalCapsGlobal && !primaryIso)) {
-                                const offset = thicknessM;
-                                const aOff = { x: a.x + nx * offset, y: a.y + ny * offset };
-                                const bOff = { x: b.x + nx * offset, y: b.y + ny * offset };
-                                const ia = worldToIso(a);
-                                const ib = worldToIso(b);
-                                const iao = worldToIso(aOff);
-                                const ibo = worldToIso(bOff);
-                                // Cor específica por face (se existir) senão cor base
-                                const faceColors = rCfg.blockEdgeBandFaceColors || {};
-                                const faceColor = faceColors[face as 'N'|'S'|'L'|'O'] ?? bandColor;
-                                // Desenhar preenchimento
-                                gBands.beginFill(faceColor, bandAlpha);
-                                // Desenhar contorno usando cor de contorno de estrada se disponível,
-                                // caso contrário, usar uma versão escura da cor da banda
-                                const outlineColor = (rCfg.roadOutlineColor !== undefined) ? (rCfg.roadOutlineColor as number) : ((faceColor & 0xFFFFFF) * 0.72 >>> 0);
-                                // Linha fina para contorno (1 px) com alpha parecido — desenhar somente se habilitado
-                                if ((rCfg as any).blockEdgeBandOutlineEnabled) {
-                                    gBands.lineStyle(0.1, outlineColor, Math.min(1, bandAlpha + 0.0));
-                                } else {
-                                    gBands.lineStyle(0, 0, 0, 0);
+                                // Primeira banda no modo isométrico: subdividir em N segmentos iguais quando habilitado
+                                const nSeg = (segEnabled && segLenM > 0.05) ? Math.max(1, Math.round(length / segLenM)) : 1;
+                                const tx = dx / length, ty = dy / length;
+                                for (let si = 0; si < nSeg; si++) {
+                                    const s0 = (length * si) / nSeg;
+                                    const s1 = (length * (si + 1)) / nSeg;
+                                    const pa = { x: a.x + tx * s0, y: a.y + ty * s0 };
+                                    const pb = { x: a.x + tx * s1, y: a.y + ty * s1 };
+                                    const aOff = { x: pa.x + nx * thicknessM, y: pa.y + ny * thicknessM };
+                                    const bOff = { x: pb.x + nx * thicknessM, y: pb.y + ny * thicknessM };
+                                    const ia = worldToIso(pa);
+                                    const ib = worldToIso(pb);
+                                    const iao = worldToIso(aOff);
+                                    const ibo = worldToIso(bOff);
+                                    gBands.beginFill(faceColor, bandAlpha);
+                                    if ((rCfg as any).blockEdgeBandOutlineEnabled) {
+                                        gBands.lineStyle(0.1, outlineColor, Math.min(1, bandAlpha + 0.0));
+                                    } else { gBands.lineStyle(0,0,0,0); }
+                                    gBands.drawPolygon([ia.x, ia.y, ib.x, ib.y, ibo.x, ibo.y, iao.x, iao.y]);
+                                    gBands.endFill();
                                 }
-                                gBands.drawPolygon([ia.x, ia.y, ib.x, ib.y, ibo.x, ibo.y, iao.x, iao.y]);
-                                gBands.endFill();
                                 // Linhas paralelas internas (paralelas à aresta), espaçadas por configuração
                                 try {
                                     const innerEnabled = !!rCfg.blockEdgeBandInnerLinesEnabled;
@@ -3374,16 +3379,25 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                                     const dyScreenSecond = (down1.y - base0.y);
                                     const faceColors2 = rCfg.blockEdgeBand2FaceColors || rCfg.blockEdgeBandFaceColors || {};
                                     const faceColor2 = faceColors2[face as 'N'|'S'|'L'|'O'] ?? faceColor;
-                                    // Topo da segunda = aresta original (ia/ib); base desce thickness2M
-                                    const ia2v = { x: ia.x, y: ia.y + dyScreenSecond };
-                                    const ib2v = { x: ib.x, y: ib.y + dyScreenSecond };
-                                    gBands.beginFill(faceColor2, band2Alpha);
                                     const outlineColor2 = (rCfg.roadOutlineColor !== undefined) ? (rCfg.roadOutlineColor as number) : ((faceColor2 & 0xFFFFFF) * 0.72 >>> 0);
-                                    if ((rCfg as any).blockEdgeBandOutlineEnabled) {
-                                        gBands.lineStyle(0.1, outlineColor2, Math.min(1, band2Alpha + 0.0));
-                                    } else { gBands.lineStyle(0,0,0,0); }
-                                    gBands.drawPolygon([ia.x, ia.y, ib.x, ib.y, ib2v.x, ib2v.y, ia2v.x, ia2v.y]);
-                                    gBands.endFill();
+                                    const nSeg2 = (segEnabled && segLenM > 0.05) ? Math.max(1, Math.round(length / segLenM)) : 1;
+                                    const tx2 = dx / length, ty2 = dy / length;
+                                    for (let si = 0; si < nSeg2; si++) {
+                                        const s0 = (length * si) / nSeg2;
+                                        const s1 = (length * (si + 1)) / nSeg2;
+                                        const pa = { x: a.x + tx2 * s0, y: a.y + ty2 * s0 };
+                                        const pb = { x: a.x + tx2 * s1, y: a.y + ty2 * s1 };
+                                        const ia = worldToIso(pa);
+                                        const ib = worldToIso(pb);
+                                        const ia2v = { x: ia.x, y: ia.y + dyScreenSecond };
+                                        const ib2v = { x: ib.x, y: ib.y + dyScreenSecond };
+                                        gBands.beginFill(faceColor2, band2Alpha);
+                                        if ((rCfg as any).blockEdgeBandOutlineEnabled) {
+                                            gBands.lineStyle(0.1, outlineColor2, Math.min(1, band2Alpha + 0.0));
+                                        } else { gBands.lineStyle(0,0,0,0); }
+                                        gBands.drawPolygon([ia.x, ia.y, ib.x, ib.y, ib2v.x, ib2v.y, ia2v.x, ia2v.y]);
+                                        gBands.endFill();
+                                    }
                                 }
                             } else {
                                 // Extrusão vertical em coordenadas de tela: projetar aresta original e gerar segunda aresta deslocada para baixo
@@ -3399,11 +3413,22 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                                 const faceColors = rCfg.blockEdgeBandFaceColors || {};
                                 const faceColor = faceColors[face as 'N'|'S'|'L'|'O'] ?? bandColor;
                                 gBands.beginFill(faceColor, bandAlpha);
-                                const outlineColor = (rCfg.roadOutlineColor !== undefined) ? (rCfg.roadOutlineColor as number) : ((faceColor & 0xFFFFFF) * 0.72 >>> 0);
                                 if ((rCfg as any).blockEdgeBandOutlineEnabled) {
                                     gBands.lineStyle(0.1, outlineColor, Math.min(1, bandAlpha + 0.0));
                                 } else { gBands.lineStyle(0,0,0,0); }
-                                gBands.drawPolygon([ia.x, ia.y, ib.x, ib.y, ib2.x, ib2.y, ia2.x, ia2.y]);
+                                const nSeg = (segEnabled && segLenM > 0.05) ? Math.max(1, Math.round(length / segLenM)) : 1;
+                                const tx = dx / length, ty = dy / length;
+                                for (let si = 0; si < nSeg; si++) {
+                                    const s0 = (length * si) / nSeg;
+                                    const s1 = (length * (si + 1)) / nSeg;
+                                    const pa = { x: a.x + tx * s0, y: a.y + ty * s0 };
+                                    const pb = { x: a.x + tx * s1, y: a.y + ty * s1 };
+                                    const iaS = worldToIso(pa);
+                                    const ibS = worldToIso(pb);
+                                    const ia2S = { x: iaS.x, y: iaS.y + dyScreen };
+                                    const ib2S = { x: ibS.x, y: ibS.y + dyScreen };
+                                    gBands.drawPolygon([iaS.x, iaS.y, ibS.x, ibS.y, ib2S.x, ib2S.y, ia2S.x, ia2S.y]);
+                                }
                                 gBands.endFill();
                                 // Segunda banda (vertical empilhada) pulada em N e L conforme solicitação
                                 if (secondEnabled && face !== 'N' && face !== 'L') {
@@ -3419,16 +3444,98 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                                     if ((rCfg as any).blockEdgeBandOutlineEnabled) {
                                         gBands.lineStyle(0.1, outlineColor2, Math.min(1, band2Alpha + 0.0));
                                     } else { gBands.lineStyle(0,0,0,0); }
-                                    gBands.drawPolygon([ia2.x, ia2.y, ib2.x, ib2.y, ib3.x, ib3.y, ia3.x, ia3.y]);
+                                    const nSeg2 = (segEnabled && segLenM > 0.05) ? Math.max(1, Math.round(length / segLenM)) : 1;
+                                    const tx2 = dx / length, ty2 = dy / length;
+                                    for (let si = 0; si < nSeg2; si++) {
+                                        const s0 = (length * si) / nSeg2;
+                                        const s1 = (length * (si + 1)) / nSeg2;
+                                        const pa = { x: a.x + tx2 * s0, y: a.y + ty2 * s0 };
+                                        const pb = { x: a.x + tx2 * s1, y: a.y + ty2 * s1 };
+                                        const ia2S = worldToIso(pa);
+                                        const ib2S = worldToIso(pb);
+                                        const ia3S = { x: ia2S.x, y: ia2S.y + (dyScreen2 - dyScreen) };
+                                        const ib3S = { x: ib2S.x, y: ib2S.y + (dyScreen2 - dyScreen) };
+                                        gBands.drawPolygon([ia2S.x, ia2S.y, ib2S.x, ib2S.y, ib3S.x, ib3S.y, ia3S.x, ia3S.y]);
+                                    }
                                     gBands.endFill();
                                 }
                             }
+                            // Desenhar juntas (linhas) opcionais ao longo desta aresta (além da segmentação por polígonos)
+                            try {
+                                const drawJointLines = !!(rCfg as any).blockEdgeBandDrawJointLines;
+                                const segEnabledJL = !!(rCfg as any).blockEdgeBandSegmentsEnabled;
+                                const segLenMJL = (rCfg as any).blockEdgeBandSegmentLenM ?? 1.0;
+                                const jointStroke = (rCfg as any).blockEdgeBandJointStrokePx ?? 1;
+                                const jointAlpha = (rCfg as any).blockEdgeBandJointAlpha ?? 0.9;
+                                const jointColor = (rCfg as any).blockEdgeBandJointColor ?? ((rCfg.roadOutlineColor !== undefined) ? (rCfg.roadOutlineColor as number) : 0x505050);
+                                if (drawJointLines && segEnabledJL && segLenMJL > 0.05) {
+                                    // Número de juntas internas (ignora extremidades) e evitar resto muito pequeno
+                                    const totalM = length;
+                                    const nCuts = Math.max(0, Math.floor(totalM / segLenMJL) - 1);
+                                    if (nCuts > 0) {
+                                        // Normal e tangente em mundo
+                                        let nxCut = -dy / length, nyCut = dx / length;
+                                        if (clockwise) { nxCut = dy / length; nyCut = -dx / length; }
+                                        const tx = dx / length, ty = dy / length;
+                                        // Deslocamento interno para atravessar toda a banda
+                                        const half = thicknessM * 0.5;
+                                        for (let k = 1; k <= nCuts; k++) {
+                                            const s = k * segLenMJL;
+                                            const wx = a.x + tx * s;
+                                            const wy = a.y + ty * s;
+                                            // dois pontos nas bordas interna/externa da banda no espaço do mundo
+                                            const pIn = { x: wx - nxCut * half, y: wy - nyCut * half };
+                                            const pOut = { x: wx + nxCut * half, y: wy + nyCut * half };
+                                            const pinS = worldToIso(pIn);
+                                            const poutS = worldToIso(pOut);
+                                            const gJ = new PIXI.Graphics();
+                                            gJ.lineStyle(jointStroke, jointColor, jointAlpha);
+                                            gJ.moveTo(pinS.x, pinS.y);
+                                            gJ.lineTo(poutS.x, poutS.y);
+                                            jointsG.addChild(gJ);
+                                            // Se houver segunda banda e for o caso vertical (face não N/L), desenhar continuação da junta
+                                            if (secondEnabled && face !== 'N' && face !== 'L') {
+                                                if (!(verticalCapsGlobal && !primaryIso)) {
+                                                    // primeira banda é iso; segunda é vertical: repetir linha abaixo por dy da segunda
+                                                    const base0 = worldToIso({ x: 0, y: 0 });
+                                                    const down1 = worldToIso({ x: 0, y: thickness2M });
+                                                    const dySecond = (down1.y - base0.y);
+                                                    const gJ2 = new PIXI.Graphics();
+                                                    gJ2.lineStyle(jointStroke, jointColor, jointAlpha);
+                                                    gJ2.moveTo(pinS.x, pinS.y + dySecond);
+                                                    gJ2.lineTo(poutS.x, poutS.y + dySecond);
+                                                    jointsG.addChild(gJ2);
+                                                } else {
+                                                    // extrusão vertical para a primeira: já desenhamos a junta atravessando a primeira
+                                                    // desenhar junta também na segunda banda empilhada (deslocada por thicknessM..thicknessM+thickness2M)
+                                                    const base = worldToIso({ x: 0, y: 0 });
+                                                    const down = worldToIso({ x: 0, y: thicknessM });
+                                                    const dy1 = (down.y - base.y);
+                                                    const down2 = worldToIso({ x: 0, y: thicknessM + thickness2M });
+                                                    const dy2 = (down2.y - base.y);
+                                                    const gJ2 = new PIXI.Graphics();
+                                                    gJ2.lineStyle(jointStroke, jointColor, jointAlpha);
+                                                    gJ2.moveTo(pinS.x + 0, pinS.y + dy1);
+                                                    gJ2.lineTo(poutS.x + 0, poutS.y + dy1);
+                                                    jointsG.addChild(gJ2);
+                                                    const gJ3 = new PIXI.Graphics();
+                                                    gJ3.lineStyle(jointStroke, jointColor, jointAlpha);
+                                                    gJ3.moveTo(pinS.x + 0, pinS.y + dy2);
+                                                    gJ3.lineTo(poutS.x + 0, poutS.y + dy2);
+                                                    jointsG.addChild(gJ3);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch (e) { /* ignore joints errors */ }
                         }
                     }
                 }
             });
             blockOutlines.current.addChild(gInner);
             blockEdgeBands.current?.addChild(gBands);
+            blockEdgeBands.current?.addChild(jointsG);
             // Create edge overlay (concrete texture) masked by the same bands
             try {
                 edgeOverlay.current?.removeChildren();
