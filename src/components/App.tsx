@@ -244,6 +244,7 @@ const App: React.FC = () => {
     }, []);
 
     const [interiorTexture, setInteriorTexture] = useState<PIXI.Texture | null>(null);
+    const [pavementTexture, setPavementTexture] = useState<PIXI.Texture | null>(null);
     const [controlsCollapsed, setControlsCollapsed] = useState<boolean>(false);
     const [edgeTexture, setEdgeTexture] = useState<PIXI.Texture | null>(null);
     const [gallery, setGallery] = useState<Array<{ id:number; name:string; url:string; texture:PIXI.Texture }>>([]);
@@ -312,6 +313,22 @@ const App: React.FC = () => {
         setUiTick(t => t + 1);
     };
 
+    const handlePavementLoad = (tex: PIXI.Texture, _url?: string) => {
+        setPavementTexture(prev => {
+            if (prev && (prev as any).baseTexture && (prev as any).baseTexture.destroy) {
+                try { (prev as any).baseTexture.destroy(); } catch (e) {}
+            }
+            return tex;
+        });
+        try {
+            if ((tex as any).baseTexture) {
+                try { (tex as any).baseTexture.wrapMode = PIXI.WRAP_MODES.REPEAT; } catch (e) {}
+                try { (tex as any).baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR; } catch (e) {}
+            }
+        } catch (e) {}
+        setUiTick(t => t + 1);
+    };
+
     const handleEdgeLoad = (tex: PIXI.Texture, url: string) => {
         setEdgeTexture(prev => {
             if (prev && (prev as any).baseTexture && (prev as any).baseTexture.destroy) {
@@ -346,6 +363,16 @@ const App: React.FC = () => {
             return null;
         });
         try { (config as any).render.roadLaneUseTexture = false; } catch (e) {}
+        setUiTick(t => t + 1);
+    };
+
+    const handlePavementClear = () => {
+        setPavementTexture(prev => {
+            if (prev && (prev as any).baseTexture && (prev as any).baseTexture.destroy) {
+                try { (prev as any).baseTexture.destroy(); } catch (e) {}
+            }
+            return null;
+        });
         setUiTick(t => t + 1);
     };
 
@@ -674,7 +701,7 @@ const App: React.FC = () => {
 
     return (
         <div id="main-viewport-container">
-            <GameCanvas interiorTexture={interiorTexture} interiorTextureScale={texScale} interiorTextureAlpha={texAlpha} interiorTextureTint={parseInt(texTint.slice(1),16)} crossfadeEnabled={crossfadeEnabled} crossfadeMs={crossfadeMs}
+            <GameCanvas interiorTexture={interiorTexture} pavementTexture={pavementTexture} interiorTextureScale={texScale} interiorTextureAlpha={texAlpha} interiorTextureTint={parseInt(texTint.slice(1),16)} crossfadeEnabled={crossfadeEnabled} crossfadeMs={crossfadeMs}
                 edgeTexture={edgeTexture} edgeScale={edgeScale} edgeAlpha={edgeAlpha}
                 roadLaneTexture={laneTexture} roadLaneScale={laneScale} roadLaneAlpha={laneAlpha}
             />
@@ -1010,6 +1037,11 @@ const App: React.FC = () => {
                         <label style={{ fontSize: 12 }}>Ms</label>
                         <input type="number" value={crossfadeMs} onChange={(e)=>setCrossfadeMs(parseInt(e.target.value)||500)} style={{ width: 80 }} />
                     </div>
+                </div>
+                {/* Painel para textura da calçada central */}
+                <div style={{ display: 'inline-block', marginLeft: 12 }}>
+                    <label style={{ fontSize: 12, fontWeight: 600, marginRight: 6 }}>Textura Calçada</label>
+                    <TextureLoader onLoad={handlePavementLoad} onClear={handlePavementClear} accept="image/*" />
                 </div>
                 {/* Painel para textura dos marcadores (será usada por cada retângulo de faixa) */}
                 <div style={{ display: 'inline-block', marginLeft: 12 }}>
