@@ -419,6 +419,27 @@ export const config = {
     blockInteriorTextureAlpha: 1.0,
     // Escala aplicada na Matrix do beginTextureFill (1.0 = tamanho original). Valores maiores => textura "mais grossa".
     blockInteriorTextureScale: 1.0,
+    // Parâmetros da textura procedural dos quarteirões dentro do heatmap central
+    blockInteriorCentralTile: {
+        enabled: true,
+        tileWidth: 96,
+        tileHeight: 48,
+        thickness: 6,
+        seedCount: 420,
+        damageProbability: 0.4,
+        lateralFocus: 0.75,
+        lateralBias: 1.2,
+        randomAmplitude: 0.6,
+        outlineColor: 0x000000,
+        fillColor: 0x5f5f5f,
+        crackColor: 0x2f2f2f,
+        sideColor: 0x1f1f1f,
+        backgroundColor: 'rgba(0,0,0,0)',
+        seedPosition: 12345,
+        seedDamage: 54321,
+        scale: 0.55,
+        alpha: 1.0,
+    },
     },
     gameLogic: {
         SELECT_PAN_THRESHOLD: 50, // px
