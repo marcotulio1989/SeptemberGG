@@ -14,7 +14,6 @@ import MapStore from '../stores/MapStore';
 import type { Point } from '../generic_modules/math';
 import NoiseZoning from '../overlays/NoiseZoning';
 import { createGrassTexture } from '../overlays/grassTexture';
-import { generateIsometricTilePattern } from '../lib/isometricTileGenerator';
 import Quadtree from '../lib/quadtree';
 import { CrackPatternAssignments, getCrackPatternById } from '../lib/crackPatterns';
 // ClipperLib (sem typings completos) - usar require para acessar classes
@@ -321,6 +320,9 @@ interface GameCanvasPropsInternal extends GameCanvasProps {
     interiorTextureTint?: number;
     crossfadeEnabled?: boolean;
     crossfadeMs?: number;
+    sidewalkTexture?: PIXI.Texture | null;
+    sidewalkScale?: number;
+    sidewalkAlpha?: number;
     edgeTexture?: PIXI.Texture | null;
     edgeScale?: number;
     edgeAlpha?: number;
@@ -329,7 +331,7 @@ interface GameCanvasPropsInternal extends GameCanvasProps {
     roadLaneAlpha?: number;
 }
 
-const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interiorTextureScale, interiorTextureAlpha, interiorTextureTint, crossfadeEnabled, crossfadeMs, edgeTexture, edgeScale, edgeAlpha, roadLaneTexture, roadLaneScale, roadLaneAlpha }) => {
+const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interiorTextureScale, interiorTextureAlpha, interiorTextureTint, crossfadeEnabled, crossfadeMs, sidewalkTexture, sidewalkScale, sidewalkAlpha, edgeTexture, edgeScale, edgeAlpha, roadLaneTexture, roadLaneScale, roadLaneAlpha }) => {
     const canvasContainerRef = useRef<HTMLDivElement>(null);
     const pixiRenderer = useRef<PIXI.IRenderer<PIXI.ICanvas> | null>(null);
     const stage = useRef<PIXI.Container | null>(null);
@@ -356,6 +358,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     const crackedRoadOverlay = useRef<PIXI.Container | null>(null);
     const edgeOverlay = useRef<PIXI.Container | null>(null);
     const roadLaneTextureRef = useRef<PIXI.Texture | null>(roadLaneTexture || null);
+    const sidewalkTextureRef = useRef<PIXI.Texture | null>(sidewalkTexture || null);
     const edgeTextureRef = useRef<PIXI.Texture | null>(edgeTexture || null);
     const noiseOverlayViewRef = useRef<{ cameraX: number; cameraY: number; zoom: number } | null>(null);
     // Cache para evitar reconstruções pesadas dos marcadores/mascara quando nada mudou
@@ -369,11 +372,17 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         try { roadLaneTextureRef.current = roadLaneTexture || null; } catch (e) {}
     }, [roadLaneTexture]);
     useEffect(() => {
+        try { sidewalkTextureRef.current = sidewalkTexture || null; } catch (e) {}
+        if (sidewalkTexture && (sidewalkTexture as any).baseTexture) {
+            try { (sidewalkTexture as any).baseTexture.wrapMode = PIXI.WRAP_MODES.REPEAT; } catch (e) {}
+        }
+    }, [sidewalkTexture]);
+    useEffect(() => {
         try { edgeTextureRef.current = edgeTexture || null; } catch (e) {}
     }, [edgeTexture]);
     useEffect(() => {
         try { onMapChange(false); } catch (e) {}
-    }, [edgeTexture]);
+    }, [edgeTexture, sidewalkTexture]);
     // When overlay textures change, force a light redraw so overlays are rebuilt
     useEffect(() => {
         try { roadLaneScaleRef.current = roadLaneScale; } catch (e) {}
@@ -454,24 +463,6 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         const snap = Math.max(0.01, gridM ?? ((config as any).render.nodeSnapM ?? 1.0));
         return `${Math.round(p.x / snap)}:${Math.round(p.y / snap)}`;
     };
-
-    const centralTilePattern = useRef<{ texture: PIXI.Texture; width: number; height: number } | null>(null);
-    if (!centralTilePattern.current && typeof document !== 'undefined') {
-        try {
-            const canvas = generateIsometricTilePattern();
-            if (canvas) {
-                const texture = PIXI.Texture.from(canvas);
-                if (texture.baseTexture) {
-                    try { texture.baseTexture.wrapMode = PIXI.WRAP_MODES.REPEAT; } catch (e) {}
-                    try { texture.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR; } catch (e) {}
-                    try { texture.baseTexture.mipmap = PIXI.MIPMAP_MODES.OFF; } catch (e) {}
-                }
-                centralTilePattern.current = { texture, width: canvas.width, height: canvas.height };
-            }
-        } catch (e) {
-            centralTilePattern.current = null;
-        }
-    }
 
     // Criar textura local de grama caso não venha por props
     const localGrassTexture = useRef<PIXI.Texture | null>(null);
@@ -3042,12 +3033,19 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             const heatmapRef = state.heatmap;
             const heatmapRadius = heatmapRef ? Math.max(200, (heatmapRef as any)?.rUnit || 3000) : null;
             const heatmapCenter = (config as any).zoningModel.cityCenter;
-            const tilePatternInfo = centralTilePattern.current;
+            const sidewalkTex = sidewalkTextureRef.current;
+            const sidewalkScaleValue = (typeof sidewalkScale === 'number' && Number.isFinite(sidewalkScale))
+                ? sidewalkScale
+                : (((config as any).render?.sidewalkTextureScale) ?? 1.0);
+            const sidewalkAlphaValue = (typeof sidewalkAlpha === 'number' && Number.isFinite(sidewalkAlpha))
+                ? sidewalkAlpha
+                : (((config as any).render?.sidewalkTextureAlpha) ?? 1.0);
+            const sidewalkEnabled = !!sidewalkTex && !!((config as any).render?.sidewalkUseTexture);
 
             blockWorldPaths.forEach((worldPts: Point[]) => {
                 const centroidWorld = polygonCentroid(worldPts);
                 const insideHeatmapRadius = !!(
-                    tilePatternInfo &&
+                    sidewalkEnabled &&
                     heatmapRadius !== null &&
                     centroidWorld &&
                     Math.hypot(centroidWorld.x - heatmapCenter.x, centroidWorld.y - heatmapCenter.y) <= heatmapRadius
@@ -3057,10 +3055,15 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                     const useTex = !!(config as any).render.blockInteriorUseTexture && interiorTexture;
                     if (insideHeatmapRadius) {
                         try {
-                            const { texture, width, height } = tilePatternInfo!;
+                            const texture = sidewalkTex!;
+                            const baseTex = texture.baseTexture as PIXI.BaseTexture | undefined;
+                            const width = texture.width || baseTex?.realWidth || baseTex?.width || 0;
+                            const height = texture.height || baseTex?.realHeight || baseTex?.height || 0;
                             const matrix = new PIXI.Matrix();
-                            const scale = (config as any).render.blockInteriorTextureScale || 1.0;
-                            const alpha = (config as any).render.blockInteriorTextureAlpha ?? 1.0;
+                            const scaleCandidate = Number.isFinite(sidewalkScaleValue) ? sidewalkScaleValue : 1.0;
+                            const scale = scaleCandidate === 0 ? 1.0 : scaleCandidate;
+                            const alphaRaw = Number.isFinite(sidewalkAlphaValue) ? sidewalkAlphaValue : 1.0;
+                            const alpha = Math.max(0, Math.min(1, alphaRaw));
                             const isoCentroid = centroidWorld ? worldToIso(centroidWorld) : null;
                             const scaledWidth = width * (scale || 1);
                             const scaledHeight = height * (scale || 1);
