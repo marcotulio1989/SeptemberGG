@@ -580,6 +580,21 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         (state as any).populationHeatMap = g;
     };
 
+    // Redesenhar heatmap quando App alterna a visibilidade
+    React.useEffect(() => {
+        const handler = () => {
+            try { drawPopulationHeatmap(); } catch (e) {}
+        };
+        if (typeof window !== 'undefined') {
+            window.addEventListener('population-heatmap-visibility-changed', handler as EventListener);
+        }
+        return () => {
+            if (typeof window !== 'undefined') {
+                window.removeEventListener('population-heatmap-visibility-changed', handler as EventListener);
+            }
+        };
+    }, []);
+
     // Camada secundária (versão final – usada em onMapChange)
     const drawSecondaryRoadLayer = (segments: Segment[]) => {
         // Secundary road layer intentionally disabled.
@@ -3414,6 +3429,8 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
 
     stage.current = new PIXI.Container();
     heatmaps.current = new PIXI.Container();
+    // Garantir que o heatmap renderize acima do preenchimento das ruas, mas abaixo dos contornos
+    (heatmaps.current as any).zIndex = 25;
     debugDrawables.current = new PIXI.Container();
         debugSegments.current = new PIXI.Container();
         debugMapData.current = new PIXI.Container();
@@ -3475,13 +3492,13 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     characters.current = new PIXI.Container();
     (characters.current as any).zIndex = 10000; // somente personagem tem zIndex alto
 
-    // heatmap deve acompanhar pan/zoom: colocá-lo dentro de drawables, no fundo
+    // heatmap deve acompanhar pan/zoom
     debugDrawables.current.addChild(debugSegments.current);
     debugDrawables.current.addChild(debugMapData.current);
     // visibilidade inicial dos marcadores/junções
     debugMapData.current.visible = (config as any).render.showJunctionMarkers;
-    // Inserir heatmaps como primeira criança para ficar no fundo
-    drawables.current.addChildAt(heatmaps.current, 0);
+    // Inserir heatmaps e confiar no zIndex para ordenar
+    drawables.current.addChild(heatmaps.current);
     // ruas (preenchimento) abaixo de prédios e contornos
     drawables.current.addChild(roadsFill.current);
     // adicionar patches dependendo da flag de debug (antes dos quarteirões ou depois de tudo)

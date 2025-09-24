@@ -691,6 +691,13 @@ const App: React.FC = () => {
                     action={(nextState) => {
                         config.mapGeneration.DRAW_HEATMAP = nextState;
                         setHeatmapVisible(nextState);
+                        // Notificar o canvas para redesenhar a camada de heatmap imediatamente
+                        try {
+                            if (typeof window !== 'undefined') {
+                                const evt = new CustomEvent('population-heatmap-visibility-changed', { detail: { visible: nextState } });
+                                window.dispatchEvent(evt);
+                            }
+                        } catch (e) {}
                         setUiTick(t => t + 1);
                     }}
                     forcedState={heatmapVisible}
