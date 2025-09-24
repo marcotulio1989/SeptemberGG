@@ -1324,6 +1324,49 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             container.visible = false;
             return;
         }
+        const coarseW = maskInfo.coarseW;
+        const coarseH = maskInfo.coarseH;
+        const gridMinX = maskInfo.gridMinX;
+        const gridMinY = maskInfo.gridMinY;
+        const worldStep = maskInfo.worldStep;
+        const invWorldStep = worldStep > 0 ? 1 / worldStep : 0;
+        const maskOwners = new Int32Array(mask.length);
+        for (let i = 0; i < maskOwners.length; i++) maskOwners[i] = -1;
+        const maskIndexAt = (x: number, y: number) => {
+            if (!(invWorldStep > 0)) return -1;
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return -1;
+            const gx = Math.floor(x * invWorldStep) - gridMinX;
+            const gy = Math.floor(y * invWorldStep) - gridMinY;
+            if (gx < 0 || gy < 0 || gx >= coarseW || gy >= coarseH) return -1;
+            return gy * coarseW + gx;
+        };
+        const claimMaskCells = (owner: number, indices: number[]) => {
+            if (!(owner >= 0)) return;
+            for (const idx of indices) {
+                if (!Number.isFinite(idx)) continue;
+                if (idx < 0 || idx >= maskOwners.length) continue;
+                if (!mask[idx]) continue;
+                const current = maskOwners[idx];
+                if (current !== -1 && current !== owner) continue;
+                maskOwners[idx] = owner;
+                const gx = idx % coarseW;
+                const gy = Math.floor(idx / coarseW);
+                for (let oy = -1; oy <= 1; oy++) {
+                    for (let ox = -1; ox <= 1; ox++) {
+                        if (ox === 0 && oy === 0) continue;
+                        const ngx = gx + ox;
+                        const ngy = gy + oy;
+                        if (ngx < 0 || ngy < 0 || ngx >= coarseW || ngy >= coarseH) continue;
+                        const nIdx = ngy * coarseW + ngx;
+                        if (!mask[nIdx]) continue;
+                        const neighOwner = maskOwners[nIdx];
+                        if (neighOwner === -1 || neighOwner === owner) {
+                            maskOwners[nIdx] = owner;
+                        }
+                    }
+                }
+            }
+        };
         const baseColor: number = cfg.crackedRoadColor ?? 0x00E5FF;
         const baseAlpha: number = Math.min(1, Math.max(0, cfg.crackedRoadAlpha ?? 0.88));
         const baseSeedDensity: number = Math.max(0.005, cfg.crackedRoadSeedDensity ?? 0.055);
@@ -1395,71 +1438,117 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             }
 
             intervals.forEach((interval, intervalIndex) => {
-                const startT = clamp(interval.start, 0, 1);
-                const endT = clamp(interval.end, 0, 1);
-                if (!(endT > startT + 1e-4)) return;
-                const intervalLen = segLen * (endT - startT);
-                if (intervalLen < segMinLength) return;
-                const area = intervalLen * roadWidth;
-                let seeds = Math.max(8, Math.round(area * segSeedDensity));
-                seeds = Math.min(seeds, segMaxSeeds);
-                if (seeds < 2) return;
-                let samplesU = Math.max(2, Math.round(intervalLen * segSampleAlong));
-                let samplesV = Math.max(2, Math.round(roadWidth * segSampleAcross));
-                samplesU = Math.min(samplesU, segMaxSamplesAlong);
-                samplesV = Math.min(samplesV, segMaxSamplesAcross);
-                if (samplesU < 2 || samplesV < 2) return;
-                const hash = hashNumbers(globalSeed, segmentIndex, intervalIndex, startT * 1000, endT * 1000, roadWidth, segSeedOffset);
-                const startOffset = segLen * startT;
-                const baseX = start.x + ux * startOffset;
-                const baseY = start.y + uy * startOffset;
-                const spriteData = generateRoadCrackSprite({
-                    length: intervalLen,
-                    width: roadWidth,
-                    seedCount: seeds,
-                    samplesAlong: samplesU,
-                    samplesAcross: samplesV,
-                    maxSamplesAlong: segMaxSamplesAlong,
-                    maxSamplesAcross: segMaxSamplesAcross,
-                    epsilonPx: segRawEpsilon,
-                    strokePx: segStrokePx,
-                    resolutionMultiplier: segResolutionMultiplier,
-                    seed: hash,
-                    tester,
-                    baseX,
-                    baseY,
-                    ux,
-                    uy,
-                    nx,
-                    ny,
-                    worldToIso,
-                    isoToWorld,
-                });
-                if (!spriteData) return;
-                try {
-                    const baseTexture = PIXI.BaseTexture.fromBuffer(spriteData.buffer, spriteData.width, spriteData.height, {
-                        scaleMode: PIXI.SCALE_MODES.LINEAR,
-                        mipmap: PIXI.MIPMAP_MODES.ON,
-                    });
-                    try { (baseTexture as any).mipmap = PIXI.MIPMAP_MODES.ON; } catch (e) {}
-                    const aniso = (baseTexture as any).anisotropicLevel;
-                    if (typeof aniso === 'number' && aniso < 4) {
-                        (baseTexture as any).anisotropicLevel = 4;
+                const baseStartT = clamp(interval.start, 0, 1);
+                const baseEndT = clamp(interval.end, 0, 1);
+                if (!(baseEndT > baseStartT + 1e-4)) return;
+                const baseIntervalLen = segLen * (baseEndT - baseStartT);
+                if (baseIntervalLen < segMinLength) return;
+                type CrackRun = { startT: number; endT: number; maskCells: number[] };
+                const runs: CrackRun[] = [];
+                if (invWorldStep > 0 && maskOwners.length === mask.length) {
+                    const rawStep = Math.min(segProbeStep * 0.5, worldStep * 0.5);
+                    const maskSampleStep = Math.max(0.25, Number.isFinite(rawStep) && rawStep > 0 ? rawStep : 0.25);
+                    const sampleCount = Math.max(1, Math.ceil(baseIntervalLen / maskSampleStep));
+                    let runStart: number | null = null;
+                    let runCells: Set<number> | null = null;
+                    for (let s = 0; s <= sampleCount; s++) {
+                        const tNorm = sampleCount === 0 ? 0 : s / sampleCount;
+                        const actualT = baseStartT + (baseEndT - baseStartT) * tNorm;
+                        const px = start.x + vx * actualT;
+                        const py = start.y + vy * actualT;
+                        const idx = maskIndexAt(px, py);
+                        const insideCell = idx >= 0 && mask[idx] > 0;
+                        const available = insideCell && (maskOwners[idx] === -1 || maskOwners[idx] === segmentIndex);
+                        if (available) {
+                            if (runStart === null) {
+                                runStart = actualT;
+                                runCells = new Set<number>();
+                            }
+                            if (idx >= 0) runCells?.add(idx);
+                        } else if (runStart !== null) {
+                            const runEnd = actualT;
+                            if (runEnd > runStart + 1e-4 && runCells && runCells.size > 0) {
+                                runs.push({ startT: runStart, endT: runEnd, maskCells: Array.from(runCells) });
+                            }
+                            runStart = null;
+                            runCells = null;
+                        }
                     }
-                    const texture = new PIXI.Texture(baseTexture);
-                    const sprite = new PIXI.Sprite(texture);
-                    sprite.x = spriteData.spriteX;
-                    sprite.y = spriteData.spriteY;
-                    sprite.width = spriteData.spriteWidth;
-                    sprite.height = spriteData.spriteHeight;
-                    sprite.tint = segColor;
-                    sprite.alpha = segAlpha;
-                    sprite.roundPixels = false;
-                    container.addChild(sprite);
-                    drewAny = true;
-                } catch (err) {
-                    try { console.warn('[CrackedRoads] Failed to build sprite', err); } catch (e) {}
+                    if (runStart !== null && runCells && runCells.size > 0) {
+                        runs.push({ startT: runStart, endT: baseEndT, maskCells: Array.from(runCells) });
+                    }
+                } else {
+                    runs.push({ startT: baseStartT, endT: baseEndT, maskCells: [] });
                 }
+                runs.forEach((run, runIndex) => {
+                    const startT = clamp(run.startT, baseStartT, baseEndT);
+                    const endT = clamp(run.endT, baseStartT, baseEndT);
+                    if (!(endT > startT + 1e-4)) return;
+                    const intervalLen = segLen * (endT - startT);
+                    if (intervalLen < segMinLength) return;
+                    const area = intervalLen * roadWidth;
+                    let seeds = Math.max(8, Math.round(area * segSeedDensity));
+                    seeds = Math.min(seeds, segMaxSeeds);
+                    if (seeds < 2) return;
+                    let samplesU = Math.max(2, Math.round(intervalLen * segSampleAlong));
+                    let samplesV = Math.max(2, Math.round(roadWidth * segSampleAcross));
+                    samplesU = Math.min(samplesU, segMaxSamplesAlong);
+                    samplesV = Math.min(samplesV, segMaxSamplesAcross);
+                    if (samplesU < 2 || samplesV < 2) return;
+                    const cellHash = run.maskCells.length ? run.maskCells[0] : -1;
+                    const hash = hashNumbers(globalSeed, segmentIndex, intervalIndex, runIndex, startT * 1000, endT * 1000, roadWidth, segSeedOffset, cellHash);
+                    const startOffset = segLen * startT;
+                    const baseX = start.x + ux * startOffset;
+                    const baseY = start.y + uy * startOffset;
+                    const spriteData = generateRoadCrackSprite({
+                        length: intervalLen,
+                        width: roadWidth,
+                        seedCount: seeds,
+                        samplesAlong: samplesU,
+                        samplesAcross: samplesV,
+                        maxSamplesAlong: segMaxSamplesAlong,
+                        maxSamplesAcross: segMaxSamplesAcross,
+                        epsilonPx: segRawEpsilon,
+                        strokePx: segStrokePx,
+                        resolutionMultiplier: segResolutionMultiplier,
+                        seed: hash,
+                        tester,
+                        baseX,
+                        baseY,
+                        ux,
+                        uy,
+                        nx,
+                        ny,
+                        worldToIso,
+                        isoToWorld,
+                    });
+                    if (!spriteData) return;
+                    try {
+                        const baseTexture = PIXI.BaseTexture.fromBuffer(spriteData.buffer, spriteData.width, spriteData.height, {
+                            scaleMode: PIXI.SCALE_MODES.LINEAR,
+                            mipmap: PIXI.MIPMAP_MODES.ON,
+                        });
+                        try { (baseTexture as any).mipmap = PIXI.MIPMAP_MODES.ON; } catch (e) {}
+                        const aniso = (baseTexture as any).anisotropicLevel;
+                        if (typeof aniso === 'number' && aniso < 4) {
+                            (baseTexture as any).anisotropicLevel = 4;
+                        }
+                        const texture = new PIXI.Texture(baseTexture);
+                        const sprite = new PIXI.Sprite(texture);
+                        sprite.x = spriteData.spriteX;
+                        sprite.y = spriteData.spriteY;
+                        sprite.width = spriteData.spriteWidth;
+                        sprite.height = spriteData.spriteHeight;
+                        sprite.tint = segColor;
+                        sprite.alpha = segAlpha;
+                        sprite.roundPixels = false;
+                        container.addChild(sprite);
+                        claimMaskCells(segmentIndex, run.maskCells);
+                        drewAny = true;
+                    } catch (err) {
+                        try { console.warn('[CrackedRoads] Failed to build sprite', err); } catch (e) {}
+                    }
+                });
             });
         });
 
