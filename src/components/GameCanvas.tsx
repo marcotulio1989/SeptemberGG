@@ -14,6 +14,7 @@ import MapStore from '../stores/MapStore';
 import type { Point } from '../generic_modules/math';
 import NoiseZoning from '../overlays/NoiseZoning';
 import { createGrassTexture } from '../overlays/grassTexture';
+import { generateIsometricTilePattern } from '../lib/isometricTileGenerator';
 import Quadtree from '../lib/quadtree';
 import { CrackPatternAssignments, getCrackPatternById } from '../lib/crackPatterns';
 // ClipperLib (sem typings completos) - usar require para acessar classes
@@ -454,6 +455,24 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         return `${Math.round(p.x / snap)}:${Math.round(p.y / snap)}`;
     };
 
+    const centralTilePattern = useRef<{ texture: PIXI.Texture; width: number; height: number } | null>(null);
+    if (!centralTilePattern.current && typeof document !== 'undefined') {
+        try {
+            const canvas = generateIsometricTilePattern();
+            if (canvas) {
+                const texture = PIXI.Texture.from(canvas);
+                if (texture.baseTexture) {
+                    try { texture.baseTexture.wrapMode = PIXI.WRAP_MODES.REPEAT; } catch (e) {}
+                    try { texture.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR; } catch (e) {}
+                    try { texture.baseTexture.mipmap = PIXI.MIPMAP_MODES.OFF; } catch (e) {}
+                }
+                centralTilePattern.current = { texture, width: canvas.width, height: canvas.height };
+            }
+        } catch (e) {
+            centralTilePattern.current = null;
+        }
+    }
+
     // Criar textura local de grama caso não venha por props
     const localGrassTexture = useRef<PIXI.Texture | null>(null);
     if (!interiorTexture && !localGrassTexture.current && typeof document !== 'undefined') {
@@ -686,17 +705,45 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         if (polygon.vertices.length > 0) {
             const firstVertex = worldToIso(polygon.vertices[0]);
             g.moveTo(firstVertex.x, firstVertex.y);
-            
+
             for (let i = 1; i < polygon.vertices.length; i++) {
                 const vertex = worldToIso(polygon.vertices[i]);
                 g.lineTo(vertex.x, vertex.y);
             }
-            
+
             g.closePath();
         }
-        
+
         g.endFill();
         return g;
+    };
+
+    const polygonCentroid = (pts: Point[]): Point | null => {
+        if (!pts || pts.length === 0) return null;
+        let areaAcc = 0;
+        let cxAcc = 0;
+        let cyAcc = 0;
+        for (let i = 0; i < pts.length; i++) {
+            const p0 = pts[i];
+            const p1 = pts[(i + 1) % pts.length];
+            const cross = p0.x * p1.y - p1.x * p0.y;
+            areaAcc += cross;
+            cxAcc += (p0.x + p1.x) * cross;
+            cyAcc += (p0.y + p1.y) * cross;
+        }
+        const area = areaAcc * 0.5;
+        if (Math.abs(area) < 1e-8) {
+            let avgX = 0;
+            let avgY = 0;
+            for (const pt of pts) {
+                avgX += pt.x;
+                avgY += pt.y;
+            }
+            const inv = 1 / pts.length;
+            return { x: avgX * inv, y: avgY * inv };
+        }
+        const inv6A = 1 / (6 * area);
+        return { x: cxAcc * inv6A, y: cyAcc * inv6A };
     };
 
     const sqrDist = (a: Point, b: Point): number => {
@@ -2992,11 +3039,43 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 gInner.addChild(shadowContainer);
             }
 
+            const heatmapRef = state.heatmap;
+            const heatmapRadius = heatmapRef ? Math.max(200, (heatmapRef as any)?.rUnit || 3000) : null;
+            const heatmapCenter = (config as any).zoningModel.cityCenter;
+            const tilePatternInfo = centralTilePattern.current;
+
             blockWorldPaths.forEach((worldPts: Point[]) => {
+                const centroidWorld = polygonCentroid(worldPts);
+                const insideHeatmapRadius = !!(
+                    tilePatternInfo &&
+                    heatmapRadius !== null &&
+                    centroidWorld &&
+                    Math.hypot(centroidWorld.x - heatmapCenter.x, centroidWorld.y - heatmapCenter.y) <= heatmapRadius
+                );
                 const points = worldPts.map(p => worldToIso(p));
                 if (points.length > 2) {
                     const useTex = !!(config as any).render.blockInteriorUseTexture && interiorTexture;
-                    if (useTex) {
+                    if (insideHeatmapRadius) {
+                        try {
+                            const { texture, width, height } = tilePatternInfo!;
+                            const matrix = new PIXI.Matrix();
+                            const scale = (config as any).render.blockInteriorTextureScale || 1.0;
+                            const alpha = (config as any).render.blockInteriorTextureAlpha ?? 1.0;
+                            const isoCentroid = centroidWorld ? worldToIso(centroidWorld) : null;
+                            const scaledWidth = width * (scale || 1);
+                            const scaledHeight = height * (scale || 1);
+                            if (scale !== 1) matrix.scale(scale, scale);
+                            if (isoCentroid) {
+                                const offsetX = scaledWidth > 0 ? ((isoCentroid.x % scaledWidth) + scaledWidth) % scaledWidth : 0;
+                                const offsetY = scaledHeight > 0 ? ((isoCentroid.y % scaledHeight) + scaledHeight) % scaledHeight : 0;
+                                matrix.translate(offsetX, offsetY);
+                            }
+                            gInner.beginTextureFill({ texture, alpha, matrix });
+                            gInner.tint = 0xFFFFFF;
+                        } catch (e) {
+                            gInner.beginFill(0x7A7A7A);
+                        }
+                    } else if (useTex) {
                         try {
                             const scale = (config as any).render.blockInteriorTextureScale || 1.0;
                             const alpha = (config as any).render.blockInteriorTextureAlpha ?? 1.0;
