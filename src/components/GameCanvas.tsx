@@ -14,6 +14,7 @@ import MapStore from '../stores/MapStore';
 import type { Point } from '../generic_modules/math';
 import NoiseZoning from '../overlays/NoiseZoning';
 import { createGrassTexture } from '../overlays/grassTexture';
+import { createPavementTilesTexture } from '../overlays/pavementTexture';
 import Quadtree from '../lib/quadtree';
 import { CrackPatternAssignments, getCrackPatternById } from '../lib/crackPatterns';
 // ClipperLib (sem typings completos) - usar require para acessar classes
@@ -445,6 +446,29 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         return { x: invA * p.x + invC * p.y, y: invB * p.x + invD * p.y };
     };
 
+    const polygonCentroid = (pts: Point[]): Point => {
+        if (!pts.length) return { x: 0, y: 0 };
+        let signedArea = 0;
+        let cx = 0;
+        let cy = 0;
+        for (let i = 0; i < pts.length; i++) {
+            const p0 = pts[i];
+            const p1 = pts[(i + 1) % pts.length];
+            const cross = p0.x * p1.y - p1.x * p0.y;
+            signedArea += cross;
+            cx += (p0.x + p1.x) * cross;
+            cy += (p0.y + p1.y) * cross;
+        }
+        const area = signedArea * 0.5;
+        if (!isFinite(area) || Math.abs(area) < 1e-6) {
+            // fallback: simple average
+            const acc = pts.reduce((accum, cur) => ({ x: accum.x + cur.x, y: accum.y + cur.y }), { x: 0, y: 0 });
+            return { x: acc.x / pts.length, y: acc.y / pts.length };
+        }
+        const factor = 1 / (6 * area);
+        return { x: cx * factor, y: cy * factor };
+    };
+
     // Stable node key generator: snap coordinates to a small grid before stringifying.
     // This avoids accidental separate keys for points that should be considered the same
     // intersection due to floating point jitter. Grid size is configurable via
@@ -456,6 +480,14 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
 
     // Criar textura local de grama caso não venha por props
     const localGrassTexture = useRef<PIXI.Texture | null>(null);
+    const pavementTexture = useRef<PIXI.Texture | null>(null);
+    if (!pavementTexture.current && typeof document !== 'undefined') {
+        try {
+            pavementTexture.current = createPavementTilesTexture();
+        } catch (e) {
+            pavementTexture.current = null;
+        }
+    }
     if (!interiorTexture && !localGrassTexture.current && typeof document !== 'undefined') {
         try {
             localGrassTexture.current = createGrassTexture(512, 12345);
@@ -2992,24 +3024,48 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 gInner.addChild(shadowContainer);
             }
 
+            const heatmapData = state.heatmap;
+            const heatmapCenter = (config as any).zoningModel.cityCenter;
+            const heatmapRadius = heatmapData ? Math.max(200, (heatmapData as any).rUnit || 3000) : 0;
+
             blockWorldPaths.forEach((worldPts: Point[]) => {
                 const points = worldPts.map(p => worldToIso(p));
                 if (points.length > 2) {
-                    const useTex = !!(config as any).render.blockInteriorUseTexture && interiorTexture;
-                    if (useTex) {
+                    const blockCenter = polygonCentroid(worldPts);
+                    const insideHeatmapCore = !!heatmapData && Math.hypot(blockCenter.x - heatmapCenter.x, blockCenter.y - heatmapCenter.y) <= heatmapRadius;
+                    const usePavement = insideHeatmapCore && !!pavementTexture.current;
+                    let appliedFill = false;
+                    if (usePavement) {
                         try {
-                            const scale = (config as any).render.blockInteriorTextureScale || 1.0;
-                            const alpha = (config as any).render.blockInteriorTextureAlpha ?? 1.0;
-                            const tint = (config as any).render.blockInteriorTextureTint ?? 0xFFFFFF;
                             const matrix = new PIXI.Matrix();
-                            if (scale !== 1) matrix.scale(scale, scale);
-                            gInner.beginTextureFill({ texture: interiorTexture!, alpha, matrix });
-                            gInner.tint = tint;
+                            const scaleVal = (config as any).render.blockInteriorTextureScale || 1.0;
+                            if (scaleVal !== 1) matrix.scale(scaleVal, scaleVal);
+                            const alphaVal = (config as any).render.blockInteriorTextureAlpha ?? 1.0;
+                            gInner.beginTextureFill({ texture: pavementTexture.current!, alpha: alphaVal, matrix });
+                            gInner.tint = 0xFFFFFF;
+                            appliedFill = true;
                         } catch (e) {
-                            gInner.beginFill(0x4CAF50);
+                            appliedFill = false;
                         }
-                    } else {
-                        // fallback: usar textura procedural de grama se disponível
+                    }
+                    if (!appliedFill) {
+                        const useTex = !!(config as any).render.blockInteriorUseTexture && interiorTexture;
+                        if (useTex) {
+                            try {
+                                const scale = (config as any).render.blockInteriorTextureScale || 1.0;
+                                const alpha = (config as any).render.blockInteriorTextureAlpha ?? 1.0;
+                                const tint = (config as any).render.blockInteriorTextureTint ?? 0xFFFFFF;
+                                const matrix = new PIXI.Matrix();
+                                if (scale !== 1) matrix.scale(scale, scale);
+                                gInner.beginTextureFill({ texture: interiorTexture!, alpha, matrix });
+                                gInner.tint = tint;
+                                appliedFill = true;
+                            } catch (e) {
+                                appliedFill = false;
+                            }
+                        }
+                    }
+                    if (!appliedFill) {
                         const tex = interiorTexture || localGrassTexture.current;
                         if (tex) {
                             try {
@@ -3020,12 +3076,14 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                                 if (scale !== 1) matrix.scale(scale, scale);
                                 gInner.beginTextureFill({ texture: tex, alpha, matrix });
                                 gInner.tint = tint;
+                                appliedFill = true;
                             } catch (e) {
-                                gInner.beginFill(0x4CAF50);
+                                appliedFill = false;
                             }
-                        } else {
-                            gInner.beginFill(0x4CAF50); // fallback verde
                         }
+                    }
+                    if (!appliedFill) {
+                        gInner.beginFill(0x4CAF50);
                     }
                     gInner.drawPolygon(points);
                     gInner.endFill();
