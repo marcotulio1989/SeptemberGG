@@ -14,6 +14,7 @@ import MapStore from '../stores/MapStore';
 import type { Point } from '../generic_modules/math';
 import NoiseZoning from '../overlays/NoiseZoning';
 import { createGrassTexture } from '../overlays/grassTexture';
+import { generateIsometricTilePattern, getDefaultTileOptions, type TileGeneratorOptions } from '../lib/isometricTileGenerator';
 import Quadtree from '../lib/quadtree';
 import { CrackPatternAssignments, getCrackPatternById } from '../lib/crackPatterns';
 // ClipperLib (sem typings completos) - usar require para acessar classes
@@ -454,6 +455,218 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         return `${Math.round(p.x / snap)}:${Math.round(p.y / snap)}`;
     };
 
+    interface CentralTilePatternCache {
+        texture: PIXI.Texture;
+        width: number;
+        height: number;
+        key: string;
+    }
+
+    const centralTilePattern = useRef<CentralTilePatternCache | null>(null);
+
+    const defaultTileOptions = getDefaultTileOptions();
+    const renderCfg = ((config as any) ?? {}).render ?? {};
+    const centralTileCfg = renderCfg.centralTilePattern ?? {};
+    const centralTileEnabled = centralTileCfg.enabled !== false;
+
+    const toHexColorString = (value: unknown, fallback: string): string => {
+        if (typeof value === 'string' && value.trim()) {
+            const trimmed = value.trim();
+            if (/^#?[0-9a-f]{3}$/i.test(trimmed)) {
+                const hex = trimmed.startsWith('#') ? trimmed.slice(1) : trimmed;
+                return `#${hex}`;
+            }
+            if (/^#?[0-9a-f]{6}$/i.test(trimmed)) {
+                return trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
+            }
+        }
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            const hex = (value >>> 0).toString(16).padStart(6, '0');
+            return `#${hex}`;
+        }
+        return fallback;
+    };
+
+    const toCanvasColor = (value: unknown, fallback: string | null): string | null => {
+        if (value === null) return null;
+        if (typeof value === 'string' && value.trim()) return value.trim();
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            return `#${(value >>> 0).toString(16).padStart(6, '0')}`;
+        }
+        return fallback;
+    };
+
+    const clamp01 = (v: number, fallback: number) => {
+        if (!Number.isFinite(v)) return fallback;
+        return Math.min(1, Math.max(0, v));
+    };
+
+    const toFiniteNumber = (value: unknown, fallback: number, opts?: { min?: number; max?: number; allowZero?: boolean }) => {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return fallback;
+        const min = opts?.min;
+        const max = opts?.max;
+        let result = n;
+        if (min !== undefined && result < min) result = min;
+        if (max !== undefined && result > max) result = max;
+        if (result === 0 && opts?.allowZero !== true) {
+            return fallback;
+        }
+        return result;
+    };
+
+    const normalizeScale = (value: unknown, fallback: number) => {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return fallback;
+        if (Math.abs(n) < 1e-4) return fallback;
+        return n;
+    };
+
+    const toFiniteInt = (value: unknown, fallback: number, opts?: { min?: number; max?: number }) => {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return fallback;
+        const min = opts?.min;
+        const max = opts?.max;
+        let result = Math.floor(n);
+        if (min !== undefined && result < min) result = min;
+        if (max !== undefined && result > max) result = max;
+        return result;
+    };
+
+    const generatorOptions: TileGeneratorOptions = {
+        tileWidth: toFiniteInt(centralTileCfg.tileWidth, defaultTileOptions.tileWidth, { min: 16 }),
+        tileHeight: toFiniteInt(centralTileCfg.tileHeight, defaultTileOptions.tileHeight, { min: 16 }),
+        seedCount: toFiniteInt(centralTileCfg.seedCount, defaultTileOptions.seedCount, { min: 30 }),
+        damageProbability: clamp01(
+            typeof centralTileCfg.damageProbability === 'number'
+                ? centralTileCfg.damageProbability
+                : defaultTileOptions.damageProbability,
+            defaultTileOptions.damageProbability,
+        ),
+        lateralFocus: clamp01(
+            typeof centralTileCfg.lateralFocus === 'number'
+                ? centralTileCfg.lateralFocus
+                : defaultTileOptions.lateralFocus,
+            defaultTileOptions.lateralFocus,
+        ),
+        lateralBias:
+            typeof centralTileCfg.lateralBias === 'number' && Number.isFinite(centralTileCfg.lateralBias)
+                ? centralTileCfg.lateralBias
+                : defaultTileOptions.lateralBias,
+        randomAmplitude: clamp01(
+            typeof centralTileCfg.randomAmplitude === 'number'
+                ? centralTileCfg.randomAmplitude
+                : defaultTileOptions.randomAmplitude,
+            defaultTileOptions.randomAmplitude,
+        ),
+        outlineColor: toHexColorString(centralTileCfg.outlineColor, defaultTileOptions.outlineColor),
+        fillColor: toHexColorString(centralTileCfg.fillColor, defaultTileOptions.fillColor),
+        crackColor: toHexColorString(centralTileCfg.crackColor, defaultTileOptions.crackColor),
+        sideColor: toHexColorString(centralTileCfg.sideColor, defaultTileOptions.sideColor),
+        thickness: toFiniteInt(centralTileCfg.thickness, defaultTileOptions.thickness, { min: 0 }),
+        seedPosition: toFiniteInt(centralTileCfg.seedPosition, defaultTileOptions.seedPosition),
+        seedDamage: toFiniteInt(centralTileCfg.seedDamage, defaultTileOptions.seedDamage),
+        backgroundColor: undefined,
+    };
+
+    const backgroundColor = toCanvasColor(
+        centralTileCfg.backgroundColor,
+        centralTileCfg.backgroundColor === undefined ? generatorOptions.fillColor : null,
+    );
+
+    const patternKeyData = {
+        ...generatorOptions,
+        backgroundColor,
+    };
+
+    const tilePatternKey = centralTileEnabled ? JSON.stringify(patternKeyData) : 'disabled';
+
+    const fallbackScale = normalizeScale(renderCfg.blockInteriorTextureScale, 1);
+    const resolvedScaleX =
+        centralTileCfg.textureScaleX ??
+        centralTileCfg.scaleX ??
+        centralTileCfg.textureScale ??
+        centralTileCfg.scale ??
+        fallbackScale;
+    const resolvedScaleY =
+        centralTileCfg.textureScaleY ??
+        centralTileCfg.scaleY ??
+        centralTileCfg.textureScale ??
+        centralTileCfg.scale ??
+        resolvedScaleX;
+    const centralTileScaleX = normalizeScale(resolvedScaleX, fallbackScale);
+    const centralTileScaleY = normalizeScale(resolvedScaleY, centralTileScaleX);
+
+    const fallbackAlpha = clamp01(
+        typeof renderCfg.blockInteriorTextureAlpha === 'number'
+            ? renderCfg.blockInteriorTextureAlpha
+            : 1,
+        1,
+    );
+    const resolvedAlpha =
+        typeof centralTileCfg.alpha === 'number'
+            ? centralTileCfg.alpha
+            : typeof centralTileCfg.textureAlpha === 'number'
+                ? centralTileCfg.textureAlpha
+                : fallbackAlpha;
+    const centralTileAlpha = clamp01(resolvedAlpha, fallbackAlpha);
+
+    const fallbackTint =
+        typeof renderCfg.blockInteriorTextureTint === 'number'
+            ? (renderCfg.blockInteriorTextureTint >>> 0)
+            : 0xFFFFFF;
+    const centralTileTint =
+        typeof centralTileCfg.tint === 'number'
+            ? (centralTileCfg.tint >>> 0)
+            : typeof centralTileCfg.textureTint === 'number'
+                ? (centralTileCfg.textureTint >>> 0)
+                : fallbackTint;
+
+    const centralTileOffsetX = toFiniteNumber(
+        centralTileCfg.offsetXPx ?? centralTileCfg.offsetX ?? 0,
+        0,
+        { allowZero: true },
+    );
+    const centralTileOffsetY = toFiniteNumber(
+        centralTileCfg.offsetYPx ?? centralTileCfg.offsetY ?? 0,
+        0,
+        { allowZero: true },
+    );
+
+    if (typeof document !== 'undefined') {
+        if (!centralTileEnabled) {
+            if (centralTilePattern.current) {
+                try { centralTilePattern.current.texture.destroy(true); } catch (e) {}
+            }
+            centralTilePattern.current = null;
+        } else if (!centralTilePattern.current || centralTilePattern.current.key !== tilePatternKey) {
+            try {
+                const canvas = generateIsometricTilePattern({ ...generatorOptions, backgroundColor });
+                if (canvas) {
+                    const texture = PIXI.Texture.from(canvas);
+                    if (texture.baseTexture) {
+                        try { texture.baseTexture.wrapMode = PIXI.WRAP_MODES.REPEAT; } catch (e) {}
+                        try { texture.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR; } catch (e) {}
+                        try { texture.baseTexture.mipmap = PIXI.MIPMAP_MODES.OFF; } catch (e) {}
+                    }
+                    if (centralTilePattern.current) {
+                        try { centralTilePattern.current.texture.destroy(true); } catch (e) {}
+                    }
+                    centralTilePattern.current = {
+                        texture,
+                        width: canvas.width,
+                        height: canvas.height,
+                        key: tilePatternKey,
+                    };
+                } else {
+                    centralTilePattern.current = null;
+                }
+            } catch (e) {
+                centralTilePattern.current = null;
+            }
+        }
+    }
+
     // Criar textura local de grama caso não venha por props
     const localGrassTexture = useRef<PIXI.Texture | null>(null);
     if (!interiorTexture && !localGrassTexture.current && typeof document !== 'undefined') {
@@ -686,17 +899,45 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         if (polygon.vertices.length > 0) {
             const firstVertex = worldToIso(polygon.vertices[0]);
             g.moveTo(firstVertex.x, firstVertex.y);
-            
+
             for (let i = 1; i < polygon.vertices.length; i++) {
                 const vertex = worldToIso(polygon.vertices[i]);
                 g.lineTo(vertex.x, vertex.y);
             }
-            
+
             g.closePath();
         }
-        
+
         g.endFill();
         return g;
+    };
+
+    const polygonCentroid = (pts: Point[]): Point | null => {
+        if (!pts || pts.length === 0) return null;
+        let areaAcc = 0;
+        let cxAcc = 0;
+        let cyAcc = 0;
+        for (let i = 0; i < pts.length; i++) {
+            const p0 = pts[i];
+            const p1 = pts[(i + 1) % pts.length];
+            const cross = p0.x * p1.y - p1.x * p0.y;
+            areaAcc += cross;
+            cxAcc += (p0.x + p1.x) * cross;
+            cyAcc += (p0.y + p1.y) * cross;
+        }
+        const area = areaAcc * 0.5;
+        if (Math.abs(area) < 1e-8) {
+            let avgX = 0;
+            let avgY = 0;
+            for (const pt of pts) {
+                avgX += pt.x;
+                avgY += pt.y;
+            }
+            const inv = 1 / pts.length;
+            return { x: avgX * inv, y: avgY * inv };
+        }
+        const inv6A = 1 / (6 * area);
+        return { x: cxAcc * inv6A, y: cyAcc * inv6A };
     };
 
     const sqrDist = (a: Point, b: Point): number => {
@@ -2992,24 +3233,74 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 gInner.addChild(shadowContainer);
             }
 
+            const heatmapRef = state.heatmap;
+            const heatmapRadius = heatmapRef ? Math.max(200, (heatmapRef as any)?.rUnit || 3000) : null;
+            const heatmapCenter = (config as any).zoningModel.cityCenter;
+            const tilePatternInfo = centralTilePattern.current;
+
             blockWorldPaths.forEach((worldPts: Point[]) => {
+                const centroidWorld = polygonCentroid(worldPts);
+                const insideHeatmapRadius = !!(
+                    tilePatternInfo &&
+                    heatmapRadius !== null &&
+                    centroidWorld &&
+                    Math.hypot(centroidWorld.x - heatmapCenter.x, centroidWorld.y - heatmapCenter.y) <= heatmapRadius
+                );
                 const points = worldPts.map(p => worldToIso(p));
                 if (points.length > 2) {
                     const useTex = !!(config as any).render.blockInteriorUseTexture && interiorTexture;
-                    if (useTex) {
+                    let fillMode: 'texture' | 'solid' | null = null;
+                    let fillTexture: PIXI.Texture | null = null;
+                    let fillMatrix: PIXI.Matrix | null = null;
+                    let fillAlpha = 1.0;
+                    let fillTint = 0xFFFFFF;
+                    let solidColor = 0x4CAF50;
+
+                    if (!fillMode && insideHeatmapRadius && centralTileEnabled && tilePatternInfo) {
+                        try {
+                            const { texture, width, height } = tilePatternInfo;
+                            const matrix = new PIXI.Matrix();
+                            const scaleX = centralTileScaleX;
+                            const scaleY = centralTileScaleY;
+                            if (scaleX !== 1 || scaleY !== 1) matrix.scale(scaleX, scaleY);
+                            const isoCentroid = centroidWorld ? worldToIso(centroidWorld) : null;
+                            const scaledWidth = width * Math.max(Math.abs(scaleX), 1e-3);
+                            const scaledHeight = height * Math.max(Math.abs(scaleY), 1e-3);
+                            if (isoCentroid) {
+                                const offsetX = scaledWidth > 0 ? ((isoCentroid.x % scaledWidth) + scaledWidth) % scaledWidth : 0;
+                                const offsetY = scaledHeight > 0 ? ((isoCentroid.y % scaledHeight) + scaledHeight) % scaledHeight : 0;
+                                matrix.translate(offsetX + centralTileOffsetX, offsetY + centralTileOffsetY);
+                            } else if (centralTileOffsetX !== 0 || centralTileOffsetY !== 0) {
+                                matrix.translate(centralTileOffsetX, centralTileOffsetY);
+                            }
+                            fillMode = 'texture';
+                            fillTexture = texture;
+                            fillMatrix = matrix;
+                            fillAlpha = centralTileAlpha;
+                            fillTint = centralTileTint;
+                        } catch (e) {
+                            fillMode = null;
+                        }
+                    }
+
+                    if (!fillMode && useTex) {
                         try {
                             const scale = (config as any).render.blockInteriorTextureScale || 1.0;
                             const alpha = (config as any).render.blockInteriorTextureAlpha ?? 1.0;
                             const tint = (config as any).render.blockInteriorTextureTint ?? 0xFFFFFF;
                             const matrix = new PIXI.Matrix();
                             if (scale !== 1) matrix.scale(scale, scale);
-                            gInner.beginTextureFill({ texture: interiorTexture!, alpha, matrix });
-                            gInner.tint = tint;
+                            fillMode = 'texture';
+                            fillTexture = interiorTexture!;
+                            fillMatrix = matrix;
+                            fillAlpha = alpha;
+                            fillTint = tint;
                         } catch (e) {
-                            gInner.beginFill(0x4CAF50);
+                            fillMode = null;
                         }
-                    } else {
-                        // fallback: usar textura procedural de grama se disponível
+                    }
+
+                    if (!fillMode) {
                         const tex = interiorTexture || localGrassTexture.current;
                         if (tex) {
                             try {
@@ -3018,17 +3309,34 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                                 const tint = (config as any).render.blockInteriorTextureTint ?? 0xFFFFFF;
                                 const matrix = new PIXI.Matrix();
                                 if (scale !== 1) matrix.scale(scale, scale);
-                                gInner.beginTextureFill({ texture: tex, alpha, matrix });
-                                gInner.tint = tint;
+                                fillMode = 'texture';
+                                fillTexture = tex;
+                                fillMatrix = matrix;
+                                fillAlpha = alpha;
+                                fillTint = tint;
                             } catch (e) {
-                                gInner.beginFill(0x4CAF50);
+                                fillMode = null;
                             }
-                        } else {
-                            gInner.beginFill(0x4CAF50); // fallback verde
                         }
                     }
-                    gInner.drawPolygon(points);
-                    gInner.endFill();
+
+                    if (!fillMode) {
+                        fillMode = 'solid';
+                        solidColor = 0x4CAF50;
+                    }
+
+                    if (fillMode === 'texture' && fillTexture && fillMatrix) {
+                        const prevTint = gInner.tint;
+                        gInner.beginTextureFill({ texture: fillTexture, alpha: fillAlpha, matrix: fillMatrix });
+                        gInner.tint = fillTint;
+                        gInner.drawPolygon(points);
+                        gInner.endFill();
+                        gInner.tint = prevTint;
+                    } else if (fillMode === 'solid') {
+                        gInner.beginFill(solidColor);
+                        gInner.drawPolygon(points);
+                        gInner.endFill();
+                    }
                     // Desenhar bandas perimetrais (faixas de 10 cm) se habilitado
                     if (rCfg.blockEdgeBandsEnabled) {
                         const thicknessM = rCfg.blockEdgeBandThicknessM ?? 2.5; // primeira banda
