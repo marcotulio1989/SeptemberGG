@@ -251,6 +251,59 @@ const App: React.FC = () => {
     const [texScale, setTexScale] = useState<number>(() => safeLoadNumber('blockInteriorTextureScale', (config as any).render.blockInteriorTextureScale || 1.0));
     const [texAlpha, setTexAlpha] = useState<number>(() => safeLoadNumber('blockInteriorTextureAlpha', (config as any).render.blockInteriorTextureAlpha ?? 1.0));
     const [texTint, setTexTint] = useState<string>(() => safeLoadString('blockInteriorTextureTint', '#' + (((config as any).render.blockInteriorTextureTint ?? 0xFFFFFF)).toString(16).padStart(6,'0')));
+    const tilePatternDefaults = ((config as any).render?.blockInteriorTilePattern) ?? {};
+    const [tileWidthPx, setTileWidthPx] = useState<number>(() => {
+        const raw = safeLoadNumber('blockInteriorTileWidthPx', tilePatternDefaults.tileWidthPx ?? 128);
+        const clamped = Math.max(16, Math.min(1024, Math.round(isFinite(raw) ? raw : 128)));
+        try { tilePatternDefaults.tileWidthPx = clamped; } catch (e) {}
+        return clamped;
+    });
+    const [tileHeightPx, setTileHeightPx] = useState<number>(() => {
+        const raw = safeLoadNumber('blockInteriorTileHeightPx', tilePatternDefaults.tileHeightPx ?? 64);
+        const clamped = Math.max(16, Math.min(1024, Math.round(isFinite(raw) ? raw : 64)));
+        try { tilePatternDefaults.tileHeightPx = clamped; } catch (e) {}
+        return clamped;
+    });
+    const [tilePatternScale, setTilePatternScale] = useState<number>(() => {
+        const raw = safeLoadNumber('blockInteriorTilePatternScale', (config as any).render.blockInteriorTilePatternScale ?? 1.0);
+        const sanitized = isFinite(raw) ? Math.max(0.05, Math.min(20, raw)) : 1.0;
+        try { (config as any).render.blockInteriorTilePatternScale = sanitized; } catch (e) {}
+        return sanitized;
+    });
+    const [tilePatternAlpha, setTilePatternAlpha] = useState<number>(() => {
+        const raw = safeLoadNumber('blockInteriorTilePatternAlpha', (config as any).render.blockInteriorTilePatternAlpha ?? 1.0);
+        const sanitized = isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 1.0;
+        try { (config as any).render.blockInteriorTilePatternAlpha = sanitized; } catch (e) {}
+        return sanitized;
+    });
+    const [tileOutlineColor, setTileOutlineColor] = useState<string>(() => {
+        const fallback = typeof tilePatternDefaults.outlineColor === 'string' ? tilePatternDefaults.outlineColor : '#000000';
+        const initial = safeLoadString('blockInteriorTileOutlineColor', fallback || '#000000');
+        const normalized = initial.startsWith('#') ? initial : `#${initial}`;
+        try { tilePatternDefaults.outlineColor = normalized; } catch (e) {}
+        return normalized;
+    });
+    const [tileFillColor, setTileFillColor] = useState<string>(() => {
+        const fallback = typeof tilePatternDefaults.fillColor === 'string' ? tilePatternDefaults.fillColor : '#606060';
+        const initial = safeLoadString('blockInteriorTileFillColor', fallback || '#606060');
+        const normalized = initial.startsWith('#') ? initial : `#${initial}`;
+        try { tilePatternDefaults.fillColor = normalized; } catch (e) {}
+        return normalized;
+    });
+    const [tileCrackColor, setTileCrackColor] = useState<string>(() => {
+        const fallback = typeof tilePatternDefaults.crackColor === 'string' ? tilePatternDefaults.crackColor : '#333333';
+        const initial = safeLoadString('blockInteriorTileCrackColor', fallback || '#333333');
+        const normalized = initial.startsWith('#') ? initial : `#${initial}`;
+        try { tilePatternDefaults.crackColor = normalized; } catch (e) {}
+        return normalized;
+    });
+    const [tileSideColor, setTileSideColor] = useState<string>(() => {
+        const fallback = typeof tilePatternDefaults.sideColor === 'string' ? tilePatternDefaults.sideColor : '#222222';
+        const initial = safeLoadString('blockInteriorTileSideColor', fallback || '#222222');
+        const normalized = initial.startsWith('#') ? initial : `#${initial}`;
+        try { tilePatternDefaults.sideColor = normalized; } catch (e) {}
+        return normalized;
+    });
     const [crossfadeEnabled, setCrossfadeEnabled] = useState<boolean>(true);
     const [crossfadeMs, setCrossfadeMs] = useState<number>(500);
     const [edgeScale, setEdgeScale] = useState<number>(() => safeLoadNumber('edgeScale', (config as any).render.edgeTextureScale || 1.0));
@@ -623,6 +676,42 @@ const App: React.FC = () => {
         try { (config as any).render.blockInteriorTextureTint = parseInt(texTint.slice(1),16); } catch (e) {}
         try { localStorage.setItem('blockInteriorTextureTint', texTint); } catch (e) {}
     }, [texTint]);
+    React.useEffect(() => {
+        const sanitized = Math.max(16, Math.min(1024, Math.round(tileWidthPx)));
+        try { (config as any).render.blockInteriorTilePattern.tileWidthPx = sanitized; } catch (e) {}
+        try { localStorage.setItem('blockInteriorTileWidthPx', String(sanitized)); } catch (e) {}
+    }, [tileWidthPx]);
+    React.useEffect(() => {
+        const sanitized = Math.max(16, Math.min(1024, Math.round(tileHeightPx)));
+        try { (config as any).render.blockInteriorTilePattern.tileHeightPx = sanitized; } catch (e) {}
+        try { localStorage.setItem('blockInteriorTileHeightPx', String(sanitized)); } catch (e) {}
+    }, [tileHeightPx]);
+    React.useEffect(() => {
+        const sanitized = Math.max(0.05, Math.min(20, tilePatternScale));
+        try { (config as any).render.blockInteriorTilePatternScale = sanitized; } catch (e) {}
+        try { localStorage.setItem('blockInteriorTilePatternScale', String(sanitized)); } catch (e) {}
+    }, [tilePatternScale]);
+    React.useEffect(() => {
+        const sanitized = Math.max(0, Math.min(1, tilePatternAlpha));
+        try { (config as any).render.blockInteriorTilePatternAlpha = sanitized; } catch (e) {}
+        try { localStorage.setItem('blockInteriorTilePatternAlpha', String(sanitized)); } catch (e) {}
+    }, [tilePatternAlpha]);
+    React.useEffect(() => {
+        try { (config as any).render.blockInteriorTilePattern.outlineColor = tileOutlineColor; } catch (e) {}
+        try { localStorage.setItem('blockInteriorTileOutlineColor', tileOutlineColor); } catch (e) {}
+    }, [tileOutlineColor]);
+    React.useEffect(() => {
+        try { (config as any).render.blockInteriorTilePattern.fillColor = tileFillColor; } catch (e) {}
+        try { localStorage.setItem('blockInteriorTileFillColor', tileFillColor); } catch (e) {}
+    }, [tileFillColor]);
+    React.useEffect(() => {
+        try { (config as any).render.blockInteriorTilePattern.crackColor = tileCrackColor; } catch (e) {}
+        try { localStorage.setItem('blockInteriorTileCrackColor', tileCrackColor); } catch (e) {}
+    }, [tileCrackColor]);
+    React.useEffect(() => {
+        try { (config as any).render.blockInteriorTilePattern.sideColor = tileSideColor; } catch (e) {}
+        try { localStorage.setItem('blockInteriorTileSideColor', tileSideColor); } catch (e) {}
+    }, [tileSideColor]);
 
     const handleEdgeClear = () => {
         setEdgeTexture(prev => {
@@ -1009,6 +1098,119 @@ const App: React.FC = () => {
                         <input type="checkbox" checked={crossfadeEnabled} onChange={(e)=>setCrossfadeEnabled(e.target.checked)} />
                         <label style={{ fontSize: 12 }}>Ms</label>
                         <input type="number" value={crossfadeMs} onChange={(e)=>setCrossfadeMs(parseInt(e.target.value)||500)} style={{ width: 80 }} />
+                    </div>
+                </div>
+                <div style={{ display: 'inline-block', marginLeft: 12 }}>
+                    <label style={{ fontSize: 12, fontWeight: 600, marginRight: 6 }}>Tiles Procedurais (Centro)</label>
+                    <div style={{ display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginLeft: 8 }}>
+                        <label style={{ fontSize: 12 }}>Tile W</label>
+                        <input
+                            type="number"
+                            min={16}
+                            max={1024}
+                            step={2}
+                            value={tileWidthPx}
+                            onChange={(e)=>{
+                                const parsed = parseNumberInput(e.target.value);
+                                const sanitized = Math.max(16, Math.min(1024, Math.round(isFinite(parsed) ? parsed : tileWidthPx)));
+                                setTileWidthPx(sanitized);
+                                try { (config as any).render.blockInteriorTilePattern.tileWidthPx = sanitized; } catch (err) {}
+                                forceRerender();
+                            }}
+                            style={{ width: 72 }}
+                        />
+                        <label style={{ fontSize: 12 }}>Tile H</label>
+                        <input
+                            type="number"
+                            min={16}
+                            max={1024}
+                            step={2}
+                            value={tileHeightPx}
+                            onChange={(e)=>{
+                                const parsed = parseNumberInput(e.target.value);
+                                const sanitized = Math.max(16, Math.min(1024, Math.round(isFinite(parsed) ? parsed : tileHeightPx)));
+                                setTileHeightPx(sanitized);
+                                try { (config as any).render.blockInteriorTilePattern.tileHeightPx = sanitized; } catch (err) {}
+                                forceRerender();
+                            }}
+                            style={{ width: 72 }}
+                        />
+                        <label style={{ fontSize: 12 }}>Pattern Scale</label>
+                        <input
+                            type="number"
+                            min={0.05}
+                            max={20}
+                            step={0.05}
+                            value={tilePatternScale}
+                            onChange={(e)=>{
+                                const parsed = parseNumberInput(e.target.value);
+                                const sanitized = Math.max(0.05, Math.min(20, isFinite(parsed) ? parsed : tilePatternScale));
+                                setTilePatternScale(sanitized);
+                                try { (config as any).render.blockInteriorTilePatternScale = sanitized; } catch (err) {}
+                                forceRerender();
+                            }}
+                            style={{ width: 72 }}
+                        />
+                        <label style={{ fontSize: 12 }}>Alpha</label>
+                        <input
+                            type="number"
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            value={tilePatternAlpha}
+                            onChange={(e)=>{
+                                const parsed = parseNumberInput(e.target.value);
+                                const sanitized = Math.max(0, Math.min(1, isFinite(parsed) ? parsed : tilePatternAlpha));
+                                setTilePatternAlpha(sanitized);
+                                try { (config as any).render.blockInteriorTilePatternAlpha = sanitized; } catch (err) {}
+                                forceRerender();
+                            }}
+                            style={{ width: 72 }}
+                        />
+                        <label style={{ fontSize: 12 }}>Outline</label>
+                        <input
+                            type="color"
+                            value={tileOutlineColor}
+                            onChange={(e)=>{
+                                const value = e.target.value;
+                                setTileOutlineColor(value);
+                                try { (config as any).render.blockInteriorTilePattern.outlineColor = value; } catch (err) {}
+                                forceRerender();
+                            }}
+                        />
+                        <label style={{ fontSize: 12 }}>Fill</label>
+                        <input
+                            type="color"
+                            value={tileFillColor}
+                            onChange={(e)=>{
+                                const value = e.target.value;
+                                setTileFillColor(value);
+                                try { (config as any).render.blockInteriorTilePattern.fillColor = value; } catch (err) {}
+                                forceRerender();
+                            }}
+                        />
+                        <label style={{ fontSize: 12 }}>Crack</label>
+                        <input
+                            type="color"
+                            value={tileCrackColor}
+                            onChange={(e)=>{
+                                const value = e.target.value;
+                                setTileCrackColor(value);
+                                try { (config as any).render.blockInteriorTilePattern.crackColor = value; } catch (err) {}
+                                forceRerender();
+                            }}
+                        />
+                        <label style={{ fontSize: 12 }}>Side</label>
+                        <input
+                            type="color"
+                            value={tileSideColor}
+                            onChange={(e)=>{
+                                const value = e.target.value;
+                                setTileSideColor(value);
+                                try { (config as any).render.blockInteriorTilePattern.sideColor = value; } catch (err) {}
+                                forceRerender();
+                            }}
+                        />
                     </div>
                 </div>
                 {/* Painel para textura dos marcadores (será usada por cada retângulo de faixa) */}
