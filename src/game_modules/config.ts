@@ -419,6 +419,9 @@ export const config = {
     blockInteriorTextureAlpha: 1.0,
     // Escala aplicada na Matrix do beginTextureFill (1.0 = tamanho original). Valores maiores => textura "mais grossa".
     blockInteriorTextureScale: 1.0,
+    // Textura procedural aplicada nos quarteirões dentro do raio do heatmap de população
+    heatmapTileTextureScale: 0.5,
+    heatmapTileTextureAlpha: 1.0,
     },
     gameLogic: {
         SELECT_PAN_THRESHOLD: 50, // px
