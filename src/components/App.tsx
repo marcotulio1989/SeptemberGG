@@ -1040,6 +1040,17 @@ const App: React.FC = () => {
                                 forceRerender();
                             }} />
                         </label>
+                        {/* Segmentação (juntas) ao longo das bordas */}
+                        <label style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <input type="checkbox" checked={!!(config as any).render.blockEdgeBandSegmentsEnabled}
+                                onChange={(e)=>{ (config as any).render.blockEdgeBandSegmentsEnabled = e.target.checked; forceRerender(); }} /> Segmentar
+                        </label>
+                        <label style={{ fontSize: 11 }}>
+                            Segmento (m):
+                            <input type="number" min={0.2} max={10} step={0.1} style={{ width: 60, marginLeft: 4 }}
+                                value={Number(((config as any).render.blockEdgeBandSegmentLenM ?? 1.0).toFixed(1))}
+                                onChange={(e)=>{ (config as any).render.blockEdgeBandSegmentLenM = Math.max(0.1, parseFloat(e.target.value)||1.0); forceRerender(); }} />
+                        </label>
                     </div>
                 </div>
                 {/* Painel 'Textura Quarteirão' - permitir carregar texturas personalizadas */}

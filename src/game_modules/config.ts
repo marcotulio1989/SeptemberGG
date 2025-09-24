@@ -394,6 +394,18 @@ export const config = {
     blockEdgeBandVerticalCaps: true,
     // Nova flag: força apenas a PRIMEIRA banda (mais clara) a seguir extrusão isométrica normal mesmo quando verticalCaps=true
     blockEdgeBandPrimaryIsometric: true,
+    // ================== Segmentação das bordas (juntas) ==================
+    // Quando habilitado, desenha juntas perpendiculares à faixa em intervalos iguais
+    // ao longo do perímetro visível do quarteirão (em metros)
+    blockEdgeBandSegmentsEnabled: true,
+    blockEdgeBandSegmentLenM: 1.0,
+    // Aparência das juntas (linhas)
+    blockEdgeBandJointStrokePx: 1,
+    // Se definido, usa esta cor; caso contrário derivará do contorno da rua ou cor da banda
+    // blockEdgeBandJointColor: 0x505050,
+    blockEdgeBandJointAlpha: 0.9,
+    // Desenhar linhas de junta (além da segmentação por polígonos). Desligado por padrão.
+    blockEdgeBandDrawJointLines: false,
     // Caso desejado no futuro: permitir estilos diferentes por face (N,S,L,O)
     // blockEdgeBandFaceStyles: { N:{color:0x..}, ... }
     // ================== Sombras de Quarteirões ==================
