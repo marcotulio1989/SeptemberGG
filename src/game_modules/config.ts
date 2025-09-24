@@ -419,6 +419,12 @@ export const config = {
     blockInteriorTextureAlpha: 1.0,
     // Escala aplicada na Matrix do beginTextureFill (1.0 = tamanho original). Valores maiores => textura "mais grossa".
     blockInteriorTextureScale: 1.0,
+    // ================== Textura Calçada (Região Central) ==================
+    // Textura opcional aplicada na região central (heatmap) representando calçadas/pisos especiais.
+    sidewalkUseTexture: false,
+    sidewalkTextureTint: 0xFFFFFF,
+    sidewalkTextureAlpha: 1.0,
+    sidewalkTextureScale: 1.0,
     },
     gameLogic: {
         SELECT_PAN_THRESHOLD: 50, // px
