@@ -14,7 +14,6 @@ import MapStore from '../stores/MapStore';
 import type { Point } from '../generic_modules/math';
 import NoiseZoning from '../overlays/NoiseZoning';
 import { createGrassTexture } from '../overlays/grassTexture';
-import { generateIsometricTilePattern } from '../lib/isometricTileGenerator';
 import Quadtree from '../lib/quadtree';
 import { CrackPatternAssignments, getCrackPatternById } from '../lib/crackPatterns';
 // ClipperLib (sem typings completos) - usar require para acessar classes
@@ -312,6 +311,7 @@ const generateRoadCrackSprite = ({
 
 interface GameCanvasProps {
     interiorTexture?: PIXI.Texture | null;
+    pavementTexture?: PIXI.Texture | null;
 }
 
 // NOVO: refs adicionais para camadas de ruas
@@ -329,7 +329,7 @@ interface GameCanvasPropsInternal extends GameCanvasProps {
     roadLaneAlpha?: number;
 }
 
-const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interiorTextureScale, interiorTextureAlpha, interiorTextureTint, crossfadeEnabled, crossfadeMs, edgeTexture, edgeScale, edgeAlpha, roadLaneTexture, roadLaneScale, roadLaneAlpha }) => {
+const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, pavementTexture, interiorTextureScale, interiorTextureAlpha, interiorTextureTint, crossfadeEnabled, crossfadeMs, edgeTexture, edgeScale, edgeAlpha, roadLaneTexture, roadLaneScale, roadLaneAlpha }) => {
     const canvasContainerRef = useRef<HTMLDivElement>(null);
     const pixiRenderer = useRef<PIXI.IRenderer<PIXI.ICanvas> | null>(null);
     const stage = useRef<PIXI.Container | null>(null);
@@ -455,23 +455,24 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         return `${Math.round(p.x / snap)}:${Math.round(p.y / snap)}`;
     };
 
-    const centralTilePattern = useRef<{ texture: PIXI.Texture; width: number; height: number } | null>(null);
-    if (!centralTilePattern.current && typeof document !== 'undefined') {
-        try {
-            const canvas = generateIsometricTilePattern();
-            if (canvas) {
-                const texture = PIXI.Texture.from(canvas);
-                if (texture.baseTexture) {
-                    try { texture.baseTexture.wrapMode = PIXI.WRAP_MODES.REPEAT; } catch (e) {}
-                    try { texture.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR; } catch (e) {}
-                    try { texture.baseTexture.mipmap = PIXI.MIPMAP_MODES.OFF; } catch (e) {}
-                }
-                centralTilePattern.current = { texture, width: canvas.width, height: canvas.height };
-            }
-        } catch (e) {
-            centralTilePattern.current = null;
+    const pavementPattern = useRef<{ texture: PIXI.Texture; width: number; height: number } | null>(null);
+    React.useEffect(() => {
+        if (!pavementTexture) {
+            pavementPattern.current = null;
+            return;
         }
-    }
+        try {
+            if ((pavementTexture as any).baseTexture) {
+                try { (pavementTexture as any).baseTexture.wrapMode = PIXI.WRAP_MODES.REPEAT; } catch (e) {}
+                try { (pavementTexture as any).baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR; } catch (e) {}
+                try { (pavementTexture as any).baseTexture.mipmap = PIXI.MIPMAP_MODES.OFF; } catch (e) {}
+            }
+        } catch (e) {}
+        const baseTex: any = (pavementTexture as any).baseTexture || null;
+        const width = Math.max(1, Math.floor((baseTex && (baseTex.realWidth || baseTex.width)) || pavementTexture.width || 1));
+        const height = Math.max(1, Math.floor((baseTex && (baseTex.realHeight || baseTex.height)) || pavementTexture.height || 1));
+        pavementPattern.current = { texture: pavementTexture, width, height };
+    }, [pavementTexture]);
 
     // Criar textura local de grama caso não venha por props
     const localGrassTexture = useRef<PIXI.Texture | null>(null);
@@ -3042,7 +3043,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             const heatmapRef = state.heatmap;
             const heatmapRadius = heatmapRef ? Math.max(200, (heatmapRef as any)?.rUnit || 3000) : null;
             const heatmapCenter = (config as any).zoningModel.cityCenter;
-            const tilePatternInfo = centralTilePattern.current;
+            const tilePatternInfo = pavementPattern.current;
 
             blockWorldPaths.forEach((worldPts: Point[]) => {
                 const centroidWorld = polygonCentroid(worldPts);
