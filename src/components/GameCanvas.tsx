@@ -14,6 +14,7 @@ import MapStore from '../stores/MapStore';
 import type { Point } from '../generic_modules/math';
 import NoiseZoning from '../overlays/NoiseZoning';
 import { createGrassTexture } from '../overlays/grassTexture';
+import { createSidewalkTilesTexture } from '../overlays/sidewalkTilesTexture';
 import Quadtree from '../lib/quadtree';
 import { CrackPatternAssignments, getCrackPatternById } from '../lib/crackPatterns';
 // ClipperLib (sem typings completos) - usar require para acessar classes
@@ -456,10 +457,16 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
 
     // Criar textura local de grama caso não venha por props
     const localGrassTexture = useRef<PIXI.Texture | null>(null);
+    const sidewalkTexture = useRef<PIXI.Texture | null>(null);
     if (!interiorTexture && !localGrassTexture.current && typeof document !== 'undefined') {
         try {
             localGrassTexture.current = createGrassTexture(512, 12345);
         } catch (e) { localGrassTexture.current = null; }
+    }
+    if (!sidewalkTexture.current && typeof document !== 'undefined') {
+        try {
+            sidewalkTexture.current = createSidewalkTilesTexture();
+        } catch (e) { sidewalkTexture.current = null; }
     }
 
     // If an exterior/interior texture is supplied by the parent, prefer it globally by
@@ -686,17 +693,45 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         if (polygon.vertices.length > 0) {
             const firstVertex = worldToIso(polygon.vertices[0]);
             g.moveTo(firstVertex.x, firstVertex.y);
-            
+
             for (let i = 1; i < polygon.vertices.length; i++) {
                 const vertex = worldToIso(polygon.vertices[i]);
                 g.lineTo(vertex.x, vertex.y);
             }
-            
+
             g.closePath();
         }
-        
+
         g.endFill();
         return g;
+    };
+
+    const polygonCentroid = (points: Point[]): Point | null => {
+        if (!points.length) return null;
+        let areaAcc = 0;
+        let cxAcc = 0;
+        let cyAcc = 0;
+        for (let i = 0; i < points.length; i++) {
+            const p = points[i];
+            const q = points[(i + 1) % points.length];
+            const cross = p.x * q.y - q.x * p.y;
+            areaAcc += cross;
+            cxAcc += (p.x + q.x) * cross;
+            cyAcc += (p.y + q.y) * cross;
+        }
+        const area = areaAcc * 0.5;
+        if (Math.abs(area) < 1e-6) {
+            let sx = 0;
+            let sy = 0;
+            for (const pt of points) {
+                sx += pt.x;
+                sy += pt.y;
+            }
+            const inv = 1 / points.length;
+            return { x: sx * inv, y: sy * inv };
+        }
+        const invArea = 1 / (6 * area);
+        return { x: cxAcc * invArea, y: cyAcc * invArea };
     };
 
     const sqrDist = (a: Point, b: Point): number => {
@@ -2992,11 +3027,42 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 gInner.addChild(shadowContainer);
             }
 
+            const heatmapCenter = (config as any).zoningModel.cityCenter;
+            const heatmapRadius = state.heatmap ? Math.max(200, (state.heatmap as any)?.rUnit || 3000) : null;
+
             blockWorldPaths.forEach((worldPts: Point[]) => {
                 const points = worldPts.map(p => worldToIso(p));
                 if (points.length > 2) {
+                    const centroid = polygonCentroid(worldPts);
+                    const centroidInside = Boolean(
+                        heatmapRadius !== null &&
+                        centroid &&
+                        Math.hypot(centroid.x - heatmapCenter.x, centroid.y - heatmapCenter.y) <= heatmapRadius
+                    );
+                    const fullyInsideHeatmap = Boolean(
+                        centroidInside &&
+                        heatmapRadius !== null &&
+                        worldPts.length > 0 &&
+                        worldPts.every(pt => Math.hypot(pt.x - heatmapCenter.x, pt.y - heatmapCenter.y) <= heatmapRadius)
+                    );
+                    const walkwayTexAvailable = !!sidewalkTexture.current;
+                    const useWalkwayTexture = fullyInsideHeatmap && walkwayTexAvailable;
                     const useTex = !!(config as any).render.blockInteriorUseTexture && interiorTexture;
-                    if (useTex) {
+                    gInner.tint = 0xFFFFFF;
+                    if (useWalkwayTexture) {
+                        try {
+                            let scale = rCfg.sidewalkTextureScale;
+                            if (!Number.isFinite(scale) || scale === 0) scale = 1;
+                            const alpha = rCfg.sidewalkTextureAlpha ?? 1.0;
+                            const tint = rCfg.sidewalkTextureTint ?? 0xFFFFFF;
+                            const matrix = new PIXI.Matrix();
+                            if (scale !== 1) matrix.scale(scale, scale);
+                            gInner.beginTextureFill({ texture: sidewalkTexture.current!, alpha, matrix });
+                            gInner.tint = tint;
+                        } catch (e) {
+                            gInner.beginFill(0x757575);
+                        }
+                    } else if (useTex) {
                         try {
                             const scale = (config as any).render.blockInteriorTextureScale || 1.0;
                             const alpha = (config as any).render.blockInteriorTextureAlpha ?? 1.0;
