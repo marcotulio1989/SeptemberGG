@@ -14,6 +14,7 @@ import MapStore from '../stores/MapStore';
 import type { Point } from '../generic_modules/math';
 import NoiseZoning from '../overlays/NoiseZoning';
 import { createGrassTexture } from '../overlays/grassTexture';
+import { generateIsometricTileTexture } from '../overlays/isometricTiles';
 import Quadtree from '../lib/quadtree';
 import { CrackPatternAssignments, getCrackPatternById } from '../lib/crackPatterns';
 // ClipperLib (sem typings completos) - usar require para acessar classes
@@ -383,6 +384,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     // Two tiling sprites used for crossfade transitions between interior textures
     const blockInteriorSpriteA = useRef<PIXI.TilingSprite | null>(null);
     const blockInteriorSpriteB = useRef<PIXI.TilingSprite | null>(null);
+    const heatmapTileTexture = useRef<PIXI.Texture | null>(null);
     const activeSprite = useRef<'A'|'B'>('A');
 
     // Estado mutável central
@@ -461,6 +463,33 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             localGrassTexture.current = createGrassTexture(512, 12345);
         } catch (e) { localGrassTexture.current = null; }
     }
+
+    React.useEffect(() => {
+        if (typeof document === 'undefined') return;
+        try {
+            const texture = generateIsometricTileTexture({
+                cols: 2,
+                rows: 2,
+                tileWidth: 128,
+                tileHeight: 64,
+                thickness: 0,
+            });
+            if (texture) {
+                if (heatmapTileTexture.current && heatmapTileTexture.current !== texture) {
+                    try { heatmapTileTexture.current.destroy(true); } catch (e) {}
+                }
+                heatmapTileTexture.current = texture;
+            }
+        } catch (e) {
+            heatmapTileTexture.current = null;
+        }
+        return () => {
+            if (heatmapTileTexture.current) {
+                try { heatmapTileTexture.current.destroy(true); } catch (err) {}
+                heatmapTileTexture.current = null;
+            }
+        };
+    }, []);
 
     // If an exterior/interior texture is supplied by the parent, prefer it globally by
     // assigning it to localGrassTexture.current (so all fallback sites pick it up).
@@ -2992,39 +3021,73 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 gInner.addChild(shadowContainer);
             }
 
+            const heatmapCenter = (config as any).zoningModel.cityCenter;
+            const heatmapRadius = state.heatmap ? Math.max(200, (state.heatmap as any)?.rUnit || 3000) : 0;
+            const heatmapTexture = heatmapTileTexture.current;
+            const heatmapTileScale = Math.max(0.05, (config as any).render.heatmapTileTextureScale ?? 0.5);
+            const heatmapTileAlpha = (config as any).render.heatmapTileTextureAlpha ?? 1.0;
+            const applyHeatmapTiles = !!heatmapTexture && heatmapRadius > 0 && !!state.heatmap;
+
             blockWorldPaths.forEach((worldPts: Point[]) => {
                 const points = worldPts.map(p => worldToIso(p));
                 if (points.length > 2) {
-                    const useTex = !!(config as any).render.blockInteriorUseTexture && interiorTexture;
-                    if (useTex) {
-                        try {
-                            const scale = (config as any).render.blockInteriorTextureScale || 1.0;
-                            const alpha = (config as any).render.blockInteriorTextureAlpha ?? 1.0;
-                            const tint = (config as any).render.blockInteriorTextureTint ?? 0xFFFFFF;
-                            const matrix = new PIXI.Matrix();
-                            if (scale !== 1) matrix.scale(scale, scale);
-                            gInner.beginTextureFill({ texture: interiorTexture!, alpha, matrix });
-                            gInner.tint = tint;
-                        } catch (e) {
-                            gInner.beginFill(0x4CAF50);
+                    let usedFill = false;
+                    if (applyHeatmapTiles) {
+                        const centroid = worldPts.reduce((acc, pt) => {
+                            acc.x += pt.x;
+                            acc.y += pt.y;
+                            return acc;
+                        }, { x: 0, y: 0 });
+                        centroid.x /= worldPts.length;
+                        centroid.y /= worldPts.length;
+                        const dist = Math.hypot(centroid.x - heatmapCenter.x, centroid.y - heatmapCenter.y);
+                        if (dist <= heatmapRadius) {
+                            try {
+                                const matrix = new PIXI.Matrix();
+                                matrix.scale(heatmapTileScale, heatmapTileScale);
+                                gInner.tint = 0xFFFFFF;
+                                gInner.beginTextureFill({ texture: heatmapTexture!, alpha: heatmapTileAlpha, matrix });
+                                usedFill = true;
+                            } catch (e) {
+                                usedFill = false;
+                            }
                         }
-                    } else {
-                        // fallback: usar textura procedural de grama se disponível
-                        const tex = interiorTexture || localGrassTexture.current;
-                        if (tex) {
+                    }
+                    if (!usedFill) {
+                        const useTex = !!(config as any).render.blockInteriorUseTexture && interiorTexture;
+                        if (useTex) {
                             try {
                                 const scale = (config as any).render.blockInteriorTextureScale || 1.0;
                                 const alpha = (config as any).render.blockInteriorTextureAlpha ?? 1.0;
                                 const tint = (config as any).render.blockInteriorTextureTint ?? 0xFFFFFF;
                                 const matrix = new PIXI.Matrix();
                                 if (scale !== 1) matrix.scale(scale, scale);
-                                gInner.beginTextureFill({ texture: tex, alpha, matrix });
+                                gInner.beginTextureFill({ texture: interiorTexture!, alpha, matrix });
                                 gInner.tint = tint;
                             } catch (e) {
+                                gInner.tint = 0xFFFFFF;
                                 gInner.beginFill(0x4CAF50);
                             }
                         } else {
-                            gInner.beginFill(0x4CAF50); // fallback verde
+                            // fallback: usar textura procedural de grama se disponível
+                            const tex = interiorTexture || localGrassTexture.current;
+                            if (tex) {
+                                try {
+                                    const scale = (config as any).render.blockInteriorTextureScale || 1.0;
+                                    const alpha = (config as any).render.blockInteriorTextureAlpha ?? 1.0;
+                                    const tint = (config as any).render.blockInteriorTextureTint ?? 0xFFFFFF;
+                                    const matrix = new PIXI.Matrix();
+                                    if (scale !== 1) matrix.scale(scale, scale);
+                                    gInner.beginTextureFill({ texture: tex, alpha, matrix });
+                                    gInner.tint = tint;
+                                } catch (e) {
+                                    gInner.tint = 0xFFFFFF;
+                                    gInner.beginFill(0x4CAF50);
+                                }
+                            } else {
+                                gInner.tint = 0xFFFFFF;
+                                gInner.beginFill(0x4CAF50); // fallback verde
+                            }
                         }
                     }
                     gInner.drawPolygon(points);
