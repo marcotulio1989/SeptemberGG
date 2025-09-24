@@ -16,6 +16,7 @@ import NoiseZoning from '../overlays/NoiseZoning';
 import { createGrassTexture } from '../overlays/grassTexture';
 import Quadtree from '../lib/quadtree';
 import { CrackPatternAssignments, getCrackPatternById } from '../lib/crackPatterns';
+import { generateVoronoiCracks, VoronoiCrackParams } from '../lib/voronoiCracks';
 // ClipperLib (sem typings completos) - usar require para acessar classes
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const ClipperLib: any = require('clipper-lib');
@@ -39,13 +40,6 @@ const hashNumbers = (...values: number[]) => {
     return h >>> 0;
 };
 
-const createPRNG = (seed: number) => {
-    let s = (seed >>> 0) || 0x12345678;
-    return () => {
-        s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
-        return (s >>> 0) / 0x1_0000_0000;
-    };
-};
 
 interface RoadCrackSpriteData {
     buffer: Uint8Array;
@@ -103,18 +97,22 @@ const generateRoadCrackSprite = ({
     isoToWorld,
 }: RoadCrackParams): RoadCrackSpriteData | null => {
     if (!(length > 0) || !(width > 0)) return null;
+    
     const halfWidth = width * 0.5;
-    const rng = createPRNG(seed);
+    
+    // Calculate bounding box in isometric space
     const isoCorners = [
         worldToIso({ x: baseX + nx * -halfWidth, y: baseY + ny * -halfWidth }),
         worldToIso({ x: baseX + ux * length + nx * -halfWidth, y: baseY + uy * length + ny * -halfWidth }),
         worldToIso({ x: baseX + ux * length + nx * halfWidth, y: baseY + uy * length + ny * halfWidth }),
         worldToIso({ x: baseX + nx * halfWidth, y: baseY + ny * halfWidth }),
     ];
+    
     let isoMinX = Infinity;
     let isoMaxX = -Infinity;
     let isoMinY = Infinity;
     let isoMaxY = -Infinity;
+    
     for (const corner of isoCorners) {
         if (!corner) continue;
         if (!Number.isFinite(corner.x) || !Number.isFinite(corner.y)) continue;
@@ -123,13 +121,16 @@ const generateRoadCrackSprite = ({
         if (corner.y < isoMinY) isoMinY = corner.y;
         if (corner.y > isoMaxY) isoMaxY = corner.y;
     }
+    
     if (!Number.isFinite(isoMinX) || !Number.isFinite(isoMaxX) || !Number.isFinite(isoMinY) || !Number.isFinite(isoMaxY)) {
         return null;
     }
+    
     const isoSpanX = isoMaxX - isoMinX;
     const isoSpanY = isoMaxY - isoMinY;
     if (!(isoSpanX > 1e-4) || !(isoSpanY > 1e-4)) return null;
 
+    // Add padding around the bounding box
     const expandedMinX = Math.floor(isoMinX) - 2;
     const expandedMinY = Math.floor(isoMinY) - 2;
     const expandedMaxX = Math.ceil(isoMaxX) + 2;
@@ -140,158 +141,76 @@ const generateRoadCrackSprite = ({
     const isoOriginX = expandedMinX;
     const isoOriginY = expandedMinY;
 
+    // Calculate texture dimensions
     const supersample = Math.max(1, Math.min(8, Number.isFinite(resolutionMultiplier) ? resolutionMultiplier : 1));
     const baseCols = Math.min(maxSamplesAlong, Math.max(2, samplesAlong));
     const baseRows = Math.min(maxSamplesAcross, Math.max(2, samplesAcross));
     const pixelCols = Math.max(16, Math.min(4096, Math.round(baseCols * 4 * supersample)));
     const pixelRows = Math.max(16, Math.min(4096, Math.round(baseRows * 4 * supersample)));
+    
     if (!(pixelCols > 1) || !(pixelRows > 1)) return null;
 
+    // Check if rendering mode is isometric
+    const isIsometric = (config as any).render.mode === 'isometric';
+    
+    // Use the new Voronoi-based crack generation
+    const voronoiParams: VoronoiCrackParams = {
+        width: pixelCols,
+        height: pixelRows,
+        seedCount: Math.max(2, Math.min(4096, Math.floor(seedCount))),
+        epsilon: Math.max(1e-6, epsilonPx),
+        strokePx: Math.max(0.35, Number.isFinite(strokePx) ? strokePx : 1),
+        seed: seed,
+        isometric: isIsometric,
+        color: [255, 255, 255, 255] // White color, will be tinted by PIXI
+    };
+    
+    const voronoiResult = generateVoronoiCracks(voronoiParams);
+    if (!voronoiResult) return null;
+    
+    // Filter the result to only show cracks that are inside the road bounds and mask
+    const buffer = new Uint8Array(pixelCols * pixelRows * 4);
+    let hits = 0;
+    
     const spanScaleX = expandedSpanX / pixelCols;
     const spanScaleY = expandedSpanY / pixelRows;
-    if (!(spanScaleX > 0) || !(spanScaleY > 0)) return null;
-
-    const spanScaleXAbs = Math.max(Math.abs(spanScaleX), 1e-4);
-    const spanScaleYAbs = Math.max(Math.abs(spanScaleY), 1e-4);
-    const strokeWidthPx = Math.max(0.35, Number.isFinite(strokePx) ? strokePx : 1);
-    const isoRadiusX = Math.max(spanScaleXAbs * strokeWidthPx * 0.5, spanScaleXAbs * 0.5);
-    const isoRadiusY = Math.max(spanScaleYAbs * strokeWidthPx * 0.5, spanScaleYAbs * 0.5);
-    const invIsoRadiusXSq = isoRadiusX > 1e-6 ? 1 / (isoRadiusX * isoRadiusX) : 0;
-    const invIsoRadiusYSq = isoRadiusY > 1e-6 ? 1 / (isoRadiusY * isoRadiusY) : 0;
-    const pxRadius = Math.max(1, Math.ceil(strokeWidthPx * supersample * 0.5 + 1));
-    const softEdgeNorm = Math.min(0.65, Math.max(0.18, 0.9 / (strokeWidthPx * supersample + 1e-3)));
-    const edgeEpsilon = 0.12;
-
-    const epsilonWorld = Math.max(1e-6, epsilonPx);
-
-    const targetSeeds = Math.max(2, Math.min(4096, Math.floor(seedCount)));
-    const worldSeeds: number[] = [];
-    const isoSeedPx: number[] = [];
-    const maxAttempts = Math.max(500, targetSeeds * 80);
-    let attempts = 0;
-    while (worldSeeds.length < targetSeeds * 2 && attempts < maxAttempts) {
-        attempts++;
-        const along = rng() * length;
-        const lateral = (rng() - 0.5) * width;
-        const wx = baseX + ux * along + nx * lateral;
-        const wy = baseY + uy * along + ny * lateral;
-        if (!Number.isFinite(wx) || !Number.isFinite(wy)) continue;
-        if (!tester(wx, wy)) continue;
-        worldSeeds.push(wx, wy);
-        const iso = worldToIso({ x: wx, y: wy });
-        const sx = (iso.x - isoOriginX) / expandedSpanX * pixelCols;
-        const sy = (iso.y - isoOriginY) / expandedSpanY * pixelRows;
-        isoSeedPx.push(sx, sy);
-    }
-    const actualSeeds = worldSeeds.length / 2;
-    if (actualSeeds < 2) return null;
-
-    const gridSize = Math.max(8, Math.round(Math.sqrt(actualSeeds)));
-    const gridCols = gridSize;
-    const gridRows = gridSize;
-    const cellPxX = Math.max(1, pixelCols / gridCols);
-    const cellPxY = Math.max(1, pixelRows / gridRows);
-    const buckets: number[][] = new Array(gridCols * gridRows);
-    for (let i = 0; i < buckets.length; i++) buckets[i] = [];
-    for (let i = 0; i < actualSeeds; i++) {
-        const sx = isoSeedPx[2 * i];
-        const sy = isoSeedPx[2 * i + 1];
-        if (!Number.isFinite(sx) || !Number.isFinite(sy)) continue;
-        const gx = Math.min(gridCols - 1, Math.max(0, Math.floor(sx / cellPxX)));
-        const gy = Math.min(gridRows - 1, Math.max(0, Math.floor(sy / cellPxY)));
-        buckets[gy * gridCols + gx].push(i);
-    }
-    const fallbackIndices = Array.from({ length: actualSeeds }, (_, i) => i);
-    const buffer = new Uint8Array(pixelCols * pixelRows * 4);
-    const candidateBuf: number[] = [];
-    let hits = 0;
-
-    const paintDisc = (cx: number, cy: number) => {
-        const minY = Math.max(0, Math.floor(cy - pxRadius));
-        const maxY = Math.min(pixelRows - 1, Math.ceil(cy + pxRadius));
-        const minX = Math.max(0, Math.floor(cx - pxRadius));
-        const maxX = Math.min(pixelCols - 1, Math.ceil(cx + pxRadius));
-        const falloffStart = 1 - softEdgeNorm;
-        const falloffEnd = 1 + edgeEpsilon;
-        const denom = Math.max(1e-4, falloffEnd - falloffStart);
-        for (let yy = minY; yy <= maxY; yy++) {
-            const dy = yy - cy;
-            for (let xx = minX; xx <= maxX; xx++) {
-                const dx = xx - cx;
-                const dxIso = dx * spanScaleX;
-                const dyIso = dy * spanScaleY;
-                let norm = 0;
-                if (invIsoRadiusXSq > 0) norm += dxIso * dxIso * invIsoRadiusXSq;
-                if (invIsoRadiusYSq > 0) norm += dyIso * dyIso * invIsoRadiusYSq;
-                const distNorm = Math.sqrt(Math.max(0, norm));
-                if (distNorm >= falloffEnd) continue;
-                let weight = 1;
-                if (distNorm > falloffStart) {
-                    weight = Math.max(0, Math.min(1, (falloffEnd - distNorm) / denom));
-                }
-                if (weight <= 0) continue;
-                const idx = (yy * pixelCols + xx) * 4;
-                const alphaByte = Math.max(buffer[idx + 3], Math.round(weight * 255));
-                buffer[idx] = 255;
-                buffer[idx + 1] = 255;
-                buffer[idx + 2] = 255;
-                buffer[idx + 3] = alphaByte;
-            }
-        }
-    };
-
+    
     for (let py = 0; py < pixelRows; py++) {
-        const isoY = isoOriginY + (py + 0.5) * spanScaleY;
         for (let px = 0; px < pixelCols; px++) {
-            const isoX = isoOriginX + (px + 0.5) * spanScaleX;
-            const world = isoToWorld({ x: isoX, y: isoY });
-            if (!Number.isFinite(world.x) || !Number.isFinite(world.y)) continue;
-            const relX = world.x - baseX;
-            const relY = world.y - baseY;
-            const along = relX * ux + relY * uy;
-            const lateral = relX * nx + relY * ny;
-            if (along < -1e-3 || along > length + 1e-3 || Math.abs(lateral) > halfWidth + 1e-3) continue;
-            if (!tester(world.x, world.y)) continue;
-
-            const gx = Math.min(gridCols - 1, Math.max(0, Math.floor(px / cellPxX)));
-            const gy = Math.min(gridRows - 1, Math.max(0, Math.floor(py / cellPxY)));
-
-            for (let r = 1; r <= 2; r++) {
-                candidateBuf.length = 0;
-                for (let yy = gy - r; yy <= gy + r; yy++) {
-                    if (yy < 0 || yy >= gridRows) continue;
-                    for (let xx = gx - r; xx <= gx + r; xx++) {
-                        if (xx < 0 || xx >= gridCols) continue;
-                        const arr = buckets[yy * gridCols + xx];
-                        if (arr && arr.length) candidateBuf.push(...arr);
+            const srcIdx = (py * pixelCols + px) * 4;
+            const dstIdx = srcIdx;
+            
+            // Check if this pixel has a crack
+            if (voronoiResult.buffer[srcIdx + 3] > 0) {
+                // Convert pixel coordinates back to world coordinates to test bounds
+                const isoX = isoOriginX + (px + 0.5) * spanScaleX;
+                const isoY = isoOriginY + (py + 0.5) * spanScaleY;
+                const world = isoToWorld({ x: isoX, y: isoY });
+                
+                if (Number.isFinite(world.x) && Number.isFinite(world.y)) {
+                    const relX = world.x - baseX;
+                    const relY = world.y - baseY;
+                    const along = relX * ux + relY * uy;
+                    const lateral = relX * nx + relY * ny;
+                    
+                    // Check if point is within road bounds
+                    const withinBounds = along >= -1e-3 && along <= length + 1e-3 && Math.abs(lateral) <= halfWidth + 1e-3;
+                    const withinMask = tester(world.x, world.y);
+                    
+                    if (withinBounds && withinMask) {
+                        buffer[dstIdx] = voronoiResult.buffer[srcIdx];
+                        buffer[dstIdx + 1] = voronoiResult.buffer[srcIdx + 1];
+                        buffer[dstIdx + 2] = voronoiResult.buffer[srcIdx + 2];
+                        buffer[dstIdx + 3] = voronoiResult.buffer[srcIdx + 3];
+                        hits++;
+                    } else {
+                        buffer[dstIdx + 3] = 0; // Transparent
                     }
+                } else {
+                    buffer[dstIdx + 3] = 0; // Transparent for invalid world coordinates
                 }
-                if (candidateBuf.length || r === 2) break;
-            }
-
-            const source = candidateBuf.length ? candidateBuf : fallbackIndices;
-            if (!source.length) continue;
-
-            let best1 = Infinity;
-            let best2 = Infinity;
-            for (let k = 0; k < source.length; k++) {
-                const idx = source[k];
-                const dx = world.x - worldSeeds[2 * idx];
-                const dy = world.y - worldSeeds[2 * idx + 1];
-                const dist2 = dx * dx + dy * dy;
-                if (dist2 < best1) {
-                    best2 = best1;
-                    best1 = dist2;
-                } else if (dist2 < best2) {
-                    best2 = dist2;
-                }
-            }
-            if (!Number.isFinite(best1) || !Number.isFinite(best2) || best2 === Infinity) continue;
-
-            const delta = Math.sqrt(best2) - Math.sqrt(best1);
-            if (delta < epsilonWorld) {
-                paintDisc(px, py);
-                hits++;
+            } else {
+                buffer[dstIdx + 3] = 0; // Transparent where no crack
             }
         }
     }
