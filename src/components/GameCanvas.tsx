@@ -763,6 +763,29 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         return { x: cxAcc * inv6A, y: cyAcc * inv6A };
     };
 
+    const polygonWithinCircle = (
+        pts: Point[],
+        center: Point,
+        radius: number,
+        padding = 0,
+        epsilon = 1
+    ): boolean => {
+        if (!pts || pts.length === 0) return false;
+        if (!Number.isFinite(radius) || radius <= 0) return false;
+        const effectiveRadius = Math.max(0, radius - Math.max(0, padding));
+        const limit = effectiveRadius > 0 ? effectiveRadius : Math.max(radius, 0);
+        const limitSq = limit * limit;
+        const slack = Math.max(epsilon, limit * 1e-3);
+        for (const pt of pts) {
+            const dx = pt.x - center.x;
+            const dy = pt.y - center.y;
+            if ((dx * dx + dy * dy) > limitSq + slack) {
+                return false;
+            }
+        }
+        return true;
+    };
+
     const sqrDist = (a: Point, b: Point): number => {
         const dx = a.x - b.x;
         const dy = a.y - b.y;
@@ -3109,14 +3132,17 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                         const vCfg = (config as any).render;
                         if (!!vCfg.sidewalkVectorTilesEnabled) {
                             const centroid = polygonCentroid(worldPts);
+                            const widthM = Math.max(0.25, Number(vCfg.sidewalkWidthM ?? 2.0));
                             let inside = true;
                             if (state.heatmap && centroid) {
-                                const c = (config as any).zoningModel.cityCenter;
-                                const R = Math.max(200, (state.heatmap as any).rUnit || 3000);
-                                inside = Math.hypot(centroid.x - c.x, centroid.y - c.y) <= R;
+                                const heat = state.heatmap as any;
+                                const baseCenter = (config as any).zoningModel.cityCenter || { x: 0, y: 0 };
+                                const cx = baseCenter.x + (Number.isFinite(heat?.shiftX) ? heat.shiftX : 0);
+                                const cy = baseCenter.y + (Number.isFinite(heat?.shiftY) ? heat.shiftY : 0);
+                                const R = Math.max(200, Number.isFinite(heat?.rUnit) ? heat.rUnit : 3000);
+                                inside = polygonWithinCircle(worldPts, { x: cx, y: cy }, R, widthM * 0.5);
                             }
                             if (inside) {
-                                const widthM = Math.max(0.25, Number(vCfg.sidewalkWidthM ?? 2.0));
                                 // Converter polígono do quarteirão para Clipper paths
                                 const outerPath = worldPts.map(p => ({ X: Math.round(p.x * CLIP_SCALE), Y: Math.round(p.y * CLIP_SCALE) }));
                                 const coSide = new ClipperLib.ClipperOffset();
