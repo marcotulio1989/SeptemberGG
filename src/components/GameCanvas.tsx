@@ -5,6 +5,7 @@ import * as math from '../generic_modules/math';
 import * as util from '../generic_modules/utility';
 import * as astar from '../generic_modules/astar';
 import { buildingFactory, Building, BuildingType } from '../game_modules/build';
+import { propFactory, Prop, PropType } from '../game_modules/props';
 import * as blockGeometry from '../game_modules/block_geometry';
 import { getZoneAt } from '../game_modules/mapgen';
 import { config, scale } from '../game_modules/config';
@@ -2127,6 +2128,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         }
 
         let buildings: Building[] = rebuildBuildings ? [] : dynamicDrawables.current ? [] : [];
+        let props: Prop[] = [];
     if (rebuildBuildings) for (let i = 0; i < segments.length; i += 4) {
             const segment = segments[i];
             const zone = getZoneAt(segment.r.end);
@@ -2495,6 +2497,348 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 }
             }
         } catch {}
+
+        if (rebuildBuildings) {
+            props = [];
+
+            const basisCache = new Map<Building, { ux: Point; uy: Point; width: number; depth: number }>();
+            const getBasis = (building: Building) => {
+                let cached = basisCache.get(building);
+                if (cached) return cached;
+                const c0 = building.corners[0];
+                const c1 = building.corners[1];
+                const c2 = building.corners[2];
+                const widthVec = { x: c0.x - c1.x, y: c0.y - c1.y };
+                const depthVec = { x: c1.x - c2.x, y: c1.y - c2.y };
+                const width = Math.hypot(widthVec.x, widthVec.y) || 1;
+                const depth = Math.hypot(depthVec.x, depthVec.y) || 1;
+                const ux = { x: widthVec.x / width, y: widthVec.y / width };
+                const uy = { x: depthVec.x / depth, y: depthVec.y / depth };
+                cached = { ux, uy, width, depth };
+                basisCache.set(building, cached);
+                return cached;
+            };
+
+            const sampleOutside = (building: Building, clearance: number): Point => {
+                const basis = getBasis(building);
+                const halfW = basis.width / 2;
+                const halfD = basis.depth / 2;
+                const side = Math.floor(Math.random() * 4);
+                const rangeW = Math.max(0, halfW - clearance * 0.25);
+                const rangeD = Math.max(0, halfD - clearance * 0.25);
+                let dx = 0;
+                let dy = 0;
+                switch (side) {
+                    case 0:
+                        dx = math.randomRange(-rangeW, rangeW);
+                        dy = halfD + clearance;
+                        break;
+                    case 1:
+                        dx = math.randomRange(-rangeW, rangeW);
+                        dy = -(halfD + clearance);
+                        break;
+                    case 2:
+                        dx = -(halfW + clearance);
+                        dy = math.randomRange(-rangeD, rangeD);
+                        break;
+                    default:
+                        dx = halfW + clearance;
+                        dy = math.randomRange(-rangeD, rangeD);
+                        break;
+                }
+                return {
+                    x: building.center.x + basis.ux.x * dx + basis.uy.x * dy,
+                    y: building.center.y + basis.ux.y * dx + basis.uy.y * dy,
+                };
+            };
+
+            const sampleInside = (building: Building, padding: number): Point => {
+                const basis = getBasis(building);
+                const halfW = Math.max(0, basis.width / 2 - padding);
+                const halfD = Math.max(0, basis.depth / 2 - padding);
+                const dx = halfW > 0 ? math.randomRange(-halfW, halfW) : 0;
+                const dy = halfD > 0 ? math.randomRange(-halfD, halfD) : 0;
+                return {
+                    x: building.center.x + basis.ux.x * dx + basis.uy.x * dy,
+                    y: building.center.y + basis.ux.y * dx + basis.uy.y * dy,
+                };
+            };
+
+            const tryPlaceProp = (prop: Prop, options?: { allowInsideBuilding?: Building; minSpacing?: number }): boolean => {
+                const minSpacing = Math.max(0, options?.minSpacing ?? 0.6);
+                for (const existing of props) {
+                    const dx = prop.center.x - existing.center.x;
+                    const dy = prop.center.y - existing.center.y;
+                    const minDist = prop.radius + existing.radius + minSpacing;
+                    if (dx * dx + dy * dy < minDist * minDist) {
+                        return false;
+                    }
+                }
+                for (const otherBuilding of buildings) {
+                    const allowInside = options?.allowInsideBuilding && otherBuilding === options.allowInsideBuilding;
+                    if (!allowInside && prop.collider.collide(otherBuilding.collider)) {
+                        return false;
+                    }
+                }
+                if (qTree) {
+                    const bounds = prop.collider.limits();
+                    const candidates: any[] = qTree.retrieve(bounds);
+                    for (const candidate of candidates) {
+                        const obj = candidate?.o ?? candidate;
+                        if (!obj) continue;
+                        if (options?.allowInsideBuilding && obj === options.allowInsideBuilding) continue;
+                        if (obj instanceof Building) {
+                            if (prop.collider.collide(obj.collider)) return false;
+                        } else if (obj instanceof Segment) {
+                            if (prop.collider.collide(obj.collider)) return false;
+                        }
+                    }
+                }
+                props.push(prop);
+                return true;
+            };
+
+            const BT: any = BuildingType as any;
+            for (const building of buildings) {
+                const type = building.type as BuildingType;
+                const basis = getBasis(building);
+                const area = Math.max(1, basis.width * basis.depth);
+                const zoneHere = getZoneAt(building.center);
+                let treeTarget = 0;
+                let allowInside = false;
+
+                switch (type) {
+                    case BT.PARK:
+                    case BT.GREEN:
+                    case BT.LEISURE:
+                        treeTarget = Math.max(3, Math.round(area / 140));
+                        allowInside = true;
+                        break;
+                    case BT.POND:
+                        treeTarget = Math.max(2, Math.round(area / 220));
+                        break;
+                    case BT.FARM:
+                    case BT.FARMHOUSE:
+                        treeTarget = Math.max(1, Math.round(area / 450));
+                        break;
+                    case BT.FIELD:
+                        treeTarget = Math.random() < 0.3 ? 1 : 0;
+                        break;
+                    case BT.HOUSE:
+                    case BT.HOUSE_SMALL:
+                    case BT.HOUSE_HIGH:
+                    case BT.RESIDENTIAL:
+                    case BT.APARTMENT_BLOCK:
+                    case BT.CONDO_TOWER:
+                        treeTarget = Math.random() < 0.5 ? 2 : 1;
+                        break;
+                    default:
+                        if (zoneHere === 'residential') {
+                            treeTarget = Math.random() < 0.6 ? 1 : 0;
+                        } else if (zoneHere === 'commercial') {
+                            treeTarget = Math.random() < 0.35 ? 1 : 0;
+                        } else if (zoneHere === 'downtown') {
+                            treeTarget = Math.random() < 0.25 ? 1 : 0;
+                        } else if (zoneHere === 'industrial') {
+                            treeTarget = Math.random() < 0.2 ? 1 : 0;
+                        } else if (zoneHere === 'rural') {
+                            treeTarget = Math.random() < 0.5 ? 1 : 0;
+                        }
+                        break;
+                }
+
+                if (treeTarget > 0) {
+                    let attempts = 0;
+                    const maxAttempts = treeTarget * 8;
+                    while (treeTarget > 0 && attempts < maxAttempts) {
+                        attempts++;
+                        const tree = propFactory.byType(PropType.TREE);
+                        const clearance = tree.radius + 2.2;
+                        const point = allowInside
+                            ? sampleInside(building, tree.radius + 1.0)
+                            : sampleOutside(building, clearance);
+                        tree.setCenter(point);
+                        if (tryPlaceProp(tree, { allowInsideBuilding: allowInside ? building : undefined, minSpacing: tree.radius * 0.5 })) {
+                            treeTarget--;
+                        }
+                    }
+                }
+
+                let trashChance = 0;
+                if (type === BT.PARKING || type === BT.GAS_STATION) {
+                    trashChance = 0.45;
+                } else if (zoneHere === 'downtown') {
+                    trashChance = 0.3;
+                } else if (zoneHere === 'commercial') {
+                    trashChance = 0.28;
+                } else if (zoneHere === 'industrial') {
+                    trashChance = 0.4;
+                } else if (zoneHere === 'residential') {
+                    trashChance = 0.15;
+                }
+                if (trashChance > 0 && Math.random() < trashChance) {
+                    let attempts = 0;
+                    const maxAttempts = 4;
+                    while (attempts < maxAttempts) {
+                        attempts++;
+                        const trash = propFactory.byType(PropType.TRASH);
+                        const pt = sampleOutside(building, trash.radius + 1.2);
+                        trash.setCenter(pt);
+                        if (tryPlaceProp(trash, { minSpacing: 0.35 })) {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            const placeStreetlights = () => {
+                for (const segment of segments) {
+                    if (segment.q.highway) continue;
+                    const segLen = Math.hypot(segment.r.end.x - segment.r.start.x, segment.r.end.y - segment.r.start.y);
+                    if (!Number.isFinite(segLen) || segLen < 26) continue;
+                    const trim = trimMap.get(segment) || { start: 0, end: 0 };
+                    const usable = segLen - (trim.start + trim.end);
+                    if (usable < 18) continue;
+                    const midPoint = {
+                        x: (segment.r.start.x + segment.r.end.x) / 2,
+                        y: (segment.r.start.y + segment.r.end.y) / 2,
+                    };
+                    const zoneHere = getZoneAt(midPoint);
+                    if (zoneHere === 'rural') continue;
+                    let spacing = segment.q.highway ? 42 : 28;
+                    if (zoneHere === 'downtown') spacing = 24;
+                    else if (zoneHere === 'commercial') spacing = 26;
+                    else if (zoneHere === 'residential') spacing = 30;
+                    else if (zoneHere === 'industrial') spacing = 32;
+                    spacing = Math.max(18, spacing);
+                    const dirX = (segment.r.end.x - segment.r.start.x) / segLen;
+                    const dirY = (segment.r.end.y - segment.r.start.y) / segLen;
+                    const normalX = -dirY;
+                    const normalY = dirX;
+                    const baseOffset = segment.width / 2 + 2.1;
+                    let pos = trim.start + spacing * 0.5;
+                    let side = 1;
+                    let placed = 0;
+                    const maxLights = Math.min(24, Math.ceil(usable / spacing) + 2);
+                    while (pos < segLen - trim.end - 1e-3 && placed < maxLights) {
+                        const basePoint = {
+                            x: segment.r.start.x + dirX * pos,
+                            y: segment.r.start.y + dirY * pos,
+                        };
+                        const zoneAtPoint = getZoneAt(basePoint);
+                        if (zoneAtPoint !== 'rural') {
+                            const lamp = propFactory.byType(PropType.STREETLIGHT);
+                            if (zoneAtPoint === 'downtown') lamp.style.height = (lamp.style.height ?? 4.8) + 1.0;
+                            else if (zoneAtPoint === 'residential') lamp.style.height = (lamp.style.height ?? 4.8) + 0.2;
+                            const offset = baseOffset + lamp.radius;
+                            const placeOnSide = (sideSign: number): boolean => {
+                                const cx = basePoint.x + normalX * offset * sideSign;
+                                const cy = basePoint.y + normalY * offset * sideSign;
+                                lamp.setCenter({ x: cx, y: cy });
+                                return tryPlaceProp(lamp, { minSpacing: 1.2 });
+                            };
+                            if (placeOnSide(side)) {
+                                placed++;
+                                side *= -1;
+                            } else if (placeOnSide(-side)) {
+                                placed++;
+                                side *= -1;
+                            }
+                        }
+                        pos += spacing * math.randomRange(0.9, 1.15);
+                    }
+                }
+            };
+
+            placeStreetlights();
+        }
+
+        if (rebuildBuildings) {
+            const drawProp = (prop: Prop): PIXI.DisplayObject | null => {
+                const isoCenter = worldToIso(prop.center);
+                const isoRadiusXPoint = worldToIso({ x: prop.center.x + prop.radius, y: prop.center.y });
+                const isoRadiusYPoint = worldToIso({ x: prop.center.x, y: prop.center.y + prop.radius });
+                const rx = Math.max(1, Math.hypot(isoRadiusXPoint.x - isoCenter.x, isoRadiusXPoint.y - isoCenter.y));
+                const ry = Math.max(1, Math.hypot(isoRadiusYPoint.x - isoCenter.x, isoRadiusYPoint.y - isoCenter.y));
+                const g = new PIXI.Graphics();
+
+                switch (prop.type) {
+                    case PropType.TREE: {
+                        const trunkBase = worldToIso({ x: prop.center.x, y: prop.center.y - prop.radius * 0.6 });
+                        const trunkDx = trunkBase.x - isoCenter.x;
+                        const trunkDy = trunkBase.y - isoCenter.y;
+                        const trunkRx = Math.max(0.6, rx * 0.3);
+                        const trunkRy = Math.max(0.6, ry * 0.4);
+                        g.beginFill(prop.style.accentColor ?? 0x5D4037, 1.0);
+                        g.drawEllipse(trunkDx, trunkDy, trunkRx, trunkRy);
+                        g.endFill();
+                        if (prop.style.secondaryColor !== undefined) {
+                            g.beginFill(prop.style.secondaryColor, 0.95);
+                            g.drawEllipse(0, 0, rx * 0.92, ry * 0.88);
+                            g.endFill();
+                        }
+                        g.beginFill(prop.style.fillColor, 0.95);
+                        g.drawEllipse(0, 0, rx, ry);
+                        g.endFill();
+                        break;
+                    }
+                    case PropType.STREETLIGHT: {
+                        const baseRx = Math.max(0.5, rx * 0.45);
+                        const baseRy = Math.max(0.5, ry * 0.4);
+                        g.beginFill(prop.style.fillColor, 1.0);
+                        g.drawEllipse(0, 0, baseRx, baseRy);
+                        g.endFill();
+                        const height = prop.style.height ?? 4.8;
+                        const tip = worldToIso({ x: prop.center.x, y: prop.center.y - height });
+                        const poleDx = tip.x - isoCenter.x;
+                        const poleDy = tip.y - isoCenter.y;
+                        const lineWidth = Math.max(1, Math.min(3, Math.hypot(poleDx, poleDy) * 0.08));
+                        g.lineStyle(lineWidth, prop.style.fillColor, 1.0);
+                        g.moveTo(0, 0);
+                        g.lineTo(poleDx, poleDy);
+                        g.lineStyle(0, 0, 0);
+                        const glowSample = worldToIso({ x: prop.center.x + prop.radius * 1.6, y: prop.center.y });
+                        const glowRadius = Math.max(2, Math.hypot(glowSample.x - isoCenter.x, glowSample.y - isoCenter.y));
+                        g.beginFill(prop.style.glowColor ?? 0xFFF9C4, 0.55);
+                        g.drawCircle(poleDx, poleDy, glowRadius * 0.6);
+                        g.endFill();
+                        if (prop.style.secondaryColor !== undefined) {
+                            g.beginFill(prop.style.secondaryColor, 0.8);
+                            g.drawCircle(poleDx, poleDy, glowRadius * 0.28);
+                            g.endFill();
+                        }
+                        break;
+                    }
+                    case PropType.TRASH: {
+                        g.beginFill(prop.style.fillColor, 1.0);
+                        g.drawEllipse(0, 0, rx * 0.9, ry * 0.6);
+                        g.endFill();
+                        g.beginFill(prop.style.secondaryColor ?? 0x263238, 1.0);
+                        g.drawEllipse(0, -ry * 0.2, rx * 0.75, ry * 0.35);
+                        g.endFill();
+                        if (prop.style.accentColor !== undefined) {
+                            g.beginFill(prop.style.accentColor, 0.85);
+                            g.drawEllipse(0, -ry * 0.45, rx * 0.5, ry * 0.25);
+                            g.endFill();
+                        }
+                        break;
+                    }
+                    default:
+                        return null;
+                }
+
+                g.position.set(isoCenter.x, isoCenter.y);
+                g.zIndex = 5;
+                return g;
+            };
+
+            for (const prop of props) {
+                const graphic = drawProp(prop);
+                if (graphic) {
+                    dynamicDrawables.current?.addChild(graphic);
+                }
+            }
+        }
 
     if (rebuildBuildings) buildings.forEach(building => {
             // Espaço verde (lote vazio): não desenhar, mas manter ocupação espacial
@@ -3824,6 +4168,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     // Mantemos sortableChildren apenas para permitir personagem no topo com zIndex alto sem alterar ordem
     drawables.current.sortableChildren = true;
         dynamicDrawables.current = new PIXI.Container();
+        dynamicDrawables.current.sortableChildren = true;
     roadsFill.current = new PIXI.Container();
     roadsSecondary.current = new PIXI.Container();
     // roadsOverlay intentionally disabled (Camada 3)
