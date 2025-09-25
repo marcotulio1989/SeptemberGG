@@ -61,6 +61,11 @@ export enum BuildingType {
     COOPERATIVE = "cooperative",
     FIELD = "field",
     POND = "pond",
+    STREET_TREE = "streetTree",
+    TREE_CLUSTER = "treeCluster",
+    LAMP_POST = "lampPost",
+    TRASH_BIN = "trashBin",
+    BENCH = "bench",
 }
 
 export class Building {
@@ -124,24 +129,24 @@ export const buildingFactory = {
             downtown: [
                 'shoppingCenter','office','hotel','office','conventionCenter','cinema','hospitalPrivate','clinic','publicOffice',
                 'commercialLarge','commercialMedium','commercial','supermarket','grocery','restaurant','bakery','bar','pharmacy','shopSmall','kiosk',
-                'bank','parkingLot','gasStation','residential','house','park','green','church'
+                'bank','parkingLot','gasStation','residential','house','park','green','church','streetTree','treeCluster','lampPost','trashBin','bench'
             ] as any,
             commercial: [
                 'kiosk','shopSmall','bakery','bar','pharmacy','grocery','restaurant','supermarket','shoppingCenter','office','hotel','parkingLot',
                 'bank','gasStation','commercial','commercialMedium','commercialLarge','cinema','clinic','hospitalPrivate','publicOffice','conventionCenter',
                 // Residencial leve permitido na comercial
-                'residential','houseSmall','house','apartmentBlock'
+                'residential','houseSmall','house','apartmentBlock','streetTree','treeCluster','lampPost','trashBin','bench'
             ] as any,
             residential: [
                 'houseSmall','house','houseHigh','apartmentBlock','condoTower','school','leisureArea',
-                'park','green','church','clinic'
+                'park','green','church','clinic','streetTree','treeCluster','lampPost','trashBin','bench'
             ] as any,
             industrial: [
                 'workshop','warehouseSmall','factory','factoryMedium','distributionCenter','industrialComplex','powerPlant',
-                'commercialMedium'
+                'commercialMedium','streetTree','lampPost','trashBin','bench'
             ] as any,
             rural: [
-                'farm','farmhouse','silo','animalBarn','machineryShed','cooperative','field','pond'
+                'farm','farmhouse','silo','animalBarn','machineryShed','cooperative','field','pond','streetTree','treeCluster','bench','trashBin'
             ] as any,
         } as any;
         const allowed = new Set((allowByZone as any)[zone] || []);
@@ -181,6 +186,11 @@ export const buildingFactory = {
             // Áreas comuns
             { t: BuildingType.PARK, k: 'park' },
             { t: BuildingType.GREEN, k: 'green' },
+            { t: BuildingType.STREET_TREE, k: 'streetTree' },
+            { t: BuildingType.TREE_CLUSTER, k: 'treeCluster' },
+            { t: BuildingType.LAMP_POST, k: 'lampPost' },
+            { t: BuildingType.TRASH_BIN, k: 'trashBin' },
+            { t: BuildingType.BENCH, k: 'bench' },
             { t: BuildingType.CHURCH, k: 'church' },
             { t: BuildingType.IMPORT, k: 'import' },
             // Industrial
@@ -651,6 +661,51 @@ export const buildingFactory = {
                     building = new Building({ x: 0, y: 0 }, 0, diag, BuildingType.POND, ar);
                 }
                 break;
+            case BuildingType.STREET_TREE:
+                {
+                    const dims = (config.buildings as any).dimensions.streetTree;
+                    const scale = math.randomRange(0.85, 1.25);
+                    const diag = Math.hypot(dims.width, dims.depth) / 2 * Math.sqrt(config.buildings.areaScale) * scale;
+                    const ar = (dims.width / dims.depth) * math.randomRange(0.8, 1.25);
+                    building = new Building({ x: 0, y: 0 }, 0, diag, BuildingType.STREET_TREE, ar);
+                }
+                break;
+            case BuildingType.TREE_CLUSTER:
+                {
+                    const dims = (config.buildings as any).dimensions.treeCluster;
+                    const scale = math.randomRange(0.9, 1.3);
+                    const diag = Math.hypot(dims.width, dims.depth) / 2 * Math.sqrt(config.buildings.areaScale) * scale;
+                    const ar = (dims.width / dims.depth) * math.randomRange(0.85, 1.2);
+                    building = new Building({ x: 0, y: 0 }, 0, diag, BuildingType.TREE_CLUSTER, ar);
+                }
+                break;
+            case BuildingType.LAMP_POST:
+                {
+                    const dims = (config.buildings as any).dimensions.lampPost;
+                    const scale = math.randomRange(0.8, 1.1);
+                    const diag = Math.hypot(dims.width, dims.depth) / 2 * Math.sqrt(config.buildings.areaScale) * scale;
+                    const ar = (dims.width / Math.max(0.1, dims.depth)) * math.randomRange(0.95, 1.1);
+                    building = new Building({ x: 0, y: 0 }, 0, Math.max(diag, 0.4), BuildingType.LAMP_POST, ar);
+                }
+                break;
+            case BuildingType.TRASH_BIN:
+                {
+                    const dims = (config.buildings as any).dimensions.trashBin;
+                    const scale = math.randomRange(0.85, 1.2);
+                    const diag = Math.hypot(dims.width, dims.depth) / 2 * Math.sqrt(config.buildings.areaScale) * scale;
+                    const ar = (dims.width / Math.max(0.1, dims.depth)) * math.randomRange(0.9, 1.2);
+                    building = new Building({ x: 0, y: 0 }, 0, Math.max(diag, 0.45), BuildingType.TRASH_BIN, ar);
+                }
+                break;
+            case BuildingType.BENCH:
+                {
+                    const dims = (config.buildings as any).dimensions.bench;
+                    const scale = math.randomRange(0.9, 1.1);
+                    const diag = Math.hypot(dims.width, dims.depth) / 2 * Math.sqrt(config.buildings.areaScale) * scale;
+                    const ar = (dims.width / Math.max(0.1, dims.depth)) * math.randomRange(0.95, 1.15);
+                    building = new Building({ x: 0, y: 0 }, 0, Math.max(diag, 0.6), BuildingType.BENCH, ar);
+                }
+                break;
         }
         return building;
     },
@@ -1039,5 +1094,99 @@ export const buildingFactory = {
             }
         }
         return buildings;
+    },
+
+    streetFurnitureAlongSegment(
+        segment: Segment,
+        quadtree: Quadtree,
+        existingBuildings: Building[],
+        zoneAt: (p: math.Point) => ZoneName = getZoneAt,
+        time: number = Date.now()
+    ): Building[] {
+        const zone = zoneAt(segment.r.end);
+        const zoneCfg = ((config as any).zones?.[zone] || {}) as any;
+        const decorCfg = zoneCfg?.decor;
+        if (!decorCfg) return [];
+        const mixEntries = Object.entries(decorCfg.mix || {}).filter(([, weight]) => Number(weight) > 0)
+            .map(([key, weight]) => ({ key, weight: Number(weight) }));
+        if (!mixEntries.length) return [];
+        const totalWeight = mixEntries.reduce((acc, entry) => acc + entry.weight, 0);
+        if (!(totalWeight > 0)) return [];
+
+        const pickType = (): BuildingType | null => {
+            let r = Math.random() * totalWeight;
+            for (const entry of mixEntries) {
+                r -= entry.weight;
+                if (r <= 0) return entry.key as BuildingType;
+            }
+            return mixEntries[mixEntries.length - 1].key as BuildingType;
+        };
+
+        const spacing = Math.max(6, Number(decorCfg.spacingM ?? 18));
+        const offsetBase = Number.isFinite(decorCfg.offsetM) ? Number(decorCfg.offsetM) : 2.0;
+        const density = Math.max(0, Math.min(1, Number(decorCfg.density ?? 0.75)));
+        const alongJitter = Math.max(0, Number(decorCfg.alongJitterM ?? 1.2));
+        const sideJitter = Math.max(0, Number(decorCfg.sideJitterM ?? 0.6));
+        const offsetJitter = Math.max(0, Number(decorCfg.offsetJitterM ?? 0.4));
+        const depthFactor = Number.isFinite(decorCfg.depthFactor) ? Number(decorCfg.depthFactor) : 0.5;
+        const marginCfg = Number.isFinite(decorCfg.marginM) ? Number(decorCfg.marginM) : undefined;
+
+        const placeBothSides = decorCfg.placeBothSides !== false;
+        const preferredSide = decorCfg.preferredSide === 'left' ? 1 : -1;
+        const sides: Array<1 | -1> = placeBothSides ? [-1, 1] : [preferredSide as 1 | -1];
+
+        const s = segment.r.start;
+        const e = segment.r.end;
+        const vx = e.x - s.x;
+        const vy = e.y - s.y;
+        const len = Math.hypot(vx, vy) || 1;
+        const ux = vx / len;
+        const uy = vy / len;
+        const nx = -uy;
+        const ny = ux;
+        const margin = Math.max(4, Math.min(len / 2, marginCfg ?? Math.max(4, spacing * 0.5)));
+        if (len <= margin * 2) return [];
+
+        const results: Building[] = [];
+        for (let base = margin; base <= len - margin; base += spacing) {
+            const tBase = base + math.randomRange(-alongJitter, alongJitter);
+            const t = Math.max(margin, Math.min(len - margin, tBase));
+            const pointOnSeg: math.Point = { x: s.x + ux * t, y: s.y + uy * t };
+            for (const side of sides) {
+                if (Math.random() > density) continue;
+                const type = pickType();
+                if (!type) continue;
+                const building = this.byType(type, time + results.length + (side > 0 ? 0 : 1000));
+                if (!building) continue;
+                building.setDir(segment.dir());
+                const halfAcross = building.diagonal * math.sinDegrees(building.aspectDegree);
+                const offset = (segment.width / 2) + Math.max(0.4, offsetBase) + Math.max(0, halfAcross * Math.max(0, depthFactor)) + math.randomRange(-offsetJitter, offsetJitter);
+                const cx = pointOnSeg.x + nx * offset * side + math.randomRange(-sideJitter, sideJitter);
+                const cy = pointOnSeg.y + ny * offset * side + math.randomRange(-sideJitter, sideJitter);
+                building.setCenter({ x: cx, y: cy });
+
+                const bounds = building.collider.limits();
+                const qCandidates: any[] = quadtree.retrieve(bounds) || [];
+                const nearExisting = existingBuildings.filter(ob => {
+                    const lim = ob.collider.limits();
+                    return !(lim.x + lim.width < bounds.x || bounds.x + bounds.width < lim.x || lim.y + lim.height < bounds.y || bounds.y + bounds.height < lim.y);
+                });
+                let collision = false;
+                for (const obj of qCandidates) {
+                    const other = (obj as any).o || obj;
+                    if (!other || other === building || !(other as any).collider) continue;
+                    if (building.collider.collide((other as any).collider)) { collision = true; break; }
+                }
+                if (collision) continue;
+                for (const other of [...nearExisting, ...results]) {
+                    if (other === building) continue;
+                    if (building.collider.collide(other.collider)) { collision = true; break; }
+                }
+                if (!collision) {
+                    results.push(building);
+                }
+            }
+        }
+        return results;
     }
 };

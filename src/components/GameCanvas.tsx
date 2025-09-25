@@ -2387,6 +2387,17 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                     segment, count, radius, qTree!, getZoneAt, timeNow
                 );
             }
+            const decorExisting = buildings.concat(newBuildings);
+            const decorations = buildingFactory.streetFurnitureAlongSegment(
+                segment,
+                qTree!,
+                decorExisting,
+                getZoneAt,
+                timeNow
+            );
+            if (decorations.length) {
+                decorations.forEach(b => newBuildings.push(b));
+            }
             newBuildings.forEach(b => qTree!.insert(b.collider.limits()));
             buildings = buildings.concat(newBuildings);
         }
@@ -2535,6 +2546,11 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 park: 0xC8E6C9,
                 church: 0xD1C4E9,
                 import: 0xCE93D8,
+                streetTree: 0x66BB6A,
+                treeCluster: 0x4CAF50,
+                lampPost: 0xB0BEC5,
+                trashBin: 0x8D6E63,
+                bench: 0xA1887F,
                 factory: 0xB39DDB,
                 warehouseSmall: 0xB0A8D9,
                 factoryMedium: 0x9E9DCD,

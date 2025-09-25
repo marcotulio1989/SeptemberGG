@@ -198,6 +198,11 @@ export const config = {
             cooperative: { width: 40, depth: 70 },     // 2800 m²
             field: { width: 100, depth: 150 },         // 15.000 m² (um talhão)
             pond: { width: 40, depth: 60 },            // 2400 m²
+            streetTree: { width: 3, depth: 3 },        // árvore isolada
+            treeCluster: { width: 6, depth: 6 },       // grupo pequeno de árvores
+            lampPost: { width: 1, depth: 1 },          // poste urbano
+            trashBin: { width: 1.2, depth: 1.2 },      // lixeira
+            bench: { width: 2, depth: 1.2 },           // banco de praça
         }
     },
     render: {
@@ -501,6 +506,22 @@ export const config = {
             density: 10,
             scatterRadiusM: 140,
             coverageTarget: 0.40,
+            decor: {
+                spacingM: 18,
+                offsetM: 3,
+                density: 0.75,
+                alongJitterM: 1.2,
+                sideJitterM: 0.6,
+                offsetJitterM: 0.4,
+                depthFactor: 0.4,
+                mix: {
+                    streetTree: 0.28,
+                    treeCluster: 0.08,
+                    lampPost: 0.40,
+                    trashBin: 0.14,
+                    bench: 0.10,
+                }
+            }
         },
         residential: {
             blockLengthM: 100,
@@ -520,6 +541,22 @@ export const config = {
                 frontSetbackM: 5,
                 sideSetbackM: 1.5,
                 rearSetbackM: 6,
+            },
+            decor: {
+                spacingM: 16,
+                offsetM: 4,
+                density: 0.85,
+                alongJitterM: 1.8,
+                sideJitterM: 0.8,
+                offsetJitterM: 0.6,
+                depthFactor: 0.6,
+                mix: {
+                    streetTree: 0.50,
+                    treeCluster: 0.20,
+                    lampPost: 0.15,
+                    trashBin: 0.05,
+                    bench: 0.10,
+                }
             }
         },
         commercial: {
@@ -539,6 +576,22 @@ export const config = {
             density: 12,
             scatterRadiusM: 100,
             coverageTarget: 0.42,
+            decor: {
+                spacingM: 18,
+                offsetM: 3,
+                density: 0.8,
+                alongJitterM: 1.2,
+                sideJitterM: 0.5,
+                offsetJitterM: 0.5,
+                depthFactor: 0.45,
+                mix: {
+                    streetTree: 0.30,
+                    treeCluster: 0.10,
+                    lampPost: 0.35,
+                    trashBin: 0.15,
+                    bench: 0.10,
+                }
+            }
         },
         industrial: {
             blockLengthM: 140,
@@ -554,6 +607,21 @@ export const config = {
             coverageTarget: 0.22,
             // Afastamento mínimo entre fábricas (m)
             minFactorySpacingM: 200,
+            decor: {
+                spacingM: 28,
+                offsetM: 5,
+                density: 0.45,
+                alongJitterM: 1.5,
+                sideJitterM: 0.7,
+                offsetJitterM: 0.7,
+                depthFactor: 0.3,
+                mix: {
+                    streetTree: 0.20,
+                    lampPost: 0.45,
+                    trashBin: 0.25,
+                    bench: 0.10,
+                }
+            }
         },
         rural: {
             blockLengthM: 190,
@@ -567,6 +635,21 @@ export const config = {
             density: 2,
             scatterRadiusM: 180,
             coverageTarget: 0.06,
+            decor: {
+                spacingM: 30,
+                offsetM: 6,
+                density: 0.6,
+                alongJitterM: 2.5,
+                sideJitterM: 1.2,
+                offsetJitterM: 0.8,
+                depthFactor: 0.7,
+                mix: {
+                    streetTree: 0.45,
+                    treeCluster: 0.35,
+                    bench: 0.10,
+                    trashBin: 0.10,
+                }
+            }
         }
     }
 };
