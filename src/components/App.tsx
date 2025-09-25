@@ -41,15 +41,20 @@ const App: React.FC = () => {
     });
     const [crackedRoadsVisible, setCrackedRoadsVisible] = useState<boolean>(() => {
         try {
-            if (typeof NoiseZoning.getIntersectionOutlineEnabled === 'function') {
-                return !!NoiseZoning.getIntersectionOutlineEnabled();
+            const cfgValue = (config as any).render?.showCrackedRoadsOutline;
+            if (typeof cfgValue === 'boolean') {
+                return cfgValue;
             }
         } catch (e) {}
         try {
-            return !!((config as any).render?.showCrackedRoadsOutline);
-        } catch (e) {
-            return false;
-        }
+            if (typeof NoiseZoning.getIntersectionOutlineEnabled === 'function') {
+                const zoneValue = NoiseZoning.getIntersectionOutlineEnabled();
+                if (typeof zoneValue === 'boolean') {
+                    return zoneValue;
+                }
+            }
+        } catch (e) {}
+        return true;
     });
     const [uiTick, setUiTick] = useState(0); // força re-render para atualizar HUD
     const [outlineMode, setOutlineMode] = useState((config as any).render.roadOutlineMode);
