@@ -160,18 +160,10 @@ const generateRoadCrackSprite = ({
     const spanScaleY = expandedSpanY / pixelRows;
     if (!(spanScaleX > 0) || !(spanScaleY > 0)) return null;
 
-    const spanScaleXAbs = Math.max(Math.abs(spanScaleX), 1e-4);
-    const spanScaleYAbs = Math.max(Math.abs(spanScaleY), 1e-4);
-    const strokeWidthPx = Math.max(0.35, Number.isFinite(strokePx) ? strokePx : 1);
-    const isoRadiusX = Math.max(spanScaleXAbs * strokeWidthPx * 0.5, spanScaleXAbs * 0.5);
-    const isoRadiusY = Math.max(spanScaleYAbs * strokeWidthPx * 0.5, spanScaleYAbs * 0.5);
-    const invIsoRadiusXSq = isoRadiusX > 1e-6 ? 1 / (isoRadiusX * isoRadiusX) : 0;
-    const invIsoRadiusYSq = isoRadiusY > 1e-6 ? 1 / (isoRadiusY * isoRadiusY) : 0;
-    const pxRadius = Math.max(1, Math.ceil(strokeWidthPx * supersample * 0.5 + 1));
-    const softEdgeNorm = Math.min(0.65, Math.max(0.18, 0.9 / (strokeWidthPx * supersample + 1e-3)));
-    const edgeEpsilon = 0.12;
-
-    const epsilonWorld = Math.max(1e-6, epsilonPx);
+    const supersampleFactor = Math.max(1, supersample);
+    const strokeWidthPx = Math.max(0.25, Number.isFinite(strokePx) ? strokePx : 1);
+    const epsilonThreshold = Math.max(1e-4, Number.isFinite(epsilonPx) ? epsilonPx : 0.5);
+    const strokeRadius = Math.max(0.2, Math.min(1.5, strokeWidthPx * supersampleFactor * 0.3));
 
     const targetSeeds = Math.max(2, Math.min(4096, Math.floor(seedCount)));
     const worldSeeds: number[] = [];
@@ -211,42 +203,53 @@ const generateRoadCrackSprite = ({
         buckets[gy * gridCols + gx].push(i);
     }
     const fallbackIndices = Array.from({ length: actualSeeds }, (_, i) => i);
-    const buffer = new Uint8Array(pixelCols * pixelRows * 4);
+    let drawingCanvas: HTMLCanvasElement | OffscreenCanvas | null = null;
+    let drawingCtx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null = null;
+    if (typeof OffscreenCanvas !== 'undefined') {
+        try {
+            const offscreen = new OffscreenCanvas(pixelCols, pixelRows);
+            const ctx = offscreen.getContext('2d', { alpha: true });
+            if (ctx) {
+                drawingCanvas = offscreen;
+                drawingCtx = ctx;
+            }
+        } catch (err) {
+            drawingCanvas = null;
+            drawingCtx = null;
+        }
+    }
+    if (!drawingCtx && typeof document !== 'undefined' && typeof document.createElement === 'function') {
+        const canvas = document.createElement('canvas');
+        canvas.width = pixelCols;
+        canvas.height = pixelRows;
+        const ctx = canvas.getContext('2d', { alpha: true });
+        if (ctx) {
+            drawingCanvas = canvas;
+            drawingCtx = ctx;
+        }
+    }
+    if (!drawingCtx || !drawingCanvas) return null;
+    drawingCtx.clearRect(0, 0, pixelCols, pixelRows);
+    drawingCtx.fillStyle = '#ffffff';
+    try { drawingCtx.imageSmoothingEnabled = true; } catch (e) {}
+
     const candidateBuf: number[] = [];
     let hits = 0;
 
-    const paintDisc = (cx: number, cy: number) => {
-        const minY = Math.max(0, Math.floor(cy - pxRadius));
-        const maxY = Math.min(pixelRows - 1, Math.ceil(cy + pxRadius));
-        const minX = Math.max(0, Math.floor(cx - pxRadius));
-        const maxX = Math.min(pixelCols - 1, Math.ceil(cx + pxRadius));
-        const falloffStart = 1 - softEdgeNorm;
-        const falloffEnd = 1 + edgeEpsilon;
-        const denom = Math.max(1e-4, falloffEnd - falloffStart);
-        for (let yy = minY; yy <= maxY; yy++) {
-            const dy = yy - cy;
-            for (let xx = minX; xx <= maxX; xx++) {
-                const dx = xx - cx;
-                const dxIso = dx * spanScaleX;
-                const dyIso = dy * spanScaleY;
-                let norm = 0;
-                if (invIsoRadiusXSq > 0) norm += dxIso * dxIso * invIsoRadiusXSq;
-                if (invIsoRadiusYSq > 0) norm += dyIso * dyIso * invIsoRadiusYSq;
-                const distNorm = Math.sqrt(Math.max(0, norm));
-                if (distNorm >= falloffEnd) continue;
-                let weight = 1;
-                if (distNorm > falloffStart) {
-                    weight = Math.max(0, Math.min(1, (falloffEnd - distNorm) / denom));
-                }
-                if (weight <= 0) continue;
-                const idx = (yy * pixelCols + xx) * 4;
-                const alphaByte = Math.max(buffer[idx + 3], Math.round(weight * 255));
-                buffer[idx] = 255;
-                buffer[idx + 1] = 255;
-                buffer[idx + 2] = 255;
-                buffer[idx + 3] = alphaByte;
-            }
+    const stampStroke = (cx: number, cy: number, weight: number) => {
+        const clamped = Math.max(0, Math.min(1, weight));
+        if (!(clamped > 0)) return;
+        const prevAlpha = drawingCtx.globalAlpha;
+        drawingCtx.globalAlpha = clamped;
+        if (strokeRadius <= 0.6) {
+            drawingCtx.fillRect(cx, cy, 1, 1);
+        } else {
+            drawingCtx.beginPath();
+            drawingCtx.arc(cx + 0.5, cy + 0.5, strokeRadius, 0, Math.PI * 2);
+            drawingCtx.fill();
         }
+        drawingCtx.globalAlpha = prevAlpha;
+        hits++;
     };
 
     for (let py = 0; py < pixelRows; py++) {
@@ -262,8 +265,13 @@ const generateRoadCrackSprite = ({
             if (along < -1e-3 || along > length + 1e-3 || Math.abs(lateral) > halfWidth + 1e-3) continue;
             if (!tester(world.x, world.y)) continue;
 
-            const gx = Math.min(gridCols - 1, Math.max(0, Math.floor(px / cellPxX)));
-            const gy = Math.min(gridRows - 1, Math.max(0, Math.floor(py / cellPxY)));
+            const sampleSx = px + 0.5;
+            const sampleSy = py + 0.5;
+            const sampleWorldX = world.x;
+            const sampleWorldY = world.y;
+
+            const gx = Math.min(gridCols - 1, Math.max(0, Math.floor(sampleSx / cellPxX)));
+            const gy = Math.min(gridRows - 1, Math.max(0, Math.floor(sampleSy / cellPxY)));
 
             for (let r = 1; r <= 2; r++) {
                 candidateBuf.length = 0;
@@ -285,8 +293,8 @@ const generateRoadCrackSprite = ({
             let best2 = Infinity;
             for (let k = 0; k < source.length; k++) {
                 const idx = source[k];
-                const dx = world.x - worldSeeds[2 * idx];
-                const dy = world.y - worldSeeds[2 * idx + 1];
+                const dx = sampleWorldX - worldSeeds[2 * idx];
+                const dy = sampleWorldY - worldSeeds[2 * idx + 1];
                 const dist2 = dx * dx + dy * dy;
                 if (dist2 < best1) {
                     best2 = best1;
@@ -298,14 +306,27 @@ const generateRoadCrackSprite = ({
             if (!Number.isFinite(best1) || !Number.isFinite(best2) || best2 === Infinity) continue;
 
             const delta = Math.sqrt(best2) - Math.sqrt(best1);
-            if (delta < epsilonWorld) {
-                paintDisc(px, py);
-                hits++;
+            if (!Number.isFinite(delta)) continue;
+
+            if (delta <= epsilonThreshold) {
+                const normalized = Math.max(0, Math.min(1, (epsilonThreshold - delta) / epsilonThreshold));
+                if (!(normalized > 0)) continue;
+                const weight = Math.pow(normalized, 1.5);
+                if (weight <= 0.01) continue;
+                stampStroke(px, py, weight);
             }
         }
     }
 
     if (hits === 0) return null;
+
+    let buffer: Uint8Array;
+    try {
+        const imageData = drawingCtx.getImageData(0, 0, pixelCols, pixelRows);
+        buffer = new Uint8Array(imageData.data);
+    } catch (err) {
+        return null;
+    }
 
     return {
         buffer,
