@@ -2924,6 +2924,15 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             const roundedBlocks = computeRoundedBlockPolygons(insideBlocks, cornerRadiusM, CLIP_SCALE);
             const blockWorldPaths = roundedBlocks.world;
             const blockClipperPaths = roundedBlocks.clipper;
+            const cfgCenter = ((config as any)?.zoningModel?.cityCenter) || { x: 0, y: 0 };
+            const cityCenterX = Number.isFinite(cfgCenter?.x) ? cfgCenter.x : 0;
+            const cityCenterY = Number.isFinite(cfgCenter?.y) ? cfgCenter.y : 0;
+            const heatmapShiftX = (state.heatmap && Number.isFinite((state.heatmap as any)?.shiftX)) ? (state.heatmap as any).shiftX : 0;
+            const heatmapShiftY = (state.heatmap && Number.isFinite((state.heatmap as any)?.shiftY)) ? (state.heatmap as any).shiftY : 0;
+            const heatmapCenter = {
+                x: cityCenterX + heatmapShiftX,
+                y: cityCenterY + heatmapShiftY,
+            };
 
             // Se o modo "apenas interiores" estiver ativo, desenhe-os com um recuo e retorne.
             if (showOnlyInteriors) {
@@ -3066,7 +3075,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             const sidewalkAlphaVal = sidewalkAlphaRef.current;
             const sidewalkTintVal = sidewalkTintRef.current;
 
-            blockWorldPaths.forEach((worldPts: Point[]) => {
+            blockWorldPaths.forEach((worldPts: Point[], blockIndex: number) => {
                 const points = worldPts.map(p => worldToIso(p));
                 if (points.length > 2) {
                     const useTex = !!(config as any).render.blockInteriorUseTexture && interiorTexture;
@@ -3111,14 +3120,16 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                             const centroid = polygonCentroid(worldPts);
                             let inside = true;
                             if (state.heatmap && centroid) {
-                                const c = (config as any).zoningModel.cityCenter;
                                 const R = Math.max(200, (state.heatmap as any).rUnit || 3000);
-                                inside = Math.hypot(centroid.x - c.x, centroid.y - c.y) <= R;
+                                inside = Math.hypot(centroid.x - heatmapCenter.x, centroid.y - heatmapCenter.y) <= R;
                             }
                             if (inside) {
                                 const widthM = Math.max(0.25, Number(vCfg.sidewalkWidthM ?? 2.0));
                                 // Converter polígono do quarteirão para Clipper paths
-                                const outerPath = worldPts.map(p => ({ X: Math.round(p.x * CLIP_SCALE), Y: Math.round(p.y * CLIP_SCALE) }));
+                                const sourceClipPath = blockClipperPaths[blockIndex];
+                                const outerPath = Array.isArray(sourceClipPath) && sourceClipPath.length
+                                    ? sourceClipPath.map((p: any) => ({ X: p.X, Y: p.Y }))
+                                    : worldPts.map(p => ({ X: Math.round(p.x * CLIP_SCALE), Y: Math.round(p.y * CLIP_SCALE) }));
                                 const coSide = new ClipperLib.ClipperOffset();
                                 coSide.AddPath(outerPath, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
                                 const innerPaths = new ClipperLib.Paths();
