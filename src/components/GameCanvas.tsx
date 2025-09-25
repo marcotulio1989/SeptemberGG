@@ -763,6 +763,19 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         return { x: cxAcc * inv6A, y: cyAcc * inv6A };
     };
 
+    const blockInsideHeatmapRadius = (pts: Point[], center: Point, radius: number): boolean => {
+        if (!pts || pts.length === 0 || !isFinite(radius) || radius <= 0) return false;
+        const r2 = radius * radius;
+        for (const pt of pts) {
+            const dx = pt.x - center.x;
+            const dy = pt.y - center.y;
+            if ((dx * dx + dy * dy) - r2 > 1e-6) {
+                return false;
+            }
+        }
+        return true;
+    };
+
     const sqrDist = (a: Point, b: Point): number => {
         const dx = a.x - b.x;
         const dy = a.y - b.y;
@@ -3113,14 +3126,16 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                             if (state.heatmap && centroid) {
                                 const c = (config as any).zoningModel.cityCenter;
                                 const R = Math.max(200, (state.heatmap as any).rUnit || 3000);
-                                inside = Math.hypot(centroid.x - c.x, centroid.y - c.y) <= R;
+                                inside = blockInsideHeatmapRadius(worldPts, c, R);
                             }
                             if (inside) {
                                 const widthM = Math.max(0.25, Number(vCfg.sidewalkWidthM ?? 2.0));
                                 // Converter polígono do quarteirão para Clipper paths
                                 const outerPath = worldPts.map(p => ({ X: Math.round(p.x * CLIP_SCALE), Y: Math.round(p.y * CLIP_SCALE) }));
                                 const coSide = new ClipperLib.ClipperOffset();
-                                coSide.AddPath(outerPath, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
+                                coSide.MiterLimit = 6;
+                                coSide.ArcTolerance = 0.25;
+                                coSide.AddPath(outerPath, ClipperLib.JoinType.jtMiter, ClipperLib.EndType.etClosedPolygon);
                                 const innerPaths = new ClipperLib.Paths();
                                 // Offset negativo para dentro do quarteirão
                                 coSide.Execute(innerPaths, -widthM * CLIP_SCALE);
