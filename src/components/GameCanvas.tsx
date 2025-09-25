@@ -763,6 +763,29 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         return { x: cxAcc * inv6A, y: cyAcc * inv6A };
     };
 
+    const polygonWithinCircle = (
+        pts: Point[],
+        center: Point,
+        radius: number,
+        padding = 0,
+        epsilon = 1
+    ): boolean => {
+        if (!pts || pts.length === 0) return false;
+        if (!Number.isFinite(radius) || radius <= 0) return false;
+        const effectiveRadius = Math.max(0, radius - Math.max(0, padding));
+        const limit = effectiveRadius > 0 ? effectiveRadius : Math.max(radius, 0);
+        const limitSq = limit * limit;
+        const slack = Math.max(epsilon, limit * 1e-3);
+        for (const pt of pts) {
+            const dx = pt.x - center.x;
+            const dy = pt.y - center.y;
+            if ((dx * dx + dy * dy) > limitSq + slack) {
+                return false;
+            }
+        }
+        return true;
+    };
+
     const sqrDist = (a: Point, b: Point): number => {
         const dx = a.x - b.x;
         const dy = a.y - b.y;
@@ -796,6 +819,642 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             if (sqrDist(first, last) < eps2) sanitized.pop();
         }
         return sanitized;
+    };
+
+    const polygonSignedArea = (points: Point[]): number => {
+        let area = 0;
+        for (let i = 0; i < points.length; i++) {
+            const p = points[i];
+            const q = points[(i + 1) % points.length];
+            area += p.x * q.y - q.x * p.y;
+        }
+        return area * 0.5;
+    };
+
+    const ensureLoopOrientation = (points: Point[], ccw = true): Point[] => {
+        const loop = sanitizeLoopPoints(points);
+        if (loop.length < 3) return loop;
+        const area = polygonSignedArea(loop);
+        const isCCW = area >= 0;
+        if ((ccw && !isCCW) || (!ccw && isCCW)) {
+            loop.reverse();
+        }
+        return loop;
+    };
+
+    const rotateLoopToClosestPoint = (points: Point[], target: Point): Point[] => {
+        if (!points.length) return points.map(pt => ({ x: pt.x, y: pt.y }));
+        let bestIndex = 0;
+        let bestDist = Infinity;
+        for (let i = 0; i < points.length; i++) {
+            const d = sqrDist(points[i], target);
+            if (d < bestDist) {
+                bestDist = d;
+                bestIndex = i;
+            }
+        }
+        if (bestIndex === 0) {
+            return points.map(pt => ({ x: pt.x, y: pt.y }));
+        }
+        const rotated: Point[] = [];
+        for (let i = 0; i < points.length; i++) {
+            const idx = (bestIndex + i) % points.length;
+            rotated.push({ x: points[idx].x, y: points[idx].y });
+        }
+        return rotated;
+    };
+
+    type LoopMetrics = {
+        points: Point[];
+        cumulative: number[];
+        total: number;
+    };
+
+    const buildLoopMetrics = (points: Point[]): LoopMetrics | null => {
+        const loop = sanitizeLoopPoints(points);
+        if (loop.length < 2) return null;
+        const cumulative: number[] = [0];
+        let total = 0;
+        for (let i = 0; i < loop.length; i++) {
+            const a = loop[i];
+            const b = loop[(i + 1) % loop.length];
+            const len = Math.hypot(b.x - a.x, b.y - a.y);
+            total += len;
+            cumulative.push(total);
+        }
+        return { points: loop.map(pt => ({ x: pt.x, y: pt.y })), cumulative, total };
+    };
+
+    const sampleLoopPoint = (metrics: LoopMetrics, t: number): Point => {
+        if (!metrics.points.length) return { x: 0, y: 0 };
+        if (!(metrics.total > 1e-6)) {
+            const first = metrics.points[0];
+            return { x: first.x, y: first.y };
+        }
+        const total = metrics.total;
+        let target = t * total;
+        target = ((target % total) + total) % total;
+        let segIndex = 0;
+        while (segIndex < metrics.points.length) {
+            const nextVal = metrics.cumulative[segIndex + 1];
+            if (target <= nextVal || segIndex === metrics.points.length - 1) break;
+            segIndex++;
+        }
+        const segLen = metrics.cumulative[segIndex + 1] - metrics.cumulative[segIndex];
+        if (!(segLen > 1e-6)) {
+            const pt = metrics.points[segIndex % metrics.points.length];
+            return { x: pt.x, y: pt.y };
+        }
+        const localT = (target - metrics.cumulative[segIndex]) / segLen;
+        const a = metrics.points[segIndex % metrics.points.length];
+        const b = metrics.points[(segIndex + 1) % metrics.points.length];
+        return {
+            x: a.x + (b.x - a.x) * localT,
+            y: a.y + (b.y - a.y) * localT,
+        };
+    };
+
+    const intersectLines = (
+        p1: Point,
+        d1: Point,
+        p2: Point,
+        d2: Point
+    ): Point | null => {
+        const cross = d1.x * d2.y - d1.y * d2.x;
+        if (Math.abs(cross) < 1e-8) return null;
+        const diffX = p2.x - p1.x;
+        const diffY = p2.y - p1.y;
+        const t = (diffX * d2.y - diffY * d2.x) / cross;
+        if (!Number.isFinite(t)) return null;
+        return {
+            x: p1.x + d1.x * t,
+            y: p1.y + d1.y * t,
+        };
+    };
+
+    const insetPolygonByDistance = (points: Point[], inset: number): Point[] | null => {
+        if (!points || points.length < 3) return null;
+        if (!(inset > 0)) return null;
+        const loop = sanitizeLoopPoints(points);
+        if (loop.length < 3) return null;
+        let area = 0;
+        for (let i = 0; i < loop.length; i++) {
+            const a = loop[i];
+            const b = loop[(i + 1) % loop.length];
+            area += a.x * b.y - b.x * a.y;
+        }
+        const ccw = area >= 0;
+        const lines: { point: Point; dir: Point; normal: Point }[] = [];
+        for (let i = 0; i < loop.length; i++) {
+            const curr = loop[i];
+            const next = loop[(i + 1) % loop.length];
+            const dx = next.x - curr.x;
+            const dy = next.y - curr.y;
+            const len = Math.hypot(dx, dy);
+            if (!(len > 1e-6)) return null;
+            const dir = { x: dx / len, y: dy / len };
+            const normal = ccw ? { x: -dir.y, y: dir.x } : { x: dir.y, y: -dir.x };
+            lines.push({
+                point: {
+                    x: curr.x + normal.x * inset,
+                    y: curr.y + normal.y * inset,
+                },
+                dir,
+                normal,
+            });
+        }
+        const insetLoop: Point[] = [];
+        for (let i = 0; i < loop.length; i++) {
+            const prev = lines[(i - 1 + lines.length) % lines.length];
+            const curr = lines[i];
+            const intersection = intersectLines(prev.point, prev.dir, curr.point, curr.dir);
+            if (intersection && Number.isFinite(intersection.x) && Number.isFinite(intersection.y)) {
+                insetLoop.push(intersection);
+            } else {
+                // fallback: move vertex along averaged normal when lines are nearly parallel
+                const avgNormal = {
+                    x: prev.normal.x + curr.normal.x,
+                    y: prev.normal.y + curr.normal.y,
+                };
+                const normLen = Math.hypot(avgNormal.x, avgNormal.y);
+                if (!(normLen > 1e-6)) return null;
+                const scale = inset / normLen;
+                const original = loop[i];
+                insetLoop.push({
+                    x: original.x + avgNormal.x * scale,
+                    y: original.y + avgNormal.y * scale,
+                });
+            }
+        }
+        return insetLoop;
+    };
+
+    const renderSidewalkRing = ({
+        worldPts,
+        centroid,
+        widthM,
+        sidewalkTex,
+        sidewalkScaleVal,
+        sidewalkAlphaVal,
+        sidewalkTintVal,
+        clipScale,
+    }: {
+        worldPts: Point[];
+        centroid: Point | null;
+        widthM: number;
+        sidewalkTex: PIXI.Texture | null | undefined;
+        sidewalkScaleVal?: number;
+        sidewalkAlphaVal?: number;
+        sidewalkTintVal?: number;
+        clipScale: number;
+    }): void => {
+        const vCfg = (config as any).render;
+        let outerLoop = ensureLoopOrientation(worldPts, true);
+        if (outerLoop.length < 3) return;
+
+        const pxBase0 = worldToIso({ x: 0, y: 0 });
+        const pxBase1 = worldToIso({ x: 1, y: 0 });
+        const pxPerM = Math.max(1e-3, Math.hypot(pxBase1.x - pxBase0.x, pxBase1.y - pxBase0.y));
+        const tileSpacingPx = Math.max(2, Number((config as any).render.sidewalkVectorTileSpacingPx ?? 18));
+        const tileLengthM = Math.max(widthM * 0.25, tileSpacingPx / pxPerM);
+
+        const walkwaySegments: Array<{ quad: Point[]; u0: number; u1: number }> = [];
+        const tilePolys: Point[][] = [];
+        const ringContours: Array<{ outer: Point[]; holes: Point[][] }> = [];
+        const ringsForTiles: { outer: Point[]; inner: Point[] }[] = [];
+
+        let clipperRingPaths: any = null;
+        let clipperRingPolyTree: any = null;
+
+        const insetLoop = insetPolygonByDistance(outerLoop, widthM);
+
+        const arcTolWorld = (() => {
+            const cfgVal = Number((config as any).render?.sidewalkArcToleranceM);
+            const fallback = widthM * 0.25;
+            const val = Number.isFinite(cfgVal) ? cfgVal : fallback;
+            return Math.max(0.02, Math.min(widthM * 0.5, val));
+        })();
+        const miterLimit = Math.max(1.1, Number((config as any).render?.sidewalkOffsetMiterLimit ?? 2));
+        const arcTolerance = Math.max(0.25, arcTolWorld * Math.max(1, clipScale));
+
+        try {
+            const outerPath = outerLoop.map(p => ({ X: Math.round(p.x * clipScale), Y: Math.round(p.y * clipScale) }));
+            if (!ClipperLib.Clipper.Orientation(outerPath)) {
+                outerPath.reverse();
+            }
+            const coSide = new ClipperLib.ClipperOffset(miterLimit, arcTolerance);
+            if (typeof coSide.ArcTolerance === 'number') {
+                coSide.ArcTolerance = arcTolerance;
+            }
+            if (typeof coSide.MiterLimit === 'number') {
+                coSide.MiterLimit = miterLimit;
+            }
+            coSide.AddPath(outerPath, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
+            const innerPaths = new ClipperLib.Paths();
+            coSide.Execute(innerPaths, -widthM * clipScale);
+            if (innerPaths && innerPaths.length) {
+                const cpr = new ClipperLib.Clipper();
+                const ringPolyTree = new ClipperLib.PolyTree();
+                cpr.AddPath(outerPath, ClipperLib.PolyType.ptSubject, true);
+                cpr.AddPaths(innerPaths, ClipperLib.PolyType.ptClip, true);
+                cpr.Execute(ClipperLib.ClipType.ctDifference, ringPolyTree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+
+                const collectedPaths: any[] = [];
+                const collectPaths = (node: any) => {
+                    if (!node) return;
+                    const contour = node.Contour && node.Contour();
+                    if (contour && contour.length > 2) {
+                        collectedPaths.push(contour.map((pt: any) => ({ X: pt.X, Y: pt.Y })));
+                    }
+                    const childs = node.Childs && node.Childs();
+                    if (childs && childs.length) {
+                        for (let i = 0; i < childs.length; i++) {
+                            collectPaths(childs[i]);
+                        }
+                    }
+                };
+
+                const gatherContours = (node: any) => {
+                    if (!node) return;
+                    const contour = node.Contour && node.Contour();
+                    const childs = node.Childs && node.Childs();
+                    if (!contour || contour.length < 3) {
+                        if (childs && childs.length) {
+                            for (let i = 0; i < childs.length; i++) {
+                                gatherContours(childs[i]);
+                            }
+                        }
+                        return;
+                    }
+
+                    const orientedOuter = ensureLoopOrientation(
+                        contour.map((pt: any) => ({ x: pt.X / clipScale, y: pt.Y / clipScale })),
+                        true
+                    ).map(pt => ({ x: pt.x, y: pt.y }));
+                    const isHole = typeof node.IsHole === 'function' && node.IsHole();
+                    if (isHole) {
+                        if (childs && childs.length) {
+                            for (let i = 0; i < childs.length; i++) {
+                                gatherContours(childs[i]);
+                            }
+                        }
+                        return;
+                    }
+
+                    const holeLoops: Point[][] = [];
+                    if (childs && childs.length) {
+                        for (let i = 0; i < childs.length; i++) {
+                            const child = childs[i];
+                            const holeContour = child.Contour && child.Contour();
+                            if (holeContour && holeContour.length > 2) {
+                                const innerWorld = ensureLoopOrientation(
+                                    holeContour.map((pt: any) => ({ x: pt.X / clipScale, y: pt.Y / clipScale })),
+                                    true
+                                ).map(pt => ({ x: pt.x, y: pt.y }));
+                                holeLoops.push(innerWorld);
+                                const alignedInner = rotateLoopToClosestPoint(innerWorld, orientedOuter[0]);
+                                ringsForTiles.push({
+                                    outer: orientedOuter.map(pt => ({ x: pt.x, y: pt.y })),
+                                    inner: alignedInner,
+                                });
+                            }
+                            gatherContours(child);
+                        }
+                    }
+
+                    ringContours.push({
+                        outer: orientedOuter.map(pt => ({ x: pt.x, y: pt.y })),
+                        holes: holeLoops,
+                    });
+                };
+
+                const roots = ringPolyTree.Childs && ringPolyTree.Childs();
+                if (roots && roots.length) {
+                    for (let i = 0; i < roots.length; i++) {
+                        collectPaths(roots[i]);
+                        gatherContours(roots[i]);
+                    }
+                }
+
+                if (collectedPaths.length) {
+                    clipperRingPaths = collectedPaths;
+                }
+                clipperRingPolyTree = ringPolyTree;
+            }
+        } catch (e) {
+            // silencioso
+        }
+
+        if (!ringsForTiles.length && insetLoop && insetLoop.length >= 3) {
+            const innerOriented = ensureLoopOrientation(insetLoop, true).map(pt => ({ x: pt.x, y: pt.y }));
+            const outerCopy = outerLoop.map(pt => ({ x: pt.x, y: pt.y }));
+            ringsForTiles.push({
+                outer: outerCopy,
+                inner: innerOriented,
+            });
+            ringContours.push({ outer: outerCopy.map(pt => ({ x: pt.x, y: pt.y })), holes: [innerOriented] });
+        }
+
+        const addRingSegments = (outerCandidate: Point[], innerCandidate: Point[]) => {
+            const outerPts = ensureLoopOrientation(outerCandidate, true);
+            const innerPts = ensureLoopOrientation(innerCandidate, true);
+            if (outerPts.length < 3 || innerPts.length < 3) return;
+            const alignedInner = rotateLoopToClosestPoint(innerPts, outerPts[0]);
+            const outerMetrics = buildLoopMetrics(outerPts);
+            const innerMetrics = buildLoopMetrics(alignedInner);
+            if (!outerMetrics || !innerMetrics) return;
+            if (!(outerMetrics.total > 1e-4) || !(innerMetrics.total > 1e-4)) return;
+            const baseSegments = Math.max(1, Math.round(outerMetrics.total / tileLengthM));
+            const minSegments = Math.max(outerMetrics.points.length, innerMetrics.points.length);
+            const tileCount = Math.min(4096, Math.max(baseSegments, minSegments));
+            for (let ti = 0; ti < tileCount; ti++) {
+                const t0 = ti / tileCount;
+                const t1 = (ti + 1) / tileCount;
+                const outerStart = sampleLoopPoint(outerMetrics, t0);
+                const outerEnd = sampleLoopPoint(outerMetrics, t1);
+                const innerStart = sampleLoopPoint(innerMetrics, t0);
+                const innerEnd = sampleLoopPoint(innerMetrics, t1);
+                walkwaySegments.push({
+                    quad: [outerStart, outerEnd, innerEnd, innerStart],
+                    u0: outerMetrics.total * t0,
+                    u1: outerMetrics.total * t1,
+                });
+                tilePolys.push([outerStart, outerEnd, innerEnd, innerStart]);
+            }
+        };
+
+        for (const ring of ringsForTiles) {
+            addRingSegments(ring.outer, ring.inner);
+        }
+
+        const walkwayQuads = walkwaySegments.map(seg => seg.quad);
+
+        if (!ringContours.length && !walkwayQuads.length && !(clipperRingPaths && clipperRingPaths.length)) {
+            return;
+        }
+
+        const drawRingShape = (graphics: PIXI.Graphics): void => {
+            const drawIsoPolygon = (pts: Point[]): void => {
+                if (!pts || pts.length < 3) return;
+                const isoPts = pts.map(p => worldToIso(p));
+                if (isoPts.length > 2) {
+                    graphics.drawPolygon(isoPts.flatMap(pt => [pt.x, pt.y]));
+                }
+            };
+
+            if (ringContours.length) {
+                for (const contour of ringContours) {
+                    drawIsoPolygon(contour.outer);
+                    if (contour.holes && contour.holes.length) {
+                        for (const hole of contour.holes) {
+                            if (!hole || hole.length < 3) continue;
+                            graphics.beginHole();
+                            drawIsoPolygon(hole);
+                            graphics.endHole();
+                        }
+                    }
+                }
+                return;
+            }
+
+            const drawPolyNode = (node: any): void => {
+                if (!node) return;
+                const contour = node.Contour && node.Contour();
+                if (contour && contour.length > 2) {
+                    const pts = contour.map((p: any) => ({ x: p.X / clipScale, y: p.Y / clipScale }));
+                    if (typeof node.IsHole === 'function' && node.IsHole()) {
+                        graphics.beginHole();
+                        drawIsoPolygon(pts);
+                        graphics.endHole();
+                    } else {
+                        drawIsoPolygon(pts);
+                    }
+                }
+                const childs = node.Childs && node.Childs();
+                if (childs && childs.length) {
+                    for (let i = 0; i < childs.length; i++) {
+                        drawPolyNode(childs[i]);
+                    }
+                }
+            };
+
+            if (clipperRingPolyTree && clipperRingPolyTree.Childs) {
+                const roots = clipperRingPolyTree.Childs();
+                if (roots && roots.length) {
+                    for (let i = 0; i < roots.length; i++) {
+                        drawPolyNode(roots[i]);
+                    }
+                }
+                return;
+            }
+
+            if (clipperRingPaths && clipperRingPaths.length) {
+                for (const quad of walkwayQuads) {
+                    let polys: Point[][] = [quad];
+                    try {
+                        const clip = new ClipperLib.Clipper();
+                        const result = new ClipperLib.Paths();
+                        clip.AddPaths(clipperRingPaths, ClipperLib.PolyType.ptSubject, true);
+                        clip.AddPath(quad.map(p => ({ X: Math.round(p.x * clipScale), Y: Math.round(p.y * clipScale) })), ClipperLib.PolyType.ptClip, true);
+                        clip.Execute(ClipperLib.ClipType.ctIntersection, result, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+                        if (result.length) {
+                            polys = result.map((path: any) => path.map((p: any) => ({ x: p.X / clipScale, y: p.Y / clipScale })));
+                        } else {
+                            polys = [];
+                        }
+                    } catch {}
+                    for (const poly of polys) {
+                        drawIsoPolygon(poly);
+                    }
+                }
+                return;
+            }
+
+            for (const poly of walkwayQuads) {
+                drawIsoPolygon(poly);
+            }
+        };
+
+        const useSideTex = !!((config as any).render?.sidewalkUseTexture) && sidewalkTex;
+        const useCustomPattern = !useSideTex && !!((config as any).render?.sidewalkUseCustomPattern);
+        const seedBase = hashNumbers(
+            Math.round((centroid?.x || 0) * 1000),
+            Math.round((centroid?.y || 0) * 1000),
+            9173
+        );
+        let sRand = seedBase;
+        const nrand = () => {
+            sRand = (Math.imul(sRand, 1664525) + 1013904223) >>> 0;
+            return sRand / 0x100000000;
+        };
+        const jitterPx = Math.max(0, Number((config as any).render?.sidewalkPerBlockOffsetPx ?? (config as any).render?.sidewalkTextureJitterPx ?? 0));
+        const jitX = Math.round((nrand() - 0.5) * 2 * jitterPx);
+        const jitY = Math.round((nrand() - 0.5) * 2 * jitterPx);
+        const tintJ = Math.max(0, Math.min(0.3, Number((config as any).render?.sidewalkPerBlockTintJitter ?? (config as any).render?.sidewalkTextureTintJitter ?? 0)));
+        const baseTileSizeM = Math.max(0.1, Number((config as any).render.sidewalkDesiredTileSizeM ?? tileLengthM));
+
+        const buildSidewalkMesh = (texture: PIXI.Texture, alpha: number, tint: number, scaleFactor: number): boolean => {
+            if (!walkwaySegments.length) return false;
+            const effectiveScale = Math.max(1e-6, scaleFactor);
+            const tileSizeM = Math.max(1e-6, baseTileSizeM / effectiveScale);
+            const pxPerTile = Math.max(1e-3, tileSizeM * pxPerM);
+            const uOffset = pxPerTile > 1e-6 ? jitX / pxPerTile : 0;
+            const vOffset = pxPerTile > 1e-6 ? jitY / pxPerTile : 0;
+            const vSpan = widthM / tileSizeM;
+
+            const geometry = new PIXI.Geometry();
+            const positions: number[] = [];
+            const uvs: number[] = [];
+            const indices: number[] = [];
+            let vertexIndex = 0;
+
+            for (const seg of walkwaySegments) {
+                const quad = seg.quad;
+                if (!quad || quad.length !== 4) continue;
+                const isoPts = quad.map(p => worldToIso(p));
+                positions.push(
+                    isoPts[0].x, isoPts[0].y,
+                    isoPts[1].x, isoPts[1].y,
+                    isoPts[2].x, isoPts[2].y,
+                    isoPts[3].x, isoPts[3].y
+                );
+                const u0 = seg.u0 / tileSizeM + uOffset;
+                const u1 = seg.u1 / tileSizeM + uOffset;
+                const v0 = vOffset;
+                const v1 = vOffset + vSpan;
+                uvs.push(u0, v0, u1, v0, u1, v1, u0, v1);
+                indices.push(vertexIndex, vertexIndex + 1, vertexIndex + 2, vertexIndex, vertexIndex + 2, vertexIndex + 3);
+                vertexIndex += 4;
+            }
+
+            if (!positions.length) return false;
+
+            geometry.addAttribute('aVertexPosition', positions, 2);
+            geometry.addAttribute('aTextureCoord', uvs, 2);
+            geometry.addIndex(indices);
+
+            const material = new PIXI.MeshMaterial(texture, { alpha });
+            material.tint = tint >>> 0;
+            const mesh = new PIXI.Mesh(geometry, material);
+            sidewalkTiles.current?.addChild(mesh);
+
+            const maskGraphic = new PIXI.Graphics();
+            maskGraphic.beginFill(0xFFFFFF, 1);
+            drawRingShape(maskGraphic);
+            maskGraphic.endFill();
+            maskGraphic.alpha = 0;
+            sidewalkTiles.current?.addChild(maskGraphic);
+            mesh.mask = maskGraphic;
+
+            return true;
+        };
+
+        let texturedApplied = false;
+
+        if (useSideTex) {
+            try {
+                const texture = sidewalkTex!;
+                const sRaw = typeof sidewalkScaleVal === 'number' ? sidewalkScaleVal : (config as any).render.sidewalkTextureScale || 1.0;
+                const baseS = (Number.isFinite(sRaw) && sRaw > 0) ? sRaw : 1.0;
+                const alpha = clamp((typeof sidewalkAlphaVal === 'number' ? sidewalkAlphaVal : (config as any).render.sidewalkTextureAlpha ?? 1.0), 0, 1);
+                const baseTint = (typeof sidewalkTintVal === 'number' && Number.isFinite(sidewalkTintVal)) ? sidewalkTintVal : ((config as any).render.sidewalkTextureTint ?? 0xFFFFFF);
+                const j = (1 - tintJ) + nrand() * (2 * tintJ);
+                const r = Math.min(255, Math.max(0, Math.round(((baseTint >> 16) & 0xFF) * j)));
+                const g = Math.min(255, Math.max(0, Math.round(((baseTint >> 8) & 0xFF) * j)));
+                const b = Math.min(255, Math.max(0, Math.round((baseTint & 0xFF) * j)));
+                const tint = (r << 16) | (g << 8) | b;
+                texturedApplied = buildSidewalkMesh(texture, alpha, tint, baseS);
+            } catch (err) {
+                // fallback handled below
+            }
+        }
+
+        if (!texturedApplied && useCustomPattern) {
+            try {
+                const rCfg: any = (config as any).render || {};
+                const periodRand = !!rCfg.sidewalkRandomPeriodEnabled;
+                const variants: number[] = Array.isArray(rCfg.sidewalkPeriodVariantsPx) && rCfg.sidewalkPeriodVariantsPx.length ? rCfg.sidewalkPeriodVariantsPx : [rCfg.sidewalkPatternTilePx ?? 28];
+                let selTilePx = Math.max(8, Math.floor(rCfg.sidewalkPatternTilePx ?? 28));
+                if (periodRand && variants.length) {
+                    const idx = Math.floor(nrand() * variants.length) % variants.length;
+                    selTilePx = Math.max(8, Math.floor(variants[idx]));
+                }
+                const groutPxVal = Math.max(1, Math.floor(rCfg.sidewalkPatternGroutPx ?? 2));
+                const groutJitterPxVal = Math.max(0, Math.floor(rCfg.sidewalkPatternGroutJitterPx ?? 1));
+                const jitterPxVal = Math.max(0, Number(rCfg.sidewalkPatternJitterPx ?? 2));
+                const key = `t:${selTilePx}|g:${groutPxVal}|gj:${groutJitterPxVal}|j:${jitterPxVal}`;
+                let texture = proceduralSidewalkTextureCacheRef.current.get(key) || null;
+                if (!texture) {
+                    texture = createSidewalkTexture({ jitterPx: jitterPxVal, tilePx: selTilePx, groutPx: groutPxVal, groutJitterPx: groutJitterPxVal });
+                    proceduralSidewalkTextureCacheRef.current.set(key, texture);
+                }
+                const alpha = clamp((typeof sidewalkAlphaVal === 'number' ? sidewalkAlphaVal : (config as any).render.sidewalkTextureAlpha ?? 1.0), 0, 1);
+                const j = (1 - tintJ) + nrand() * (2 * tintJ);
+                const baseTint = 0xFFFFFF;
+                const r = Math.min(255, Math.max(0, Math.round(((baseTint >> 16) & 0xFF) * j)));
+                const g = Math.min(255, Math.max(0, Math.round(((baseTint >> 8) & 0xFF) * j)));
+                const b = Math.min(255, Math.max(0, Math.round((baseTint & 0xFF) * j)));
+                const tint = (r << 16) | (g << 8) | b;
+                texturedApplied = buildSidewalkMesh(texture, alpha, tint, 1);
+            } catch (err) {
+                // fallback handled below
+            }
+        }
+
+        const ringG = new PIXI.Graphics();
+        let ringGraphicsUsed = false;
+
+        if (!texturedApplied) {
+            ringG.beginFill(vCfg.sidewalkFillColor ?? 0xCFCFCF, vCfg.sidewalkFillAlpha ?? 0.9);
+            drawRingShape(ringG);
+            ringG.endFill();
+            ringGraphicsUsed = true;
+        }
+
+        if (ringGraphicsUsed) {
+            sidewalkTiles.current?.addChild(ringG);
+        }
+
+        if (tilePolys.length) {
+            const strokePx = Math.max(0.1, Number((config as any).render.sidewalkVectorTileStrokePx ?? 1.25));
+            const alpha = clamp(Number((config as any).render.sidewalkVectorTileAlpha ?? 0.55), 0, 1);
+            const color = Number((config as any).render.sidewalkVectorTileColor ?? 0xBDBDBD) >>> 0;
+            const cross = !!(config as any).render.sidewalkVectorTileCrosshatch;
+            if (strokePx > 0 && alpha > 0) {
+                const tileG = new PIXI.Graphics();
+                tileG.lineStyle(strokePx, color, alpha);
+                const clipSource = (clipperRingPaths && clipperRingPaths.length) ? clipperRingPaths : null;
+                for (const poly of tilePolys) {
+                    let tilesToDraw: Point[][] = [poly];
+                    if (clipSource) {
+                        const path = poly.map(p => ({ X: Math.round(p.x * clipScale), Y: Math.round(p.y * clipScale) }));
+                        const clip = new ClipperLib.Clipper();
+                        const result = new ClipperLib.Paths();
+                        clip.AddPaths(clipSource, ClipperLib.PolyType.ptSubject, true);
+                        clip.AddPath(path, ClipperLib.PolyType.ptClip, true);
+                        clip.Execute(ClipperLib.ClipType.ctIntersection, result, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+                        if (result.length) {
+                            tilesToDraw = result.map((res: any) => res.map((p: any) => ({ x: p.X / clipScale, y: p.Y / clipScale })));
+                        } else {
+                            tilesToDraw = [];
+                        }
+                    }
+                    for (const tilePoly of tilesToDraw) {
+                        const pts = tilePoly.map(p => worldToIso(p));
+                        if (pts.length > 2) {
+                            tileG.drawPolygon(pts.flatMap(pt => [pt.x, pt.y]));
+                            if (cross && pts.length === 4) {
+                                tileG.moveTo(pts[0].x, pts[0].y);
+                                tileG.lineTo(pts[2].x, pts[2].y);
+                                tileG.moveTo(pts[1].x, pts[1].y);
+                                tileG.lineTo(pts[3].x, pts[3].y);
+                            }
+                        }
+                    }
+                }
+                sidewalkTiles.current?.addChild(tileG);
+            }
+        }
     };
 
     const roundPolygonPoints = (points: Point[], radius: number): Point[] => {
@@ -3109,170 +3768,27 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                         const vCfg = (config as any).render;
                         if (!!vCfg.sidewalkVectorTilesEnabled) {
                             const centroid = polygonCentroid(worldPts);
+                            const widthM = Math.max(0.25, Number(vCfg.sidewalkWidthM ?? 2.0));
                             let inside = true;
                             if (state.heatmap && centroid) {
-                                const c = (config as any).zoningModel.cityCenter;
-                                const R = Math.max(200, (state.heatmap as any).rUnit || 3000);
-                                inside = Math.hypot(centroid.x - c.x, centroid.y - c.y) <= R;
+                                const heat = state.heatmap as any;
+                                const baseCenter = (config as any).zoningModel.cityCenter || { x: 0, y: 0 };
+                                const cx = baseCenter.x + (Number.isFinite(heat?.shiftX) ? heat.shiftX : 0);
+                                const cy = baseCenter.y + (Number.isFinite(heat?.shiftY) ? heat.shiftY : 0);
+                                const R = Math.max(200, Number.isFinite(heat?.rUnit) ? heat.rUnit : 3000);
+                                inside = polygonWithinCircle(worldPts, { x: cx, y: cy }, R, widthM * 0.5);
                             }
                             if (inside) {
-                                const widthM = Math.max(0.25, Number(vCfg.sidewalkWidthM ?? 2.0));
-                                // Converter polígono do quarteirão para Clipper paths
-                                const outerPath = worldPts.map(p => ({ X: Math.round(p.x * CLIP_SCALE), Y: Math.round(p.y * CLIP_SCALE) }));
-                                const coSide = new ClipperLib.ClipperOffset();
-                                coSide.AddPath(outerPath, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
-                                const innerPaths = new ClipperLib.Paths();
-                                // Offset negativo para dentro do quarteirão
-                                coSide.Execute(innerPaths, -widthM * CLIP_SCALE);
-                                // Se não houver espaço, caímos fora (quarteirão muito pequeno)
-                                if (!innerPaths || innerPaths.length === 0) {
-                                    // fallback: desenhar apenas o contorno próximo à borda (faixa fina)
-                                } else {
-                                    // Anel = outer - inner
-                                    const cpr = new ClipperLib.Clipper();
-                                    const ringPaths = new ClipperLib.Paths();
-                                    cpr.AddPath(outerPath, ClipperLib.PolyType.ptSubject, true);
-                                    cpr.AddPaths(innerPaths, ClipperLib.PolyType.ptClip, true);
-                                    cpr.Execute(ClipperLib.ClipType.ctDifference, ringPaths, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
-                                    if (ringPaths && ringPaths.length) {
-                                        const ringG = new PIXI.Graphics();
-                                        // Usar textura (se habilitado e disponível), alinhada à matriz isométrica
-                                        const useSideTex = !!((config as any).render?.sidewalkUseTexture) && sidewalkTex;
-                                        const useCustomPattern = !useSideTex && !!((config as any).render?.sidewalkUseCustomPattern);
-                                        // Jitter estável por quarteirão: deslocamento e tint
-                                        const seedBase = hashNumbers(
-                                            Math.round((centroid?.x || 0) * 1000),
-                                            Math.round((centroid?.y || 0) * 1000),
-                                            9173
-                                        );
-                                        let sRand = seedBase;
-                                        const nrand = () => { sRand = (Math.imul(sRand, 1664525) + 1013904223) >>> 0; return sRand / 0x100000000; };
-                                        const jitterPx = Math.max(0, Number((config as any).render?.sidewalkPerBlockOffsetPx ?? (config as any).render?.sidewalkTextureJitterPx ?? 0));
-                                        const jitX = Math.round((nrand() - 0.5) * 2 * jitterPx);
-                                        const jitY = Math.round((nrand() - 0.5) * 2 * jitterPx);
-                                        const tintJ = Math.max(0, Math.min(0.3, Number((config as any).render?.sidewalkPerBlockTintJitter ?? (config as any).render?.sidewalkTextureTintJitter ?? 0)));
-                                        if (useSideTex) {
-                                            try {
-                                                const texture = sidewalkTex!;
-                                                // Escala alvo: manter o tamanho da textura consistente em pixels por metro
-                                                // Base: sidewalkTextureScale (user) multiplicada por conversão aproximada mundo->tela
-                                                const sRaw = typeof sidewalkScaleVal === 'number' ? sidewalkScaleVal : (config as any).render.sidewalkTextureScale || 1.0;
-                                                const baseS = (Number.isFinite(sRaw) && sRaw > 0) ? sRaw : 1.0;
-                                                const unit0 = worldToIso({ x: 0, y: 0 });
-                                                const unit1 = worldToIso({ x: 1, y: 0 });
-                                                const pxPerM = Math.max(0.1, Math.hypot(unit1.x - unit0.x, unit1.y - unit0.y));
-                                                const s = baseS * (pxPerM / 48); // 48px ~ 1m padrão visual
-                                                const A = (config as any).render.isoA ?? 1;
-                                                const B = (config as any).render.isoB ?? 0;
-                                                const C = (config as any).render.isoC ?? 0;
-                                                const D = (config as any).render.isoD ?? 1;
-                                                const mode = (config as any).render.mode;
-                                                let m = mode === 'isometric' ? new PIXI.Matrix(A * s, B * s, C * s, D * s, 0, 0) : new PIXI.Matrix(s, 0, 0, s, 0, 0);
-                                                // Rotação discreta do padrão por quarteirão para quebrar repetição de linhas
-                                                try {
-                                                    const rCfg: any = (config as any).render || {};
-                                                    if (rCfg.sidewalkRandomRotationEnabled) {
-                                                        const angles: number[] = (Array.isArray(rCfg.sidewalkRotationAnglesDeg) && rCfg.sidewalkRotationAnglesDeg.length) ? rCfg.sidewalkRotationAnglesDeg : [0,90,180,270];
-                                                        const idx = Math.floor(nrand() * angles.length) % angles.length;
-                                                        const deg = angles[idx] || 0;
-                                                        const rad = (deg * Math.PI) / 180;
-                                                        const cos = Math.cos(rad), sin = Math.sin(rad);
-                                                        const rot = new PIXI.Matrix(cos, sin, -sin, cos, 0, 0);
-                                                        m = rot.append(m);
-                                                    }
-                                                } catch {}
-                                                m.tx = (m.tx || 0) + jitX;
-                                                m.ty = (m.ty || 0) + jitY;
-                                                const matrix = m;
-                                                const alpha = clamp((typeof sidewalkAlphaVal === 'number' ? sidewalkAlphaVal : (config as any).render.sidewalkTextureAlpha ?? 1.0), 0, 1);
-                                                // aplicar leve jitter de brilho multiplicando o tint
-                                                const baseTint = (typeof sidewalkTintVal === 'number' && Number.isFinite(sidewalkTintVal)) ? sidewalkTintVal : ((config as any).render.sidewalkTextureTint ?? 0xFFFFFF);
-                                                const j = (1 - tintJ) + nrand() * (2 * tintJ);
-                                                const r = Math.min(255, Math.max(0, Math.round(((baseTint >> 16) & 0xFF) * j)));
-                                                const g = Math.min(255, Math.max(0, Math.round(((baseTint >> 8) & 0xFF) * j)));
-                                                const b = Math.min(255, Math.max(0, Math.round((baseTint & 0xFF) * j)));
-                                                const tint = (r << 16) | (g << 8) | b;
-                                                ringG.beginTextureFill({ texture, alpha, matrix });
-                                                ringG.tint = tint;
-                                            } catch (err) {
-                                                ringG.beginFill(vCfg.sidewalkFillColor ?? 0xCFCFCF, vCfg.sidewalkFillAlpha ?? 0.9);
-                                            }
-                                        } else if (useCustomPattern) {
-                                            try {
-                                                // Selecionar período por quarteirão, se habilitado, e buscar/criar textura correspondente no cache
-                                                const rCfg: any = (config as any).render || {};
-                                                const periodRand = !!rCfg.sidewalkRandomPeriodEnabled;
-                                                const variants: number[] = Array.isArray(rCfg.sidewalkPeriodVariantsPx) && rCfg.sidewalkPeriodVariantsPx.length ? rCfg.sidewalkPeriodVariantsPx : [rCfg.sidewalkPatternTilePx ?? 28];
-                                                let selTilePx = Math.max(8, Math.floor(rCfg.sidewalkPatternTilePx ?? 28));
-                                                if (periodRand && variants.length) {
-                                                    const idx = Math.floor(nrand() * variants.length) % variants.length;
-                                                    selTilePx = Math.max(8, Math.floor(variants[idx]));
-                                                }
-                                                const groutPxVal = Math.max(1, Math.floor(rCfg.sidewalkPatternGroutPx ?? 2));
-                                                const groutJitterPxVal = Math.max(0, Math.floor(rCfg.sidewalkPatternGroutJitterPx ?? 1));
-                                                const jitterPxVal = Math.max(0, Number(rCfg.sidewalkPatternJitterPx ?? 2));
-                                                const key = `t:${selTilePx}|g:${groutPxVal}|gj:${groutJitterPxVal}|j:${jitterPxVal}`;
-                                                let texture = proceduralSidewalkTextureCacheRef.current.get(key) || null;
-                                                if (!texture) {
-                                                    const tex = createSidewalkTexture({ jitterPx: jitterPxVal, tilePx: selTilePx, groutPx: groutPxVal, groutJitterPx: groutJitterPxVal });
-                                                    texture = tex;
-                                                    proceduralSidewalkTextureCacheRef.current.set(key, tex);
-                                                }
-                                                // Procedural: ajustar escala para alvo em metros por tile
-                                                const desiredM = (config as any).render.sidewalkDesiredTileSizeM ?? 0.6;
-                                                const unit0b = worldToIso({ x: 0, y: 0 });
-                                                const unit1b = worldToIso({ x: desiredM, y: 0 });
-                                                const pxPerDesired = Math.max(1, Math.hypot(unit1b.x - unit0b.x, unit1b.y - unit0b.y));
-                                                // A textura procedimental é gerada em pixels (tilePx). Queremos que esse tile ocupe 'desiredM' na tela.
-                                                // Usaremos a matriz com fator tal que 1 texel -> 1 px, então m2 já escala com pxPorMetro.
-                                                const s = 1.0 * (pxPerDesired / Math.max(8, selTilePx));
-                                                const A = (config as any).render.isoA ?? 1;
-                                                const B = (config as any).render.isoB ?? 0;
-                                                const C = (config as any).render.isoC ?? 0;
-                                                const D = (config as any).render.isoD ?? 1;
-                                                const mode = (config as any).render.mode;
-                                                let m2 = mode === 'isometric' ? new PIXI.Matrix(A * s, B * s, C * s, D * s, 0, 0) : new PIXI.Matrix(s, 0, 0, s, 0, 0);
-                                                try {
-                                                    const rCfg: any = (config as any).render || {};
-                                                    if (rCfg.sidewalkRandomRotationEnabled) {
-                                                        const angles: number[] = (Array.isArray(rCfg.sidewalkRotationAnglesDeg) && rCfg.sidewalkRotationAnglesDeg.length) ? rCfg.sidewalkRotationAnglesDeg : [0,90,180,270];
-                                                        const idx = Math.floor(nrand() * angles.length) % angles.length;
-                                                        const deg = angles[idx] || 0;
-                                                        const rad = (deg * Math.PI) / 180;
-                                                        const cos = Math.cos(rad), sin = Math.sin(rad);
-                                                        const rot = new PIXI.Matrix(cos, sin, -sin, cos, 0, 0);
-                                                        m2 = rot.append(m2);
-                                                    }
-                                                } catch {}
-                                                m2.tx = (m2.tx || 0) + jitX;
-                                                m2.ty = (m2.ty || 0) + jitY;
-                                                const matrix = m2;
-                                                const alpha = clamp((typeof sidewalkAlphaVal === 'number' ? sidewalkAlphaVal : (config as any).render.sidewalkTextureAlpha ?? 1.0), 0, 1);
-                                                const j = (1 - tintJ) + nrand() * (2 * tintJ);
-                                                const baseTint = 0xFFFFFF;
-                                                const r = Math.min(255, Math.max(0, Math.round(((baseTint >> 16) & 0xFF) * j)));
-                                                const g = Math.min(255, Math.max(0, Math.round(((baseTint >> 8) & 0xFF) * j)));
-                                                const b = Math.min(255, Math.max(0, Math.round((baseTint & 0xFF) * j)));
-                                                const tint = (r << 16) | (g << 8) | b;
-                                                ringG.beginTextureFill({ texture, alpha, matrix });
-                                                ringG.tint = tint;
-                                            } catch (err) {
-                                                ringG.beginFill(vCfg.sidewalkFillColor ?? 0xCFCFCF, vCfg.sidewalkFillAlpha ?? 0.9);
-                                            }
-                                        } else {
-                                            ringG.beginFill(vCfg.sidewalkFillColor ?? 0xCFCFCF, vCfg.sidewalkFillAlpha ?? 0.9);
-                                        }
-                                        // Desenhar todos os subpaths do anel
-                                        for (const path of ringPaths) {
-                                            const pts = path.map((p: any) => worldToIso({ x: p.X / CLIP_SCALE, y: p.Y / CLIP_SCALE }));
-                                            if (pts.length > 2) {
-                                                ringG.drawPolygon(pts);
-                                            }
-                                        }
-                                        ringG.endFill();
-                                        sidewalkTiles.current?.addChild(ringG);
-                                    }
-                                }
+                                renderSidewalkRing({
+                                    worldPts,
+                                    centroid,
+                                    widthM,
+                                    sidewalkTex,
+                                    sidewalkScaleVal,
+                                    sidewalkAlphaVal,
+                                    sidewalkTintVal,
+                                    clipScale: CLIP_SCALE,
+                                });
                             }
                         }
                     } catch (e) {
