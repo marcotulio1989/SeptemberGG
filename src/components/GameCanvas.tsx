@@ -348,6 +348,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     const zoomContainer = useRef<PIXI.Container | null>(null);
     const drawables = useRef<PIXI.Container | null>(null);
     const dynamicDrawables = useRef<PIXI.Container | null>(null);
+    const sceneryLayer = useRef<PIXI.Container | null>(null);
     const heatmaps = useRef<PIXI.Container | null>(null);
     const debugDrawables = useRef<PIXI.Container | null>(null);
     const debugSegments = useRef<PIXI.Container | null>(null);
@@ -761,6 +762,425 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         }
         const inv6A = 1 / (6 * area);
         return { x: cxAcc * inv6A, y: cyAcc * inv6A };
+    };
+
+    const pointSegmentDistance = (p: Point, a: Point, b: Point): number => {
+        const vx = b.x - a.x;
+        const vy = b.y - a.y;
+        const len2 = vx * vx + vy * vy;
+        if (len2 < 1e-9) {
+            return Math.hypot(p.x - a.x, p.y - a.y);
+        }
+        const t = ((p.x - a.x) * vx + (p.y - a.y) * vy) / len2;
+        const clamped = Math.max(0, Math.min(1, t));
+        const proj = { x: a.x + vx * clamped, y: a.y + vy * clamped };
+        return Math.hypot(p.x - proj.x, p.y - proj.y);
+    };
+
+    const minDistanceToEdges = (p: Point, pts: Point[]): number => {
+        if (!pts || pts.length < 2) return Infinity;
+        let min = Infinity;
+        for (let i = 0; i < pts.length; i++) {
+            const a = pts[i];
+            const b = pts[(i + 1) % pts.length];
+            const d = pointSegmentDistance(p, a, b);
+            if (d < min) min = d;
+        }
+        return min;
+    };
+
+    const pointToBoxDistance = (p: Point, box: { x: number; y: number; width: number; height: number }): number => {
+        const maxX = box.x + box.width;
+        const maxY = box.y + box.height;
+        const clampedX = Math.max(box.x, Math.min(maxX, p.x));
+        const clampedY = Math.max(box.y, Math.min(maxY, p.y));
+        const dx = p.x - clampedX;
+        const dy = p.y - clampedY;
+        return Math.hypot(dx, dy);
+    };
+
+    const boundsOfPoints = (pts: Point[]): { minX: number; minY: number; maxX: number; maxY: number } => {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        pts.forEach(pt => {
+            if (pt.x < minX) minX = pt.x;
+            if (pt.y < minY) minY = pt.y;
+            if (pt.x > maxX) maxX = pt.x;
+            if (pt.y > maxY) maxY = pt.y;
+        });
+        return { minX, minY, maxX, maxY };
+    };
+
+    const ensureSceneryForBlocks = (blocks: Point[][], segments: Segment[], buildingList: Building[]) => {
+        const layer = sceneryLayer.current;
+        if (!layer) return;
+        const envCfg = (config as any).environment || {};
+        if (envCfg.enabled === false) return;
+
+        const mapBounds = (config as any).mapGeneration?.QUADTREE_PARAMS;
+        const isInsideBounds = (pt: Point): boolean => {
+            if (!mapBounds) return true;
+            return pt.x >= mapBounds.x && pt.x <= mapBounds.x + mapBounds.width && pt.y >= mapBounds.y && pt.y <= mapBounds.y + mapBounds.height;
+        };
+
+        const baseSeed = Math.floor(envCfg.seedOffset ?? 0);
+
+        const originIso = worldToIso({ x: 0, y: 0 });
+        const isoX = worldToIso({ x: 1, y: 0 });
+        const isoY = worldToIso({ x: 0, y: 1 });
+        const pxPerM = Math.max(0.001,
+            (Math.hypot(isoX.x - originIso.x, isoX.y - originIso.y) + Math.hypot(isoY.x - originIso.x, isoY.y - originIso.y)) / 2
+        );
+
+        const buildingBoxes = buildingList
+            .map(building => {
+                try {
+                    const lim = building?.collider?.limits?.();
+                    if (lim && Number.isFinite(lim.x) && Number.isFinite(lim.y) && Number.isFinite(lim.width) && Number.isFinite(lim.height)) {
+                        return { x: lim.x, y: lim.y, width: lim.width, height: lim.height };
+                    }
+                } catch (err) {}
+                if (building?.corners && building.corners.length) {
+                    const xs = building.corners.map(c => c.x);
+                    const ys = building.corners.map(c => c.y);
+                    const minX = Math.min(...xs);
+                    const maxX = Math.max(...xs);
+                    const minY = Math.min(...ys);
+                    const maxY = Math.max(...ys);
+                    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+                }
+                return null;
+            })
+            .filter((box): box is { x: number; y: number; width: number; height: number } => !!box && isFinite(box.x) && isFinite(box.y));
+
+        const treeCfg = envCfg.trees || {};
+        const baseTreeDensity = treeCfg.defaultDensityPerHectare ?? 36;
+        const densityByZone: Record<string, number> = treeCfg.densityByZone || {};
+        const densityMultiplierByZone: Record<string, number> = treeCfg.zoneDensityMultiplier || {};
+        const sizeMultiplierByZone: Record<string, number> = treeCfg.zoneSizeMultiplier || {};
+        const treeEdgeMargin = Math.max(0.5, treeCfg.minDistanceFromEdgeM ?? 3);
+        const treeBuildingMargin = Math.max(treeEdgeMargin, treeCfg.minDistanceFromBuildingM ?? 5.5);
+        const treeSpacing = Math.max(1, treeCfg.minDistanceBetweenTreesM ?? 5);
+        const treeRadiusBase = Math.max(0.5, treeCfg.baseRadiusM ?? 1.8);
+        const treeRadiusJitter = Math.max(0, treeCfg.radiusJitterM ?? 0.6);
+        const treeCanopyFlatten = treeCfg.canopyFlatten ?? 0.55;
+        const treeCanopyColor = treeCfg.canopyColor ?? 0x2E7D32;
+        const treeCanopyAlpha = treeCfg.canopyAlpha ?? 0.92;
+        const treeCanopyEdgeColor = treeCfg.canopyEdgeColor ?? 0x1B5E20;
+        const treeTrunkColor = treeCfg.trunkColor ?? 0x4E342E;
+        const treeTrunkWidthM = Math.max(0.15, treeCfg.trunkWidthM ?? 0.35);
+        const treeTrunkHeightM = Math.max(1.2, treeCfg.trunkHeightM ?? 2.4);
+        const treeShadowAlpha = treeCfg.shadowAlpha ?? 0.18;
+        const treeShadowColor = treeCfg.shadowColor ?? 0x000000;
+        const treeShadowScale = treeCfg.shadowScale ?? 1.15;
+        const maxTreesPerBlock = Math.max(0, treeCfg.maxPerBlock ?? 60);
+
+        const polygonCache = new WeakMap<Point[], { minX: number; minY: number; maxX: number; maxY: number }>();
+
+        const getBounds = (pts: Point[]) => {
+            const cached = polygonCache.get(pts);
+            if (cached) return cached;
+            const bounds = boundsOfPoints(pts);
+            polygonCache.set(pts, bounds);
+            return bounds;
+        };
+
+        for (const pts of blocks) {
+            if (!pts || pts.length < 3) continue;
+            const centroid = polygonCentroid(pts) || pts[0];
+            if (!isInsideBounds(centroid)) continue;
+            const zone = getZoneAt(centroid);
+            const rawArea = Math.abs(blockGeometry.polygonArea({ vertices: pts }));
+            if (!(rawArea > 50)) continue;
+            const areaHa = rawArea / 10_000;
+            const baseDensity = densityByZone[zone] ?? baseTreeDensity;
+            if (baseDensity <= 0) continue;
+            const densityMult = densityMultiplierByZone[zone] ?? 1;
+            let desiredTrees = Math.round(areaHa * baseDensity * densityMult);
+            if (desiredTrees <= 0) continue;
+            desiredTrees = Math.min(maxTreesPerBlock, desiredTrees);
+            const bounds = getBounds(pts);
+            const spanX = Math.max(1, bounds.maxX - bounds.minX);
+            const spanY = Math.max(1, bounds.maxY - bounds.minY);
+            const blockSeed = hashNumbers(Math.round(centroid.x * 97), Math.round(centroid.y * 101), baseSeed + 0x9e3779b);
+            const rng = createPRNG(blockSeed);
+            const placed: Point[] = [];
+            const attemptsLimit = Math.max(desiredTrees * 12, desiredTrees + 24);
+            let attempts = 0;
+            while (placed.length < desiredTrees && attempts < attemptsLimit) {
+                attempts++;
+                const candidate = {
+                    x: bounds.minX + rng() * spanX,
+                    y: bounds.minY + rng() * spanY,
+                };
+                if (!blockGeometry.pointInPolygon(candidate, { vertices: pts })) continue;
+                if (!isInsideBounds(candidate)) continue;
+                if (minDistanceToEdges(candidate, pts) < treeEdgeMargin) continue;
+                let nearBuilding = false;
+                for (const box of buildingBoxes) {
+                    if (pointToBoxDistance(candidate, box) < treeBuildingMargin) {
+                        nearBuilding = true;
+                        break;
+                    }
+                }
+                if (nearBuilding) continue;
+                let tooClose = false;
+                for (const other of placed) {
+                    if (Math.hypot(other.x - candidate.x, other.y - candidate.y) < treeSpacing) {
+                        tooClose = true;
+                        break;
+                    }
+                }
+                if (tooClose) continue;
+                placed.push(candidate);
+            }
+
+            if (!placed.length) continue;
+            const sizeMult = Math.max(0.35, sizeMultiplierByZone[zone] ?? 1);
+            for (const point of placed) {
+                const treeSeed = hashNumbers(Math.round(point.x * 113), Math.round(point.y * 131), baseSeed + 0x51f);
+                const prng = createPRNG(treeSeed);
+                const radiusM = Math.max(0.6, treeRadiusBase + (prng() - 0.5) * 2 * treeRadiusJitter) * sizeMult;
+                const radiusPx = Math.max(2, pxPerM * radiusM);
+                const trunkWidthPx = Math.max(1, pxPerM * treeTrunkWidthM * Math.max(0.6, Math.sqrt(sizeMult)));
+                const trunkHeightPx = Math.max(2, pxPerM * treeTrunkHeightM * sizeMult);
+                const iso = worldToIso(point);
+                const g = new PIXI.Graphics();
+                g.beginFill(treeShadowColor, treeShadowAlpha);
+                g.drawEllipse(iso.x, iso.y - pxPerM * 0.1, radiusPx * treeShadowScale, radiusPx * treeCanopyFlatten * treeShadowScale * 0.7);
+                g.endFill();
+                g.beginFill(treeTrunkColor, 1);
+                g.drawRoundedRect(iso.x - trunkWidthPx / 2, iso.y - trunkHeightPx, trunkWidthPx, trunkHeightPx, Math.min(trunkWidthPx, 4));
+                g.endFill();
+                g.lineStyle(Math.max(1, radiusPx * 0.08), treeCanopyEdgeColor, 0.6);
+                g.beginFill(treeCanopyColor, treeCanopyAlpha);
+                g.drawEllipse(iso.x, iso.y - trunkHeightPx, radiusPx, radiusPx * treeCanopyFlatten);
+                g.endFill();
+                layer.addChild(g);
+            }
+        }
+
+        const placeAlongSegments = (
+            typeKey: string,
+            cfg: {
+                spacingM?: number;
+                startOffsetM?: number;
+                jitterM?: number;
+                offsetM?: number;
+                absoluteOffset?: boolean;
+                allowHighways?: boolean;
+                probability?: number;
+                zoneMultiplier?: Record<string, number>;
+                skipZones?: Record<string, boolean>;
+                randomizeSide?: boolean;
+                sides?: 'single' | 'both';
+                side?: 1 | -1;
+                avoidBuildingDistanceM?: number;
+            },
+            draw: (position: Point, ctx: { side: 1 | -1; segment: Segment; zone: string; rng: () => number }) => void
+        ) => {
+            const allowHighways = !!cfg.allowHighways;
+            const skipZones: Record<string, boolean> = cfg.skipZones || {};
+            const zoneMultiplier: Record<string, number> = cfg.zoneMultiplier || {};
+            const baseSpacing = Math.max(2, cfg.spacingM ?? 30);
+            const jitter = Math.max(0, cfg.jitterM ?? 2);
+            const probability = Math.max(0, Math.min(1, cfg.probability ?? 1));
+            const avoidBoxDist = Math.max(0, cfg.avoidBuildingDistanceM ?? 0);
+            const hashSalt = hashNumbers(typeKey.length, baseSeed + Math.round(baseSpacing * 100), 0xC2B2AE35);
+            const used = new Set<string>();
+
+            for (const segment of segments) {
+                if (!segment) continue;
+                if (!allowHighways && segment.q?.highway) continue;
+                const ax = segment.r.start.x;
+                const ay = segment.r.start.y;
+                const bx = segment.r.end.x;
+                const by = segment.r.end.y;
+                const vx = bx - ax;
+                const vy = by - ay;
+                const segLen = Math.hypot(vx, vy);
+                if (!(segLen > 5)) continue;
+                const zonePoint = { x: (ax + bx) / 2, y: (ay + by) / 2 };
+                const zone = getZoneAt(zonePoint);
+                if (skipZones[zone]) continue;
+                const zoneMult = zoneMultiplier[zone] ?? 1;
+                if (zoneMult <= 0) continue;
+                const spacing = baseSpacing / Math.max(0.1, zoneMult);
+                const unitX = vx / (segLen || 1);
+                const unitY = vy / (segLen || 1);
+                const normalX = -unitY;
+                const normalY = unitX;
+                const startMarginRaw = cfg.startOffsetM ?? 10;
+                const startMargin = Math.max(startMarginRaw, (cfg.absoluteOffset ? 0 : segment.width * 0.5));
+                if (segLen <= 2 * startMargin + spacing * 0.25) continue;
+                const count = Math.floor((segLen - 2 * startMargin) / spacing);
+                if (count <= 0) continue;
+                const rng = createPRNG(hashNumbers(Math.round(ax), Math.round(ay), Math.round(bx), Math.round(by), hashSalt));
+                for (let i = 0; i <= count; i++) {
+                    const baseDist = startMargin + i * spacing + (rng() - 0.5) * jitter;
+                    if (baseDist <= startMargin || baseDist >= segLen - startMargin) continue;
+                    if (probability < 1 && rng() > probability) continue;
+                    const basePoint = { x: ax + unitX * baseDist, y: ay + unitY * baseDist };
+                    const side: 1 | -1 = (cfg.sides === 'single'
+                        ? ((cfg.side ?? 1) as 1 | -1)
+                        : ((cfg.randomizeSide ? (rng() < 0.5 ? 1 : -1) : (i % 2 === 0 ? 1 : -1)) as 1 | -1));
+                    const offsetBase = cfg.offsetM ?? 2.5;
+                    const offset = (cfg.absoluteOffset ? 0 : segment.width / 2) + offsetBase;
+                    const pos = { x: basePoint.x + normalX * offset * side, y: basePoint.y + normalY * offset * side };
+                    if (!isInsideBounds(pos)) continue;
+                    if (avoidBoxDist > 0) {
+                        let blocked = false;
+                        for (const box of buildingBoxes) {
+                            if (pointToBoxDistance(pos, box) < avoidBoxDist) {
+                                blocked = true;
+                                break;
+                            }
+                        }
+                        if (blocked) continue;
+                    }
+                    const key = `${typeKey}:${Math.round(pos.x * 10)}:${Math.round(pos.y * 10)}`;
+                    if (used.has(key)) continue;
+                    used.add(key);
+                    const slotSeed = hashNumbers(Math.round(pos.x * 91), Math.round(pos.y * 83), hashSalt ^ 0x9E3779B9);
+                    const slotRng = createPRNG(slotSeed);
+                    draw(pos, { side, segment, zone, rng: slotRng });
+                }
+            }
+        };
+
+        const lightsCfg = envCfg.streetLights || {};
+        if (lightsCfg.enabled !== false) {
+            placeAlongSegments('light', {
+                spacingM: lightsCfg.spacingM ?? 32,
+                startOffsetM: lightsCfg.startOffsetM ?? 14,
+                jitterM: lightsCfg.jitterM ?? 2.5,
+                offsetM: lightsCfg.sideOffsetM ?? 2.8,
+                allowHighways: !!lightsCfg.allowHighways,
+                probability: lightsCfg.slotProbability ?? 1,
+                zoneMultiplier: lightsCfg.zoneMultiplier || {},
+                skipZones: lightsCfg.skipZones || {},
+                randomizeSide: lightsCfg.randomizeSide ?? true,
+                avoidBuildingDistanceM: lightsCfg.avoidBuildingDistanceM ?? 1.5,
+            }, (pos, ctx) => {
+                const sizeMult = Math.max(0.4, (lightsCfg.zoneSizeMultiplier || {})[ctx.zone] ?? 1);
+                const iso = worldToIso(pos);
+                const poleHeightPx = Math.max(5, pxPerM * (lightsCfg.heightM ?? 6) * sizeMult);
+                const headRadiusPx = Math.max(2, pxPerM * (lightsCfg.headRadiusM ?? 0.5) * sizeMult);
+                const baseRadiusPx = Math.max(1, pxPerM * (lightsCfg.baseRadiusM ?? 0.22) * Math.sqrt(sizeMult));
+                const armLengthPx = Math.max(0, pxPerM * (lightsCfg.armLengthM ?? 0.6) * sizeMult);
+                const poleColor = lightsCfg.poleColor ?? 0xCFD8DC;
+                const headColor = lightsCfg.headColor ?? 0xfff59d;
+                const headAlpha = lightsCfg.headAlpha ?? 0.95;
+                const glowColor = lightsCfg.glowColor ?? headColor;
+                const glowAlpha = lightsCfg.glowAlpha ?? 0.25;
+                const baseColor = lightsCfg.baseColor ?? 0x263238;
+                const g = new PIXI.Graphics();
+                g.lineStyle(Math.max(1, pxPerM * 0.08), poleColor, 1);
+                g.moveTo(iso.x, iso.y);
+                g.lineTo(iso.x, iso.y - poleHeightPx);
+                let headX = iso.x;
+                const headY = iso.y - poleHeightPx - headRadiusPx * 0.3;
+                if (armLengthPx > 0) {
+                    headX = iso.x + armLengthPx * (ctx.side > 0 ? 1 : -1);
+                    g.lineTo(headX, headY);
+                }
+                g.lineStyle(0);
+                g.beginFill(baseColor, 0.95);
+                g.drawEllipse(iso.x, iso.y, baseRadiusPx * 1.4, baseRadiusPx * 0.8);
+                g.endFill();
+                g.beginFill(headColor, headAlpha);
+                g.drawCircle(headX, headY, headRadiusPx);
+                g.endFill();
+                g.beginFill(glowColor, glowAlpha);
+                g.drawCircle(headX, headY, headRadiusPx * 1.8);
+                g.endFill();
+                layer.addChild(g);
+            });
+        }
+
+        const trashCfg = envCfg.trashBins || envCfg.streetTrash || {};
+        if (trashCfg.enabled !== false) {
+            placeAlongSegments('trash', {
+                spacingM: trashCfg.spacingM ?? 55,
+                startOffsetM: trashCfg.startOffsetM ?? 10,
+                jitterM: trashCfg.jitterM ?? 4,
+                offsetM: trashCfg.offsetM ?? 2.4,
+                probability: trashCfg.slotProbability ?? 0.65,
+                zoneMultiplier: trashCfg.zoneMultiplier || {},
+                skipZones: trashCfg.skipZones || {},
+                randomizeSide: trashCfg.randomizeSide ?? true,
+                avoidBuildingDistanceM: trashCfg.avoidBuildingDistanceM ?? 1.2,
+            }, (pos, ctx) => {
+                const sizeMult = Math.max(0.4, (trashCfg.zoneSizeMultiplier || {})[ctx.zone] ?? 1);
+                const iso = worldToIso(pos);
+                const widthPx = Math.max(2, pxPerM * (trashCfg.widthM ?? 0.6) * sizeMult);
+                const heightPx = Math.max(3, pxPerM * (trashCfg.heightM ?? 1.1) * sizeMult);
+                const lidHeightPx = Math.max(1, pxPerM * (trashCfg.lidHeightM ?? 0.2) * sizeMult);
+                const handleWidthPx = Math.max(1, widthPx * 0.35);
+                const handleHeightPx = Math.max(1, lidHeightPx * 0.7);
+                const bodyColor = trashCfg.bodyColor ?? 0x4E342E;
+                const lidColor = trashCfg.lidColor ?? 0x795548;
+                const handleColor = trashCfg.handleColor ?? 0x212121;
+                const shadowColor = trashCfg.shadowColor ?? 0x000000;
+                const g = new PIXI.Graphics();
+                g.beginFill(shadowColor, 0.14);
+                g.drawEllipse(iso.x, iso.y, widthPx * 0.55, widthPx * 0.35);
+                g.endFill();
+                g.beginFill(bodyColor, 0.95);
+                g.drawRoundedRect(iso.x - widthPx / 2, iso.y - heightPx, widthPx, heightPx, Math.min(widthPx * 0.35, 6));
+                g.endFill();
+                g.beginFill(lidColor, 0.98);
+                g.drawRoundedRect(iso.x - widthPx / 2, iso.y - heightPx - lidHeightPx, widthPx, lidHeightPx, Math.min(lidHeightPx, 4));
+                g.endFill();
+                g.beginFill(handleColor, 0.9);
+                g.drawRoundedRect(iso.x - handleWidthPx / 2, iso.y - heightPx - lidHeightPx * 0.5 - handleHeightPx / 2, handleWidthPx, handleHeightPx, Math.min(handleHeightPx, 2));
+                g.endFill();
+                layer.addChild(g);
+            });
+        }
+
+        const benchCfg = envCfg.benches || {};
+        if (benchCfg.enabled !== false) {
+            placeAlongSegments('bench', {
+                spacingM: benchCfg.spacingM ?? 72,
+                startOffsetM: benchCfg.startOffsetM ?? 12,
+                jitterM: benchCfg.jitterM ?? 6,
+                offsetM: benchCfg.offsetM ?? 2.2,
+                probability: benchCfg.slotProbability ?? 0.45,
+                zoneMultiplier: benchCfg.zoneMultiplier || {},
+                skipZones: benchCfg.skipZones || {},
+                randomizeSide: benchCfg.randomizeSide ?? true,
+                avoidBuildingDistanceM: benchCfg.avoidBuildingDistanceM ?? 1.5,
+            }, (pos, ctx) => {
+                const sizeMult = Math.max(0.5, (benchCfg.zoneSizeMultiplier || {})[ctx.zone] ?? 1);
+                const iso = worldToIso(pos);
+                const widthPx = Math.max(8, pxPerM * (benchCfg.widthM ?? 2.1) * sizeMult);
+                const depthPx = Math.max(2, pxPerM * (benchCfg.depthM ?? 0.45) * sizeMult);
+                const heightPx = Math.max(4, pxPerM * (benchCfg.heightM ?? 0.85) * sizeMult);
+                const backHeightPx = Math.max(2, pxPerM * (benchCfg.backHeightM ?? 0.7) * sizeMult);
+                const legWidthPx = Math.max(2, widthPx * 0.12);
+                const legHeightPx = Math.max(2, heightPx * 0.35);
+                const seatColor = benchCfg.seatColor ?? 0x8D6E63;
+                const backColor = benchCfg.backColor ?? 0xA1887F;
+                const supportColor = benchCfg.supportColor ?? 0x3E2723;
+                const shadowColor = benchCfg.shadowColor ?? 0x000000;
+                const g = new PIXI.Graphics();
+                g.beginFill(shadowColor, 0.12);
+                g.drawEllipse(iso.x, iso.y, widthPx * 0.55, depthPx * 0.6);
+                g.endFill();
+                g.beginFill(supportColor, 0.95);
+                const legOffset = widthPx / 2 - legWidthPx * 0.6;
+                g.drawRect(iso.x - legOffset - legWidthPx / 2, iso.y - legHeightPx, legWidthPx, legHeightPx);
+                g.drawRect(iso.x + legOffset - legWidthPx / 2, iso.y - legHeightPx, legWidthPx, legHeightPx);
+                g.endFill();
+                g.beginFill(seatColor, 0.95);
+                g.drawRoundedRect(iso.x - widthPx / 2, iso.y - heightPx, widthPx, depthPx, Math.min(depthPx, 6));
+                g.endFill();
+                g.beginFill(backColor, 0.92);
+                g.drawRoundedRect(iso.x - widthPx / 2, iso.y - heightPx - backHeightPx, widthPx, backHeightPx, Math.min(backHeightPx, 6));
+                g.endFill();
+                layer.addChild(g);
+            });
+        }
     };
 
     const sqrDist = (a: Point, b: Point): number => {
@@ -1768,7 +2188,10 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     if (!dynamicDrawables.current || !debugMapData.current || !debugSegments.current || !roadOutlines.current || !intersectionPatches.current) return;
 
     if (state.pathGraphics) state.pathGraphics.clear();
-    if (rebuildBuildings) dynamicDrawables.current.removeChildren();
+    if (rebuildBuildings) {
+        dynamicDrawables.current.removeChildren();
+        sceneryLayer.current?.removeChildren();
+    }
     roadsFill.current?.removeChildren();
     // Limpar camada secundária (overlay) antes de redesenhar
     roadsSecondary.current?.removeChildren();
@@ -3548,6 +3971,9 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             blockOutlines.current.addChild(gInner);
             blockEdgeBands.current?.addChild(gBands);
             blockEdgeBands.current?.addChild(jointsG);
+            if (rebuildBuildings) {
+                try { ensureSceneryForBlocks(blockWorldPaths, segments, buildings); } catch (err) { console.warn('Scenery generation failed', err); }
+            }
             // Create edge overlay (concrete texture) masked by the same bands
             try {
                 edgeOverlay.current?.removeChildren();
@@ -3824,6 +4250,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     // Mantemos sortableChildren apenas para permitir personagem no topo com zIndex alto sem alterar ordem
     drawables.current.sortableChildren = true;
         dynamicDrawables.current = new PIXI.Container();
+        sceneryLayer.current = new PIXI.Container();
     roadsFill.current = new PIXI.Container();
     roadsSecondary.current = new PIXI.Container();
     // roadsOverlay intentionally disabled (Camada 3)
@@ -3859,6 +4286,8 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     (blockOutlines.current as any).zIndex = 20; // Camada 4 (gap/interiors)
     // give block bands a low zIndex so overlays can be placed above
     (blockEdgeBands.current as any).zIndex = 100;
+    (sceneryLayer.current as any).zIndex = 70;
+    (dynamicDrawables.current as any).zIndex = 80;
     roadOutlines.current = new PIXI.Container();
     (roadOutlines.current as any).zIndex = 30; // Camada 5 (contorno externo)
     intersectionPatches.current = new PIXI.Container();
@@ -3897,6 +4326,8 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
     drawables.current.addChild(blockOutlines.current);
     // tiles vetoriais por quarteirão (isométrico) restritos por raio R
     drawables.current.addChild(sidewalkTiles.current);
+    // elementos de cenário (árvores, mobiliário urbano) acima dos interiores
+    drawables.current.addChild(sceneryLayer.current);
     // prédios e demais dinâmicos acima das ruas e interiores
     drawables.current.addChild(dynamicDrawables.current);
     // contornos das vias acima das vias e abaixo do personagem
@@ -4034,8 +4465,12 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                 // Camada overlay (Camada 3) desabilitada — não há nada a atualizar aqui.
 
                 // Visibilidade de quarteirões
+                const hideBlocksOnly = ((config as any).render.showOnlyBlockOutlines || (config as any).render.showOnlyBlockInteriors);
                 if (dynamicDrawables.current) {
-                    dynamicDrawables.current.visible = !((config as any).render.showOnlyBlockOutlines || (config as any).render.showOnlyBlockInteriors);
+                    dynamicDrawables.current.visible = !hideBlocksOnly;
+                }
+                if (sceneryLayer.current) {
+                    sceneryLayer.current.visible = !hideBlocksOnly;
                 }
                 if (blockOutlines.current) {
                     const simple = (config as any).render.simpleRoads;
