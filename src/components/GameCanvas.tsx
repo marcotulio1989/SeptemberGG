@@ -3120,7 +3120,10 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
                                 // Converter polígono do quarteirão para Clipper paths
                                 const outerPath = worldPts.map(p => ({ X: Math.round(p.x * CLIP_SCALE), Y: Math.round(p.y * CLIP_SCALE) }));
                                 const coSide = new ClipperLib.ClipperOffset();
-                                coSide.AddPath(outerPath, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
+                                const joinType = inside
+                                    ? ClipperLib.JoinType.jtMiter
+                                    : ClipperLib.JoinType.jtRound;
+                                coSide.AddPath(outerPath, joinType, ClipperLib.EndType.etClosedPolygon);
                                 const innerPaths = new ClipperLib.Paths();
                                 // Offset negativo para dentro do quarteirão
                                 coSide.Execute(innerPaths, -widthM * CLIP_SCALE);
