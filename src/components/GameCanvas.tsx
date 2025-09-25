@@ -5,6 +5,7 @@ import * as math from '../generic_modules/math';
 import * as util from '../generic_modules/utility';
 import * as astar from '../generic_modules/astar';
 import { buildingFactory, Building, BuildingType } from '../game_modules/build';
+import { Prop, PropType, scatterProps } from '../game_modules/props';
 import * as blockGeometry from '../game_modules/block_geometry';
 import { getZoneAt } from '../game_modules/mapgen';
 import { config, scale } from '../game_modules/config';
@@ -440,6 +441,7 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
         characterGraphics: null as PIXI.Graphics | null,
         // sprite instance for the character (created on demand)
         characterSprite: null as PIXI.Sprite | null,
+        decorations: [] as Prop[],
     }).current;
 
     const syncNoiseOverlayView = (cameraX: number, cameraY: number, zoom: number) => {
@@ -1893,6 +1895,17 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             return trimMap.get(seg)!;
         };
 
+        const isoEllipseAt = (center: Point, radius: number) => {
+            const isoCenter = worldToIso(center);
+            const isoRight = worldToIso({ x: center.x + radius, y: center.y });
+            const isoDown = worldToIso({ x: center.x, y: center.y + radius });
+            return {
+                isoCenter,
+                rx: Math.max(1.5, Math.abs(isoRight.x - isoCenter.x)),
+                ry: Math.max(1.5, Math.abs(isoDown.y - isoCenter.y)),
+            };
+        };
+
         // Build nó -> entradas
     const keyOf = (p: Point) => nodeKey(p);
         type NodeEntry = { seg: Segment; atStart: boolean };
@@ -2126,8 +2139,11 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             }
         }
 
-        let buildings: Building[] = rebuildBuildings ? [] : dynamicDrawables.current ? [] : [];
-    if (rebuildBuildings) for (let i = 0; i < segments.length; i += 4) {
+        let buildings: Building[] = [];
+        let decorations: Prop[] = rebuildBuildings ? [] : (state.decorations || []);
+        if (rebuildBuildings) {
+            const decorationSeed = Date.now();
+            for (let i = 0; i < segments.length; i += 4) {
             const segment = segments[i];
             const zone = getZoneAt(segment.r.end);
             const zc = (config as any).zones?.[zone] || {};
@@ -2496,6 +2512,25 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             }
         } catch {}
 
+            if (qTree) {
+                try {
+                    decorations = scatterProps({
+                        segments,
+                        qTree: qTree!,
+                        zoneAt: getZoneAt,
+                        randomSeed: decorationSeed,
+                    });
+                } catch (err) {
+                    decorations = [];
+                }
+            } else {
+                decorations = [];
+            }
+            state.decorations = decorations;
+        } else {
+            decorations = state.decorations || [];
+        }
+
     if (rebuildBuildings) buildings.forEach(building => {
             // Espaço verde (lote vazio): não desenhar, mas manter ocupação espacial
             if ((building.type as any) === 'green') {
@@ -2562,6 +2597,80 @@ const GameCanvas: React.FC<GameCanvasPropsInternal> = ({ interiorTexture, interi
             g.lineTo(c0.x, c0.y);
             dynamicDrawables.current?.addChild(g);
         });
+
+        if (rebuildBuildings && decorations.length > 0) {
+            const drawDecoration = (prop: Prop) => {
+                const center = prop.center;
+                const gfx = new PIXI.Graphics();
+                switch (prop.type) {
+                    case PropType.TREE:
+                    case PropType.BUSH: {
+                        const canopy = isoEllipseAt(center, prop.radius);
+                        const canopyColor = prop.type === PropType.TREE ? 0x2E7D32 : 0x558B2F;
+                        const highlightColor = prop.type === PropType.TREE ? 0x66BB6A : 0x9CCC65;
+                        const shadow = isoEllipseAt({ x: center.x, y: center.y + prop.radius * 0.4 }, prop.radius * 0.75);
+                        gfx.beginFill(0x3E2723, 0.85);
+                        gfx.drawEllipse(shadow.isoCenter.x, shadow.isoCenter.y, shadow.rx * 0.4, Math.max(1, shadow.ry * 0.7));
+                        gfx.endFill();
+                        gfx.beginFill(canopyColor, 0.93);
+                        const canopyScale = prop.type === PropType.TREE ? 1 : 0.8;
+                        gfx.drawEllipse(canopy.isoCenter.x, canopy.isoCenter.y, canopy.rx * canopyScale, canopy.ry * canopyScale);
+                        gfx.endFill();
+                        gfx.beginFill(highlightColor, 0.55);
+                        gfx.drawEllipse(canopy.isoCenter.x + canopy.rx * 0.18, canopy.isoCenter.y - canopy.ry * 0.22, canopy.rx * 0.34, canopy.ry * 0.28);
+                        gfx.endFill();
+                        break;
+                    }
+                    case PropType.LAMP: {
+                        const base = worldToIso(center);
+                        const height = Math.max(4, prop.metadata.height ?? 6);
+                        const top = worldToIso({ x: center.x, y: center.y - height });
+                        const baseEllipse = isoEllipseAt(center, prop.radius * 0.8);
+                        const lampHead = isoEllipseAt({ x: center.x, y: center.y - height + 0.6 }, prop.radius * 0.9);
+                        gfx.lineStyle(2, 0xCFD8DC, 0.95);
+                        gfx.moveTo(base.x, base.y);
+                        gfx.lineTo(top.x, top.y);
+                        gfx.lineStyle(0);
+                        gfx.beginFill(0x263238, 0.45);
+                        gfx.drawEllipse(baseEllipse.isoCenter.x, baseEllipse.isoCenter.y + baseEllipse.ry * 0.5, baseEllipse.rx * 1.35, baseEllipse.ry * 0.75);
+                        gfx.endFill();
+                        gfx.beginFill(0x455A64, 0.95);
+                        gfx.drawEllipse(baseEllipse.isoCenter.x, baseEllipse.isoCenter.y, baseEllipse.rx, baseEllipse.ry * 0.9);
+                        gfx.endFill();
+                        gfx.beginFill(0xFFF59D, 0.9);
+                        gfx.drawEllipse(lampHead.isoCenter.x, lampHead.isoCenter.y, lampHead.rx, lampHead.ry);
+                        gfx.endFill();
+                        break;
+                    }
+                    case PropType.TRASH: {
+                        const binHeight = 2.2;
+                        const baseEllipse = isoEllipseAt(center, Math.max(0.6, prop.radius));
+                        const topCenter = { x: center.x, y: center.y - binHeight };
+                        const topEllipse = isoEllipseAt(topCenter, Math.max(0.5, prop.radius * 0.9));
+                        gfx.beginFill(0x546E7A, 0.92);
+                        gfx.moveTo(baseEllipse.isoCenter.x - baseEllipse.rx, baseEllipse.isoCenter.y);
+                        gfx.lineTo(baseEllipse.isoCenter.x + baseEllipse.rx, baseEllipse.isoCenter.y);
+                        gfx.lineTo(topEllipse.isoCenter.x + topEllipse.rx, topEllipse.isoCenter.y);
+                        gfx.lineTo(topEllipse.isoCenter.x - topEllipse.rx, topEllipse.isoCenter.y);
+                        gfx.lineTo(baseEllipse.isoCenter.x - baseEllipse.rx, baseEllipse.isoCenter.y);
+                        gfx.endFill();
+                        gfx.beginFill(0x90A4AE, 0.9);
+                        gfx.drawEllipse(topEllipse.isoCenter.x, topEllipse.isoCenter.y, topEllipse.rx, topEllipse.ry);
+                        gfx.endFill();
+                        gfx.beginFill(0x37474F, 0.9);
+                        gfx.drawEllipse(baseEllipse.isoCenter.x, baseEllipse.isoCenter.y, baseEllipse.rx, baseEllipse.ry * 0.85);
+                        gfx.endFill();
+                        break;
+                    }
+                    default:
+                        break;
+                }
+                if ((gfx.geometry?.graphicsData?.length || 0) > 0) {
+                    dynamicDrawables.current?.addChild(gfx);
+                }
+            };
+            decorations.forEach(drawDecoration);
+        }
 
     // Removido overlay de zonas em tiles (agora usamos canvas overlay Perlin)
 
